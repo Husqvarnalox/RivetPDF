@@ -1,0 +1,111 @@
+{
+    "version": 6,
+    "cmakeMinimumRequired": {
+        "major": 3,
+        "minor": 28,
+        "patch": 0
+    },
+    "configurePresets": [
+        {
+            "name": "dev-base",
+            "hidden": true,
+            "generator": "Ninja",
+            "binaryDir": "${sourceDir}/build/${presetName}",
+            "cacheVariables": {
+                "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+                "RIVET_BUILD_TESTS": "ON"
+            }
+        },
+        {
+            "name": "debug",
+            "displayName": "Debug (Ninja)",
+            "inherits": "dev-base",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Debug"
+            }
+        },
+        {
+            "name": "release",
+            "displayName": "Release (Ninja)",
+            "inherits": "dev-base",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Release"
+            }
+        },
+        {
+            "name": "relwithdebinfo",
+            "displayName": "RelWithDebInfo (Ninja)",
+            "inherits": "dev-base",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "RelWithDebInfo"
+            }
+        },
+        {
+            "name": "sanitizers",
+            "displayName": "Debug + ASan/UBSan (Ninja)",
+            "inherits": "dev-base",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Debug",
+                "RIVET_ENABLE_SANITIZERS": "ON"
+            }
+        },
+        {
+            "name": "debug-pdfium",
+            "displayName": "Debug + local PDFium (Ninja)",
+            "inherits": "dev-base",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Debug",
+                "RIVET_WITH_PDFIUM": "ON"
+            }
+        }
+    ],
+    "buildPresets": [
+        {
+            "name": "debug",
+            "configurePreset": "debug"
+        },
+        {
+            "name": "release",
+            "configurePreset": "release"
+        },
+        {
+            "name": "relwithdebinfo",
+            "configurePreset": "relwithdebinfo"
+        },
+        {
+            "name": "sanitizers",
+            "configurePreset": "sanitizers"
+        },
+        {
+            "name": "debug-pdfium",
+            "configurePreset": "debug-pdfium"
+        }
+    ],
+    "testPresets": [
+        {
+            "name": "debug",
+            "configurePreset": "debug",
+            "output": { "outputOnFailure": true }
+        },
+        {
+            "name": "release",
+            "configurePreset": "release",
+            "output": { "outputOnFailure": true }
+        },
+        {
+            "name": "relwithdebinfo",
+            "configurePreset": "relwithdebinfo",
+            "output": { "outputOnFailure": true }
+        },
+        {
+            "name": "sanitizers",
+            "configurePreset": "sanitizers",
+            "output": { "outputOnFailure": true }
+        },
+        {
+            "name": "debug-pdfium",
+            "configurePreset": "debug-pdfium",
+            "output": { "outputOnFailure": true }
+        }
+    ]
+}

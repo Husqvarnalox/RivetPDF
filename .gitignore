@@ -1,35 +1,55 @@
-# Build
+# --- Rivet repository hygiene -------------------------------------------
+# Project files (CMakeLists.txt, CMakePresets.json, cmake/, src/, tests/,
+# docs/, assets/) are tracked. Everything below is local machine state,
+# generated output, or external local dependencies.
+
+# Build output
 build/
 build-*/
 out/
 cmake-build-*/
 CMakeFiles/
 CMakeCache.txt
+cmake_install.cmake
+install_manifest.txt
+CTestTestfile.cmake
 Testing/
+compile_commands.json
+CMakeUserPresets.json
+
+# Object files and binaries
 *.o
 *.obj
 *.a
 *.lib
 *.so
+*.so.*
 *.dylib
 *.dll
+*.exe
+*.pdb
+*.ilk
 *.dSYM/
 
-# CMake local
-CMakeUserPresets.json
-compile_commands.json
-
-# macOS
+# macOS local files
 .DS_Store
+.AppleDouble
+.LSOverride
 ._*
+.Spotlight-V100
+.Trashes
 
-# Editors
+# IDE / editor local state
 .idea/
 .vscode/
 *.swp
 *.swo
+*~
+.project
+.settings/
+.cproject
 
-# AI coding agents
+# AI / coding-agent local state
 .claude/
 .codex/
 .cursor/
@@ -37,15 +57,16 @@ compile_commands.json
 .gemini/
 .opencode/
 
-# Local dependencies
+# Locally supplied dependency trees (never commit PDFium binaries or source)
 third_party/pdfium/
 external/pdfium/
 vendor/pdfium/
 
-# Temporary
-.cache/
+# Temporary files, logs, caches
 tmp/
 temp/
+.cache/
 *.tmp
+*.temp
 *.bak
 *.log
