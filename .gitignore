@@ -1,0 +1,51 @@
+# Build
+build/
+build-*/
+out/
+cmake-build-*/
+CMakeFiles/
+CMakeCache.txt
+Testing/
+*.o
+*.obj
+*.a
+*.lib
+*.so
+*.dylib
+*.dll
+*.dSYM/
+
+# CMake local
+CMakeUserPresets.json
+compile_commands.json
+
+# macOS
+.DS_Store
+._*
+
+# Editors
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# AI coding agents
+.claude/
+.codex/
+.cursor/
+.windsurf/
+.gemini/
+.opencode/
+
+# Local dependencies
+third_party/pdfium/
+external/pdfium/
+vendor/pdfium/
+
+# Temporary
+.cache/
+tmp/
+temp/
+*.tmp
+*.bak
+*.log
