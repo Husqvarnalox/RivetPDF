@@ -25,7 +25,7 @@ public:
     virtual const PdfDocumentInfo& info() const = 0;
 
     // Page metadata for the given zero-based page index.
-    virtual Result<PdfPageInfo> pageInfo(std::size_t pageIndex) const = 0;
+    virtual core::Result<PdfPageInfo> pageInfo(std::size_t pageIndex) const = 0;
 
     // Rasterizes a sub-rectangle of a page.
     //
@@ -34,9 +34,9 @@ public:
     // be contained in the page bounds. devicePixelsPerPoint is the physical
     // device pixel scale (zoom * display backing scale). The output bitmap
     // covers exactly pageRectPoints at that scale.
-    virtual Result<core::Bitmap> renderPage(std::size_t pageIndex,
-                                            const core::Rect& pageRectPoints,
-                                            double devicePixelsPerPoint) = 0;
+    virtual core::Result<core::Bitmap> renderPage(std::size_t pageIndex,
+                                                  const core::Rect& pageRectPoints,
+                                                  double devicePixelsPerPoint) = 0;
 };
 
 // A PDF backend. Rivet keeps the concrete engine (PDFium) behind this
@@ -53,8 +53,8 @@ public:
     virtual std::string_view backendName() const = 0;
 
     // Opens a document. An empty password is used for unencrypted files.
-    virtual Result<std::unique_ptr<PdfDocument>> openDocument(const std::filesystem::path& path,
-                                                              std::string_view password = {}) = 0;
+    virtual core::Result<std::unique_ptr<PdfDocument>> openDocument(const std::filesystem::path& path,
+                                                                    std::string_view password = {}) = 0;
 };
 
 } // namespace rivet::pdf

@@ -5,6 +5,8 @@ add_library(rivet_core STATIC
     Time.cpp
 )
 
+add_subdirectory(async)
+
 add_library(rivet::core ALIAS rivet_core)
 
 target_include_directories(rivet_core PUBLIC ${CMAKE_SOURCE_DIR}/src)

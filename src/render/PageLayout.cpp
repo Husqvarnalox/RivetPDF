@@ -1,0 +1,77 @@
+#include "render/PageLayout.hpp"
+
+#include <algorithm>
+#include <cassert>
+
+namespace rivet::render {
+
+void PageLayout::setPages(std::vector<PageInfo> pages) {
+    pages_ = std::move(pages);
+    rebuild();
+}
+
+void PageLayout::setPageGapPoints(double gap) {
+    gap_ = std::max(0.0, gap);
+    rebuild();
+}
+
+void PageLayout::setPageMarginPoints(double margin) {
+    margin_ = std::max(0.0, margin);
+    rebuild();
+}
+
+void PageLayout::rebuild() {
+    frames_.clear();
+    contentSize_ = core::Size{};
+    if (pages_.empty()) return;
+
+    double widest = 0.0;
+    double totalHeight = 0.0;
+    for (const PageInfo& info : pages_) {
+        widest = std::max(widest, info.sizePoints.width);
+        totalHeight += info.sizePoints.height;
+    }
+    contentSize_ = core::Size{widest + 2.0 * margin_,
+                              totalHeight + gap_ * static_cast<double>(pages_.size() - 1) + 2.0 * margin_};
+
+    frames_.reserve(pages_.size());
+    double y = margin_;
+    for (const PageInfo& info : pages_) {
+        const double x = margin_ + (widest - info.sizePoints.width) / 2.0;
+        frames_.emplace_back(core::Point{x, y}, info.sizePoints);
+        y += info.sizePoints.height + gap_;
+    }
+}
+
+core::Rect PageLayout::pageFramePoints(std::size_t index) const {
+    assert(index < frames_.size());
+    return frames_[index];
+}
+
+std::optional<std::size_t> PageLayout::pageIndexAt(const core::Point& contentPoint) const {
+    for (std::size_t i = 0; i < frames_.size(); ++i) {
+        if (frames_[i].contains(contentPoint)) return i;
+    }
+    return std::nullopt;
+}
+
+std::optional<std::pair<std::size_t, std::size_t>>
+PageLayout::visiblePageRange(const core::Rect& contentRectPoints) const {
+    std::optional<std::size_t> first;
+    std::size_t last = 0;
+    for (std::size_t i = 0; i < frames_.size(); ++i) {
+        if (frames_[i].intersects(contentRectPoints)) {
+            if (!first) first = i;
+            last = i;
+        }
+    }
+    if (!first) return std::nullopt;
+    return std::pair<std::size_t, std::size_t>{*first, last};
+}
+
+double PageLayout::pageTopOffsetPoints(std::size_t index) const {
+    assert(index < frames_.size());
+    return frames_[index].origin.y;
+}
+
+} // namespace rivet::render

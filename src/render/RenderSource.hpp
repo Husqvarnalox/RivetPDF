@@ -25,6 +25,12 @@ public:
                                RenderPriority priority,
                                std::function<void(core::Result<core::Bitmap>)> onDone) = 0;
 
+    // Synchronous cache probe for the paint path. Returns the cached tile
+    // bitmap, or nullptr on miss/stale revision. Never schedules work and
+    // never blocks; main-thread use expected.
+    virtual std::shared_ptr<const core::Bitmap> cachedTile(const TileKey& key,
+                                                           std::uint64_t revision) const = 0;
+
     // Drops all queued requests (results will report Cancelled or simply not
     // fire for already-completed work).
     virtual void cancelAll() = 0;
