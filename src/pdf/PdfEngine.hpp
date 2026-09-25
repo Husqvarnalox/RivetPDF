@@ -5,6 +5,7 @@
 #include "core/geometry/Rect.hpp"
 #include "pdf/PdfTypes.hpp"
 
+#include <cstddef>
 #include <filesystem>
 #include <memory>
 #include <string_view>

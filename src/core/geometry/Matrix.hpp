@@ -3,6 +3,7 @@
 #include "core/geometry/Point.hpp"
 #include "core/geometry/Rect.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <optional>
 

@@ -2,6 +2,7 @@
 
 #include "ui/Widget.hpp"
 
+#include <cstdint>
 #include <functional>
 #include <string>
 

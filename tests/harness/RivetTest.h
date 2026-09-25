@@ -13,7 +13,9 @@
 // a non-zero exit code if any test failed.
 
 #include <cmath>
+#include <cstddef>
 #include <cstdio>
+#include <exception>
 #include <stdexcept>
 #include <string>
 #include <vector>

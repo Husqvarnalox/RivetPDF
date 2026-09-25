@@ -8,6 +8,7 @@
 #include "ui/Widget.hpp"
 
 #include <atomic>
+#include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <memory>

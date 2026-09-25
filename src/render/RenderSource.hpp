@@ -5,6 +5,7 @@
 #include "render/RenderPriority.hpp"
 #include "render/RenderRequest.hpp"
 
+#include <cstdint>
 #include <functional>
 #include <memory>
 

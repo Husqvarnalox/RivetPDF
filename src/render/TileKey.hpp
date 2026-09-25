@@ -3,6 +3,7 @@
 #include "core/StrongId.hpp"
 #include "render/PhysicalRenderScaleKey.hpp"
 
+#include <cstddef>
 #include <cstdint>
 #include <functional>
 

@@ -2,6 +2,7 @@
 
 #include "ui/Widget.hpp"
 
+#include <cstddef>
 #include <functional>
 #include <optional>
 #include <string>

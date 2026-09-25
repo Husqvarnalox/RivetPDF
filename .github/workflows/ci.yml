@@ -4,7 +4,13 @@
 # PDFium automatically, and a cacheable, maintainable CI strategy for a local
 # static PDFium build is a separate later task. These jobs cover the
 # PDFium-independent foundation: configure, build, ctest, zero warnings.
-# The Linux job additionally proves the tree configures without Objective-C++.
+#
+# The Ubuntu job is deliberately a GCC portability build (CMake's default
+# /usr/bin/c++ is g++ on the runner): it validates the headers and sources
+# against GCC/libstdc++, whose standard library does NOT provide the
+# transitive includes Apple's libc++ does (this is what caught
+# std::uint8_t-without-<cstdint> in src/core/Log.hpp). The macOS job
+# validates the AppleClang/libc++ path the product actually ships with.
 name: ci
 
 on:
@@ -17,16 +23,18 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-latest, ubuntu-latest]
+        include:
+          - os: ubuntu-latest   # GCC portability build (/usr/bin/c++ = g++)
+          - os: macos-latest    # AppleClang product build
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install toolchain (Linux)
+      - name: Install build tools (Linux)
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake ninja-build clang
+          sudo apt-get install -y cmake ninja-build
 
       - name: Configure (PDFium OFF, warnings visible)
         run: |

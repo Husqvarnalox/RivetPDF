@@ -2,6 +2,7 @@
 
 #include "ui/Widget.hpp"
 
+#include <memory>
 #include <unordered_map>
 
 namespace rivet::ui {
