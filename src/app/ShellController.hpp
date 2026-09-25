@@ -14,6 +14,7 @@
 #include "ui/TabStrip.hpp"
 #include "ui/TextField.hpp"
 #include "ui/Toolbar.hpp"
+#include "ui/ViewerTextBridge.hpp"
 #include "render/ZoomState.hpp"
 
 #include <cstddef>
@@ -63,6 +64,25 @@ public:
     void openDocument(const std::filesystem::path& path);
 
 private:
+    // IViewerTextBridge over the ACTIVE tab's text service + selection +
+    // search state. Forwards to a no-op when no Ready tab is active.
+    class ShellTextBridge final : public ui::IViewerTextBridge {
+    public:
+        explicit ShellTextBridge(ShellController& shell) : shell_(shell) {}
+
+        void warmPage(std::size_t pageIndex) override;
+        std::optional<std::uint32_t> charIndexAtPoint(std::size_t pageIndex,
+                                                      const core::Point& pagePoint) override;
+        std::vector<ui::OverlayRect> overlayRects(std::size_t pageIndex) override;
+        void selectionDragBegan(std::size_t pageIndex, std::uint32_t charIndex, bool shiftHeld) override;
+        void selectionDragMoved(std::size_t pageIndex, std::uint32_t charIndex) override;
+        void selectionDragEnded() override;
+        void selectionCleared() override;
+
+    private:
+        ShellController& shell_;
+    };
+
     // Root container that re-runs the shell layout whenever its frame changes.
     class ShellRoot final : public ui::Container {
     public:
@@ -87,6 +107,19 @@ private:
     // Shortcut handlers (command/ctrl based). Returns true when consumed.
     bool handleShortcut(const ui::KeyEvent& event);
     void activateAdjacentTab(int delta);
+
+    // Text interaction (implemented over the active Ready tab).
+    DocumentTab* readyActiveTab();
+    // Selection as UTF-8 text (line breaks preserved; empty when nothing is
+    // selected or the text pages are not loaded).
+    std::string selectedText() const;
+    void copySelection();
+    // Search bar lifecycle + UI updates.
+    void setSearchVisible(bool visible);
+    void updateSearchUi();
+    void revealActiveMatch();
+    // Overlay rects for one page of the active tab (selection + search).
+    std::vector<ui::OverlayRect> overlayRectsForActiveTab(std::size_t pageIndex) const;
 
     platform::ShellServices services_;
     // Declaration order = reverse destruction order: the widget tree (root_)
@@ -116,6 +149,17 @@ private:
 
     // The single focused widget (a text field), or null (viewport focus).
     ui::Widget* focusedWidget_ = nullptr;
+
+    // Text interaction bridge over the active tab (owned; installed on the
+    // viewport).
+    std::unique_ptr<ShellTextBridge> textBridge_;
+
+    // Search bar (composed widgets, hidden until Cmd+F). All raw pointers
+    // into the widget tree owned by root_.
+    ui::Container* searchBar_ = nullptr;
+    ui::TextField* searchField_ = nullptr;
+    TextLabel* searchCountLabel_ = nullptr;
+    bool searchVisible_ = false;
 };
 
 // Factory used by the platform entry point (main).

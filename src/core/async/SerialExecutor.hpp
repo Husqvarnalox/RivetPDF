@@ -37,6 +37,10 @@ public:
     // Drops queued-not-started tasks; the in-flight task continues.
     void cancelPending();
 
+    // The shared pool this executor serializes onto (outlives the executor
+    // per the lifetime rules above).
+    TaskScheduler& scheduler() const { return scheduler_; }
+
     // Blocks until no task of this executor is queued or running. The
     // destructor uses it; tests and owners (DocumentRenderer teardown) may
     // call it to join the stream deterministically instead of polling.

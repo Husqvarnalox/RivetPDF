@@ -1,4 +1,8 @@
 add_library(rivet_editor STATIC
+    SelectionModel.cpp
+    TextPageCache.cpp
+    TextSearchController.cpp
+    TextService.cpp
     CommandStack.cpp
     DocumentRenderer.cpp
     DocumentSession.cpp

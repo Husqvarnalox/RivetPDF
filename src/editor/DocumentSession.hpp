@@ -2,9 +2,11 @@
 
 #include "CommandStack.hpp"
 #include "DocumentRenderer.hpp"
+#include "TextService.hpp"
 
 #include "core/Error.hpp"
 #include "core/StrongId.hpp"
+#include "core/async/IMainThreadDispatcher.hpp"
 #include "core/async/SerialExecutor.hpp"
 #include "core/async/TaskScheduler.hpp"
 #include "core/geometry/Rotation.hpp"
@@ -58,6 +60,12 @@ public:
 
     std::size_t pageCount() const { return pages_.size(); }
 
+    // Sentinel returned by pageIndexFor() for an unknown PageId.
+    static constexpr std::size_t kInvalidPage = static_cast<std::size_t>(-1);
+
+    // Zero-based PDF page index for a PageId (kInvalidPage when unknown).
+    std::size_t pageIndexFor(core::PageId pageId) const;
+
     // Asserts index < pageCount.
     core::PageId pageId(std::size_t index) const;
 
@@ -66,12 +74,22 @@ public:
 
     const render::PageLayout& layout() const { return layout_; }
 
+    // Dependencies the text pipeline needs (scheduler must outlive the
+    // session; the dispatcher may be null in tests).
+    core::TaskScheduler& scheduler() { return executor_.scheduler(); }
+    core::IMainThreadDispatcher* mainDispatcher() { return mainDispatcher_; }
+
     // Backend handle for non-rendering wiring (e.g. future editing backends).
     // The app layer must not use it for rendering; go through renderSource().
     pdf::PdfDocument& document() { return *document_; }
+    const pdf::PdfDocument& document() const { return *document_; }
 
     // The DocumentRenderer behind the IRenderSource interface.
     render::IRenderSource& renderSource() { return renderer_; }
+
+    // The text pipeline (cache + dedicated extraction stream).
+    TextService& textService() { return textService_; }
+    const TextService& textService() const { return textService_; }
 
     CommandStack& commands() { return commands_; }
 
@@ -111,28 +129,34 @@ private:
                     std::vector<PageMeta> pages,
                     std::unique_ptr<pdf::PdfDocument> document,
                     core::TaskScheduler& scheduler,
-                    core::IMainThreadDispatcher* mainDispatcher);
+                    core::IMainThreadDispatcher* mainDispatcher,
+                    std::shared_ptr<const std::unordered_map<core::PageId, std::size_t>> pageIndexMap);
 
     // PageId -> zero-based PDF page index. Held through a shared_ptr by the
-    // renderer's lookup callable so worker-side lookups stay valid for the
-    // renderer's whole lifetime.
+    // renderer's lookup callable AND by the session itself so worker-side
+    // lookups stay valid for both lifetimes.
     static std::shared_ptr<const std::unordered_map<core::PageId, std::size_t>>
     buildPageIndexMap(const std::vector<PageMeta>& pages);
 
     core::DocumentId id_;
     std::filesystem::path path_;
     pdf::PdfDocumentInfo info_;
+    core::IMainThreadDispatcher* mainDispatcher_ = nullptr;
     std::vector<PageMeta> pages_;
     render::PageLayout layout_;
     std::uint64_t revision_ = 1;
     CommandStack commands_;
 
-    // Declaration order = reverse destruction order. renderer_ (last) dies
-    // before executor_, cache_ and document_ (see class comment).
+    // Declaration order = reverse destruction order. textService_ and
+    // renderer_ (the last members) die before executor_, cache_ and
+    // document_ (see class comment): their destructors cancel queued work
+    // and wait for the in-flight job while everything they touch is alive.
     std::unique_ptr<pdf::PdfDocument> document_;
     render::TileCache cache_;
     core::SerialExecutor executor_;
     DocumentRenderer renderer_;
+    std::shared_ptr<const std::unordered_map<core::PageId, std::size_t>> pageIndexMap_;
+    TextService textService_;
 };
 
 } // namespace rivet::editor

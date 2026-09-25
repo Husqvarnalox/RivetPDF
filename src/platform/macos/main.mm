@@ -1,3 +1,4 @@
+#import "MacosClipboard.h"
 #import "MacosFileDialog.h"
 #import "MacosMainThreadDispatcher.h"
 #import "RivetContentView.h"
@@ -84,11 +85,13 @@ int main(int argc, char** argv) {
         // Services must outlive the app shell and the run loop.
         const auto dispatcher = std::make_unique<rivet::platform::MacosMainThreadDispatcher>();
         const auto fileDialog = std::make_unique<rivet::platform::MacosFileDialog>();
+        const auto clipboard = std::make_unique<rivet::platform::MacosClipboard>();
 
         rivet::platform::ShellServices services;
         services.redrawSink = [contentView redrawSink];
         services.mainDispatcher = dispatcher.get();
         services.fileDialog = fileDialog.get();
+        services.clipboard = clipboard.get();
         NSWindow* __weak weakWindow = window;
         services.setWindowTitle = [weakWindow](const std::string& title) {
             // May be called from the main thread only (shell is main-thread

@@ -7,6 +7,7 @@
 #include "core/geometry/Size.hpp"
 #include "render/ViewerState.hpp"
 #include "ui/ScrollBar.hpp"
+#include "ui/ViewerTextBridge.hpp"
 #include "ui/Widget.hpp"
 
 #include <atomic>
@@ -123,6 +124,17 @@ public:
     // click wants keyboard focus (arrow keys etc.).
     void setOnFocusRequested(std::function<void()> onFocusRequested);
 
+    // Installs the text interaction bridge (non-owning; may be null to
+    // disable text features). The viewport calls warmPage() for the tracked
+    // page and its neighbors, routes mouse selection through the bridge and
+    // paints the bridge's overlay rects above the tiles.
+    void setTextBridge(IViewerTextBridge* bridge) { textBridge_ = bridge; }
+
+    // Scrolls the view so that the given rect of page `index` (page display
+    // points) is centered in the viewport (clamped to the content bounds);
+    // keeps the current zoom. Used by search-result and outline navigation.
+    void revealContentRect(std::size_t pageIndex, const core::Rect& pageRectPoints);
+
     core::Size preferredSize(const PaintContext&) const override { return frame().size; }
 
     // Scroll: pinch-zoom (command/ctrl) anchored at the pointer, plain
@@ -146,6 +158,8 @@ private:
     void paintPageTiles(std::size_t pageIndex, const core::Rect& pageFramePoints,
                         const core::Rect& pageInViewport, const core::Rect& contentRect,
                         std::uint64_t revision, PaintContext& context) const;
+    void paintPageOverlays(std::size_t pageIndex, const core::Rect& pageFramePoints,
+                           PaintContext& context) const;
     void requestTile(const render::TileKey& key, const render::RasterParams& params) const;
     core::Point clampedScrollOffset(const core::Point& offset) const;
     void resolveFitMode();
@@ -157,6 +171,9 @@ private:
     void syncScrollbars();
     // Recomputes the tracked page from the visible rect; fires the callback.
     void updateCurrentPage();
+    // Page display points under a viewport-local point, or nullopt when the
+    // point is outside every visible page.
+    std::optional<std::pair<std::size_t, core::Point>> pagePointAt(const core::Point& localPoint) const;
 
     core::DocumentId documentId_;
     const render::PageLayout* layout_ = nullptr;
@@ -176,6 +193,11 @@ private:
     // widget tree; raw pointers valid for the viewport's lifetime).
     ScrollBar* vScrollBar_ = nullptr;
     ScrollBar* hScrollBar_ = nullptr;
+
+    // Text interaction bridge (non-owning; null = text features disabled).
+    IViewerTextBridge* textBridge_ = nullptr;
+    // True while a mouse drag is selecting text.
+    bool selecting_ = false;
 
     // Alive flag shared with in-flight render callbacks (see class comment).
     std::shared_ptr<std::atomic<bool>> aliveFlag_;

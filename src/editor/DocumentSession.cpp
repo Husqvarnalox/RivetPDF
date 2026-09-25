@@ -34,23 +34,27 @@ DocumentSession::DocumentSession(core::DocumentId id,
                                  std::vector<PageMeta> pages,
                                  std::unique_ptr<pdf::PdfDocument> document,
                                  core::TaskScheduler& scheduler,
-                                 core::IMainThreadDispatcher* mainDispatcher)
+                                 core::IMainThreadDispatcher* mainDispatcher,
+                                 std::shared_ptr<const std::unordered_map<core::PageId, std::size_t>> pageIndexMap)
     : id_(id),
       path_(std::move(path)),
       info_(std::move(info)),
+      mainDispatcher_(mainDispatcher),
       pages_(std::move(pages)),
       document_(std::move(document)),
       executor_(scheduler),
       renderer_(id_,
                 *document_,
-                [indexMap = buildPageIndexMap(pages_)](core::PageId pageId) -> std::size_t {
+                [indexMap = pageIndexMap](core::PageId pageId) -> std::size_t {
                     const auto it = indexMap->find(pageId);
                     return it == indexMap->end() ? kInvalidPageIndex : it->second;
                 },
                 cache_,
                 scheduler,
                 executor_,
-                mainDispatcher) {
+                mainDispatcher),
+      pageIndexMap_(std::move(pageIndexMap)),
+      textService_(*this) {
     std::vector<render::PageLayout::PageInfo> layoutPages;
     layoutPages.reserve(pages_.size());
     for (const PageMeta& page : pages_) {
@@ -91,8 +95,16 @@ core::Result<std::unique_ptr<DocumentSession>> DocumentSession::create(
         pages.push_back(PageMeta{pageIds.next(), page->sizePoints, page->rotation});
     }
 
+    // Build the index map BEFORE pages is moved into the constructor.
+    auto pageIndexMap = buildPageIndexMap(pages);
     return std::unique_ptr<DocumentSession>(new DocumentSession(
-        mintDocumentId(), path, info, std::move(pages), std::move(document), scheduler, mainDispatcher));
+        mintDocumentId(), path, info, std::move(pages), std::move(document), scheduler,
+        mainDispatcher, std::move(pageIndexMap)));
+}
+
+std::size_t DocumentSession::pageIndexFor(core::PageId pageId) const {
+    const auto it = pageIndexMap_->find(pageId);
+    return it == pageIndexMap_->end() ? kInvalidPage : it->second;
 }
 
 core::PageId DocumentSession::pageId(std::size_t index) const {

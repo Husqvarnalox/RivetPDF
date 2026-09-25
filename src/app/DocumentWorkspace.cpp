@@ -23,11 +23,14 @@ DocumentTab::DocumentTab(std::filesystem::path path, std::string title)
 
 void DocumentTab::attachSession(std::unique_ptr<editor::DocumentSession> session) {
     session_ = std::move(session);
+    search_ = std::make_unique<editor::TextSearchController>(*session_, session_->textService());
     state_ = State::Ready;
     errorText_.clear();
 }
 
 void DocumentTab::setError(std::string text) {
+    // The search controller references the session, so it dies first.
+    search_.reset();
     session_.reset();
     state_ = State::Error;
     errorText_ = std::move(text);

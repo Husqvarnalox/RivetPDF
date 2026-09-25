@@ -277,6 +277,50 @@ void PdfViewport::updateCurrentPage() {
         currentPage_ = page;
         if (onPageChanged_) onPageChanged_(page);
     }
+    // Keep the text of the tracked page (and its neighbors) warm so click
+    // selection and search hit a loaded page.
+    if (textBridge_ != nullptr && layout_ != nullptr && layout_->pageCount() > 0) {
+        textBridge_->warmPage(currentPage_);
+        if (currentPage_ > 0) textBridge_->warmPage(currentPage_ - 1);
+        if (currentPage_ + 1 < layout_->pageCount()) textBridge_->warmPage(currentPage_ + 1);
+    }
+}
+
+// Maps a viewport-local point to the page display point it lands on: finds
+// the visible page whose frame (in viewport space) contains the point, then
+// converts to page-local display points by inverting the frame mapping.
+std::optional<std::pair<std::size_t, core::Point>> PdfViewport::pagePointAt(const core::Point& localPoint) const {
+    if (layout_ == nullptr || source_ == nullptr) return std::nullopt;
+    const double zoomFactor = state_->zoom().zoom();
+    const core::Rect contentRect{state_->scrollOffsetPoints(), frame().size / zoomFactor};
+    const std::optional<std::pair<std::size_t, std::size_t>> visible =
+        layout_->visiblePageRange(contentRect);
+    if (!visible.has_value()) return std::nullopt;
+    for (std::size_t i = visible->first; i <= visible->second; ++i) {
+        const core::Rect pageFrame = layout_->pageFramePoints(i);
+        const core::Rect pageInViewport{(pageFrame.origin - state_->scrollOffsetPoints()) * zoomFactor,
+                                        pageFrame.size * zoomFactor};
+        if (pageInViewport.contains(localPoint)) {
+            const core::Point pagePoint = (localPoint - pageInViewport.origin) / zoomFactor +
+                                          core::Point{};
+            // pagePoint is relative to the page frame's top-left, which in
+            // page display space is (0, 0): exactly the display-space point.
+            return std::pair<std::size_t, core::Point>{i, pagePoint};
+        }
+    }
+    return std::nullopt;
+}
+
+void PdfViewport::revealContentRect(std::size_t pageIndex, const core::Rect& pageRectPoints) {
+    if (layout_ == nullptr || pageIndex >= layout_->pageCount()) return;
+    const double zoomFactor = state_->zoom().zoom();
+    const core::Rect pageFrame = layout_->pageFramePoints(pageIndex);
+    // Target: page rect center at the viewport center.
+    const core::Point targetContent = pageFrame.origin + pageRectPoints.center();
+    const core::Point halfViewport{frame().size.width / (2.0 * zoomFactor),
+                                   frame().size.height / (2.0 * zoomFactor)};
+    const core::Point desired = targetContent - halfViewport;
+    setScrollOffsetPoints(desired);
 }
 
 bool PdfViewport::onMouse(const PointerEvent& event) {
@@ -306,6 +350,39 @@ bool PdfViewport::onMouse(const PointerEvent& event) {
         scrollByContentPoints(event.scrollDelta / state_->zoom().zoom());
         event.accepted = true;
         return true;
+    }
+
+    // Text selection through the bridge (button 1, document bound).
+    if (textBridge_ != nullptr && layout_ != nullptr) {
+        if (event.type == PointerEventType::Down && event.button == 1) {
+            const auto hit = pagePointAt(event.position);
+            if (hit.has_value()) {
+                const std::optional<std::uint32_t> charIndex =
+                    textBridge_->charIndexAtPoint(hit->first, hit->second);
+                if (charIndex.has_value()) {
+                    selecting_ = true;
+                    textBridge_->selectionDragBegan(hit->first, *charIndex, event.modifiers.shift);
+                    event.accepted = true;
+                    return true;
+                }
+            }
+            // A plain click that hit no text clears the selection.
+            textBridge_->selectionCleared();
+        } else if (event.type == PointerEventType::Move && selecting_) {
+            const auto hit = pagePointAt(event.position);
+            if (hit.has_value()) {
+                const std::optional<std::uint32_t> charIndex =
+                    textBridge_->charIndexAtPoint(hit->first, hit->second);
+                if (charIndex.has_value()) textBridge_->selectionDragMoved(hit->first, *charIndex);
+            }
+            event.accepted = true;
+            return true;
+        } else if (event.type == PointerEventType::Up && selecting_) {
+            selecting_ = false;
+            textBridge_->selectionDragEnded();
+            event.accepted = true;
+            return true;
+        }
     }
 
     // Scrollbars (and later overlays) live in the children; route to them in
@@ -450,9 +527,27 @@ void PdfViewport::paintSelf(PaintContext& context) const {
             context.fillRect(pageInViewport, kPageBackground);
             context.strokeRect(pageInViewport, kPageBorder, 1.0);
             paintPageTiles(i, pageFrame, pageInViewport, contentRect, revision, context);
+            paintPageOverlays(i, pageFrame, context);
         }
     }
     context.popClip();
+}
+
+// Overlay pass (selection highlights, search matches): rects arrive in page
+// display space from the bridge and map to viewport space exactly like tile
+// destinations. Painted AFTER the tiles, never baked into them.
+void PdfViewport::paintPageOverlays(std::size_t pageIndex, const core::Rect& pageFramePoints,
+                                    PaintContext& context) const {
+    if (textBridge_ == nullptr) return;
+    const std::vector<OverlayRect> overlays = textBridge_->overlayRects(pageIndex);
+    if (overlays.empty()) return;
+    const double zoomFactor = state_->zoom().zoom();
+    for (const OverlayRect& overlay : overlays) {
+        const core::Rect dest{(pageFramePoints.origin + overlay.rect.origin - state_->scrollOffsetPoints()) *
+                                  zoomFactor,
+                              overlay.rect.size * zoomFactor};
+        context.fillRect(dest, overlay.color);
+    }
 }
 
 // Tile geometry: tiles live on a kTileSize x kTileSize DEVICE-pixel grid

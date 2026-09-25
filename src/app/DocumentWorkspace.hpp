@@ -5,6 +5,8 @@
 #include "core/async/IMainThreadDispatcher.hpp"
 #include "core/async/TaskScheduler.hpp"
 #include "editor/DocumentSession.hpp"
+#include "editor/SelectionModel.hpp"
+#include "editor/TextSearchController.hpp"
 #include "pdf/PdfEngine.hpp"
 #include "render/ViewerState.hpp"
 
@@ -43,7 +45,16 @@ public:
     State state() const { return state_; }
     const std::string& errorText() const { return errorText_; }
     editor::DocumentSession* session() { return session_.get(); }
+    const editor::DocumentSession* session() const { return session_.get(); }
     render::ViewerState& viewState() { return viewState_; }
+    const render::ViewerState& viewState() const { return viewState_; }
+
+    // Per-tab text-interaction state. The search controller exists only in
+    // the Ready state (it references the session and its text service).
+    editor::SelectionModel& selection() { return selection_; }
+    const editor::SelectionModel& selection() const { return selection_; }
+    editor::TextSearchController* search() { return search_.get(); }
+    const editor::TextSearchController* search() const { return search_.get(); }
 
     std::size_t currentPage() const { return currentPage_; }
     void setCurrentPage(std::size_t page) { currentPage_ = page; }
@@ -66,6 +77,8 @@ private:
     std::string errorText_;
     std::unique_ptr<editor::DocumentSession> session_;
     render::ViewerState viewState_;
+    editor::SelectionModel selection_;
+    std::unique_ptr<editor::TextSearchController> search_;
     std::size_t currentPage_ = 0;
     bool viewStateInitialized_ = false;
 };
@@ -123,6 +136,10 @@ public:
     std::size_t tabCount() const { return tabs_.size(); }
     DocumentTab* tab(std::size_t index);
     DocumentTab* activeTab();
+    // Const reads for text assembly/highlight painting (shallow const: the
+    // tabs are owned through unique_ptrs, the pointees stay mutable).
+    DocumentTab* tab(std::size_t index) const { return const_cast<DocumentWorkspace*>(this)->tab(index); }
+    DocumentTab* activeTab() const { return const_cast<DocumentWorkspace*>(this)->activeTab(); }
     std::size_t activeIndex() const { return activeIndex_; }
     bool isEmpty() const { return tabs_.empty(); }
 
