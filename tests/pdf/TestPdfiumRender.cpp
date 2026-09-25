@@ -494,3 +494,52 @@ RIVET_TEST(pdfiumRenderAlphaBlendIsMidGray) {
     const auto* center = base + 300u * stride + 316u * 4;
     CHECK_EQ(center[3], 255u);
 }
+
+// Print banding contract (editor::PrintSpooler): horizontal strips whose
+// point rects start at row / density render to the SAME pixels as the full
+// page - bands are at least the planned row count tall (at most one extra
+// row from ceil rounding) and stitch without seams or offsets.
+RIVET_TEST(pdfiumRenderPrintBandsStitchToFullPage) {
+    auto engine = requirePdfiumEngine();
+    if (!engine) {
+        return;
+    }
+    auto doc = openFixture(*engine, "rot90.pdf"); // landscape, asymmetric
+    if (!doc) {
+        return;
+    }
+    const double density = 150.0 / 72.0;
+    const double pageW = 792.0;
+    const double pageH = 612.0;
+    auto full = renderOrBail(*doc, core::Rect{0.0, 0.0, pageW, pageH}, density);
+    if (!full) {
+        return;
+    }
+    const std::uint32_t rowsPerBand = 97; // deliberately not a divisor
+    const std::uint32_t totalRows = full->height();
+    std::size_t differing = 0;
+    for (std::uint32_t row = 0; row < totalRows; row += rowsPerBand) {
+        const std::uint32_t endRow = std::min(row + rowsPerBand, totalRows);
+        const double top = row / density;
+        const double bottom = endRow == totalRows ? pageH : endRow / density;
+        auto band = renderOrBail(*doc, core::Rect{0.0, top, pageW, bottom - top}, density);
+        if (!band) {
+            return;
+        }
+        CHECK_EQ(band->width(), full->width());
+        CHECK_GE(band->height(), endRow - row);
+        CHECK_LE(band->height(), endRow - row + 1);
+        const auto* bandBytes = reinterpret_cast<const std::uint8_t*>(band->data());
+        const auto* fullBytes = reinterpret_cast<const std::uint8_t*>(full->data());
+        for (std::uint32_t y = 0; y < endRow - row; ++y) {
+            for (std::size_t x = 0; x < std::size_t{full->width()} * 4; ++x) {
+                const int a = bandBytes[y * band->stride() + x];
+                const int b = fullBytes[(row + y) * full->stride() + x];
+                if (std::abs(a - b) > 8) {
+                    ++differing;
+                }
+            }
+        }
+    }
+    CHECK_EQ(differing, std::size_t{0});
+}

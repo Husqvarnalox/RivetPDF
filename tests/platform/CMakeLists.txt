@@ -1,7 +1,8 @@
-# macOS-only: the clipboard test drives the AppKit-backed implementation.
+# macOS-only: the clipboard and print tests drive the AppKit-backed implementations.
 if(APPLE)
     add_executable(rivet_platform_tests
         TestClipboard.cpp
+        TestPrintService.mm
     )
 
     add_test(NAME platform COMMAND rivet_platform_tests)

@@ -3,125 +3,286 @@
 
 #import <AppKit/AppKit.h>
 
+#include <algorithm>
+#include <string>
+#include <system_error>
+
 namespace {
-constexpr double kMaxPrintDensity = 2.0; // device px per point (≈144 dpi at cap)
+
+rivet::core::Error printError(rivet::core::ErrorCode code, std::string message) {
+    return rivet::core::makeError(code, std::move(message), "platform");
+}
+
+// Owns an NSPrintInfo inside the portable PrintSettings handle.
+std::shared_ptr<void> wrapPrintInfo(NSPrintInfo* info) {
+    return std::shared_ptr<void>(const_cast<void*>(CFBridgingRetain(info)),
+                                 [](void* retained) { CFBridgingRelease(retained); });
+}
+
+NSPrintInfo* unwrapPrintInfo(const std::shared_ptr<void>& handle) {
+    if (handle == nullptr) return nil;
+    id object = (__bridge id)handle.get();
+    return [object isKindOfClass:[NSPrintInfo class]] ? (NSPrintInfo*)object : nil;
+}
+
+// Straight-alpha BGRA (core::PixelFormat::BGRA8888Straight) as CoreGraphics
+// describes it: 32-bit little-endian ARGB words, non-premultiplied alpha.
+constexpr CGBitmapInfo kBandBitmapInfo = static_cast<CGBitmapInfo>(
+    static_cast<unsigned>(kCGImageAlphaFirst) | static_cast<unsigned>(kCGBitmapByteOrder32Little));
+
+// A file-backed CGImage over one band. Validates the file size first:
+// CGDataProviderCreateWithURL reads lazily and would not notice a short or
+// missing file until drawing.
+rivet::core::Result<CGImageRef> createBandImage(const rivet::platform::PrintSpoolBand& band) {
+    const std::size_t minStride = std::size_t{band.pixelWidth} * 4;
+    if (band.pixelWidth == 0 || band.pixelHeight == 0 || band.stride < minStride ||
+        band.stride > SIZE_MAX / band.pixelHeight) {
+        return std::unexpected(printError(rivet::core::ErrorCode::InvalidArgument,
+                                          "invalid print band geometry"));
+    }
+    std::error_code error;
+    const std::uintmax_t size = std::filesystem::file_size(band.file, error);
+    if (error || size != band.stride * band.pixelHeight) {
+        return std::unexpected(printError(rivet::core::ErrorCode::Io,
+                                          "print spool file is missing or truncated: " +
+                                              band.file.filename().string()));
+    }
+    const std::string path = band.file.string();
+    CFURLRef url = CFURLCreateFromFileSystemRepresentation(
+        kCFAllocatorDefault, reinterpret_cast<const UInt8*>(path.c_str()),
+        static_cast<CFIndex>(path.size()), false);
+    CGDataProviderRef provider = url != nullptr ? CGDataProviderCreateWithURL(url) : nullptr;
+    if (url != nullptr) CFRelease(url);
+    if (provider == nullptr) {
+        return std::unexpected(printError(rivet::core::ErrorCode::Io, "cannot open print spool file"));
+    }
+    CGColorSpaceRef colorSpace = CGColorSpaceCreateDeviceRGB();
+    CGImageRef image = CGImageCreate(band.pixelWidth, band.pixelHeight, 8, 32, band.stride,
+                                     colorSpace, kBandBitmapInfo, provider, nullptr, false,
+                                     kCGRenderingIntentDefault);
+    CGColorSpaceRelease(colorSpace);
+    CGDataProviderRelease(provider);
+    if (image == nullptr) {
+        return std::unexpected(printError(rivet::core::ErrorCode::Io, "cannot decode print spool file"));
+    }
+    return image;
+}
+
 } // namespace
 
-// The print-time drawing surface: one page per -rectForPage, content rendered
-// by the Rivet callback into a bitmap and composited into the print context.
-// AppKit drives page ranges and paper; this view only supplies geometry and
-// pixels. NOTE: ObjC classes must live at global scope (no C++ namespaces).
-@interface RivetPrintView : NSView {
+// The print-time drawing surface: one spooled page per AppKit page. Pages
+// are laid out at the view origin (page identity comes from the operation's
+// current page), each scaled down uniformly to fit the printable area when
+// it is larger (never up); orientation follows the page's display size.
+// drawRect only COMPOSITES the pre-rendered band images. NOTE: ObjC classes
+// must live at global scope (no C++ namespaces).
+@interface RivetSpoolPrintView : NSView {
 @public
-    rivet::platform::PrintRequest* request;
+    const rivet::platform::PrintSpoolDescription* spool;
+    rivet::core::Error* failure; // first draw-time failure (owned by printSpool)
+    NSSize printableSize;        // view units available on one sheet
 }
-- (instancetype)initWithRequest:(rivet::platform::PrintRequest*)printRequest;
-- (BOOL)knowsPageRange:(NSRange*)range;
-- (NSRect)rectForPage:(NSInteger)pageIndex;
-- (void)drawRect:(NSRect)dirtyRect;
+- (instancetype)initWithSpool:(const rivet::platform::PrintSpoolDescription*)printSpool
+                      failure:(rivet::core::Error*)drawFailure
+                printableSize:(NSSize)size;
 @end
 
-@implementation RivetPrintView
-- (instancetype)initWithRequest:(rivet::platform::PrintRequest*)printRequest {
-    // The frame is irrelevant: rectForPage supplies each page's geometry.
-    self = [super initWithFrame:NSMakeRect(0, 0, 612, 792)];
+@implementation RivetSpoolPrintView
+- (instancetype)initWithSpool:(const rivet::platform::PrintSpoolDescription*)printSpool
+                      failure:(rivet::core::Error*)drawFailure
+                printableSize:(NSSize)size {
+    // The frame must cover every page rect (all laid out at the origin).
+    NSSize extent = NSMakeSize(1.0, 1.0);
+    self = [super initWithFrame:NSZeroRect];
     if (self != nil) {
-        request = printRequest;
+        spool = printSpool;
+        failure = drawFailure;
+        printableSize = size;
+        for (std::size_t index = 0; index < spool->pages.size(); ++index) {
+            const NSRect rect = [self rectForPage:static_cast<NSInteger>(index + 1)];
+            extent.width = std::max(extent.width, NSWidth(rect));
+            extent.height = std::max(extent.height, NSHeight(rect));
+        }
+        [self setFrameSize:extent];
     }
     return self;
 }
 
 - (BOOL)isFlipped {
-    // Rivet's page display space is top-left origin / y-down, matching a
-    // flipped view 1:1 (same convention as the screen paint path).
+    // Rivet's page display space is top-left origin / y-down.
     return YES;
 }
 
 - (BOOL)knowsPageRange:(NSRange*)range {
     range->location = 1; // AppKit page numbers are 1-based
-    range->length = request->pageSizesPoints.size();
+    range->length = spool->pages.size();
     return YES;
 }
 
-- (NSRect)rectForPage:(NSInteger)pageIndex {
-    const std::size_t index = static_cast<std::size_t>(pageIndex - 1);
-    if (index >= request->pageSizesPoints.size()) return NSZeroRect;
-    const rivet::core::Size& size = request->pageSizesPoints[index];
-    return NSMakeRect(0, 0, size.width, size.height);
+// Uniform scale (<= 1) that fits the page on one sheet.
+- (double)fitScaleForPage:(const rivet::platform::PrintSpoolPage&)page {
+    const rivet::core::Size size = page.displaySizePoints;
+    if (size.isEmpty() || printableSize.width <= 0.0 || printableSize.height <= 0.0) return 1.0;
+    return std::min({1.0, printableSize.width / size.width, printableSize.height / size.height});
+}
+
+- (NSRect)rectForPage:(NSInteger)pageNumber {
+    const auto index = static_cast<std::size_t>(pageNumber - 1);
+    if (pageNumber < 1 || index >= spool->pages.size()) return NSZeroRect;
+    const rivet::platform::PrintSpoolPage& page = spool->pages[index];
+    const double scale = [self fitScaleForPage:page];
+    return NSMakeRect(0.0, 0.0, page.displaySizePoints.width * scale,
+                      page.displaySizePoints.height * scale);
+}
+
+- (void)failWith:(rivet::core::Error)error {
+    if (failure->code == rivet::core::ErrorCode::None) *failure = std::move(error);
+    // Cancels the job: -runOperation returns NO and nothing is output
+    // (tests/platform/TestPrintService.mm verifies this).
+    [NSPrintOperation currentOperation].printInfo.jobDisposition = NSPrintCancelJob;
 }
 
 - (void)drawRect:(NSRect)dirtyRect {
-    if (request == nullptr || request->renderPage == nullptr) return;
-    // The visible page: AppKit clips and translates the context per page via
-    // rectForPage; the page under draw is the one whose rect intersects the
-    // dirty rect (one page per sheet in this flow).
-    NSGraphicsContext* graphicsContext = [NSGraphicsContext currentContext];
-    if (graphicsContext == nil) return;
-    CGContextRef context = graphicsContext.CGContext;
-    if (context == nullptr) return;
-
-    // AppKit may draw a page more than once; page identity comes from the
-    // print operation's current page (the context is already set up for it).
-    const NSInteger current = [[NSPrintOperation currentOperation] currentPage];
-    const std::size_t index = static_cast<std::size_t>(current - 1);
-    if (index >= request->pageSizesPoints.size()) return;
-
-    const rivet::core::Size size = request->pageSizesPoints[index];
-    // Density cap: bounded full-page bitmaps (see the header note on banding).
-    // The callback renders the whole page (the shell binds the page rect).
-    auto bitmap = request->renderPage(index, kMaxPrintDensity);
-    if (!bitmap.has_value()) {
-        // Leave the sheet blank rather than failing the whole operation.
+    (void)dirtyRect;
+    NSPrintOperation* operation = [NSPrintOperation currentOperation];
+    const auto index = static_cast<std::size_t>(operation.currentPage - 1);
+    if (operation == nil || index >= spool->pages.size()) return;
+    if (failure->code != rivet::core::ErrorCode::None) return; // job already cancelled
+    CGContextRef context = [NSGraphicsContext currentContext].CGContext;
+    if (context == nullptr) {
+        [self failWith:printError(rivet::core::ErrorCode::Internal, "no print graphics context")];
         return;
     }
-    const rivet::core::Bitmap& page = *bitmap;
 
-    const auto bitmapInfo = static_cast<CGImageAlphaInfo>(
-        static_cast<unsigned>(kCGImageAlphaFirst) |
-        static_cast<unsigned>(kCGBitmapByteOrder32Little));
-    CGColorSpaceRef colorSpace = CGColorSpaceCreateDeviceRGB();
-    CGDataProviderRef provider =
-        CGDataProviderCreateWithData(nullptr, page.data(), page.sizeBytes(), nullptr);
-    CGImageRef image =
-        CGImageCreate(page.width(), page.height(), 8, 32, page.stride(), colorSpace, bitmapInfo,
-                      provider, nullptr, false, kCGRenderingIntentDefault);
-    CGColorSpaceRelease(colorSpace);
-    if (image == nullptr) return;
-
+    const rivet::platform::PrintSpoolPage& page = spool->pages[index];
+    const double scale = [self fitScaleForPage:page];
     CGContextSaveGState(context);
-    // Flipped view: flip around the page rect so the bitmap's first row lands
-    // on the page's top edge.
-    CGContextTranslateCTM(context, 0.0, size.height);
-    CGContextScaleCTM(context, 1.0, -1.0);
-    CGContextDrawImage(context, CGRectMake(0.0, 0.0, size.width, size.height), image);
+    CGContextScaleCTM(context, scale, scale);
+    // Bands abut exactly; antialiased image edges would leave hairline seams.
+    CGContextSetShouldAntialias(context, false);
+    CGContextSetInterpolationQuality(context, kCGInterpolationHigh);
+    for (const rivet::platform::PrintSpoolBand& band : page.bands) {
+        auto image = createBandImage(band);
+        if (!image.has_value()) {
+            CGContextRestoreGState(context);
+            [self failWith:image.error()];
+            return;
+        }
+        const rivet::core::Rect& rect = band.rectPoints;
+        CGContextSaveGState(context);
+        // Flipped view: flip around the band so the image's first row lands
+        // on the band's top edge.
+        CGContextTranslateCTM(context, rect.minX(), rect.maxY());
+        CGContextScaleCTM(context, 1.0, -1.0);
+        CGContextDrawImage(context, CGRectMake(0.0, 0.0, rect.size.width, rect.size.height), *image);
+        CGContextRestoreGState(context);
+        CGImageRelease(*image);
+    }
     CGContextRestoreGState(context);
-    CGImageRelease(image);
 }
 @end
 
 namespace rivet::platform {
 
-core::Status MacosPrintService::printDocument(const PrintRequest& printRequest) {
-    if (printRequest.pageSizesPoints.empty()) {
-        return std::unexpected(
-            core::Error{core::ErrorCode::InvalidArgument, "nothing to print", "platform"});
+core::Result<PrintSettings> MacosPrintService::choosePrintSettings(const PrintSetup& setup) {
+    if (setup.pageCount == 0) {
+        return std::unexpected(printError(core::ErrorCode::InvalidArgument, "nothing to print"));
     }
-    request_ = printRequest;
+    NSPrintInfo* info = [[NSPrintInfo sharedPrintInfo] copy];
+    const core::Size first = setup.firstPageSizePoints;
+    info.orientation = first.width > first.height ? NSPaperOrientationLandscape
+                                                  : NSPaperOrientationPortrait;
+    NSMutableDictionary* dictionary = info.dictionary;
+    dictionary[NSPrintAllPages] = @YES;
+    dictionary[NSPrintFirstPage] = @1;
+    dictionary[NSPrintLastPage] = @(setup.pageCount);
 
-    RivetPrintView* view = [[RivetPrintView alloc] initWithRequest:&request_];
-    // The user's shared print info drives the dialog (printer, page range,
-    // paper). PDF output via the panel's PDF button needs no printer.
-    NSPrintInfo* printInfo = [[NSPrintInfo sharedPrintInfo] copy];
-    NSPrintOperation* operation =
-        [NSPrintOperation printOperationWithView:view printInfo:printInfo];
-    operation.showsPrintPanel = YES;
-    operation.canSpawnSeparateThread = NO;
-    const BOOL ran = [operation runOperation];
-    request_.renderPage = nullptr;
-    request_.pageSizesPoints.clear();
-    if (!ran) {
-        return std::unexpected(core::Error{core::ErrorCode::Cancelled, "print cancelled", "platform"});
+    // No preview: a preview would rasterize pages on the main thread.
+    NSPrintPanel* panel = [NSPrintPanel printPanel];
+    panel.options = NSPrintPanelShowsCopies | NSPrintPanelShowsPageRange |
+                    NSPrintPanelShowsPaperSize | NSPrintPanelShowsOrientation |
+                    NSPrintPanelShowsScaling;
+    if ([panel runModalWithPrintInfo:info] != NSModalResponseOK) {
+        return std::unexpected(printError(core::ErrorCode::Cancelled, "print cancelled"));
     }
+
+    PrintSettings settings;
+    settings.jobTitle = setup.jobTitle;
+    settings.firstPage = 0;
+    settings.lastPage = setup.pageCount - 1;
+    if (![dictionary[NSPrintAllPages] boolValue]) {
+        // AppKit page numbers are 1-based; clamp to the document.
+        const NSInteger from = [dictionary[NSPrintFirstPage] integerValue];
+        const NSInteger to = [dictionary[NSPrintLastPage] integerValue];
+        const auto count = static_cast<NSInteger>(setup.pageCount);
+        const NSInteger clampedFrom = std::clamp<NSInteger>(from, 1, count);
+        const NSInteger clampedTo = std::clamp<NSInteger>(to, 1, count);
+        if (clampedTo < clampedFrom) {
+            return std::unexpected(printError(core::ErrorCode::InvalidArgument,
+                                              "the selected page range is empty"));
+        }
+        settings.firstPage = static_cast<std::size_t>(clampedFrom - 1);
+        settings.lastPage = static_cast<std::size_t>(clampedTo - 1);
+    }
+    settings.platformHandle = wrapPrintInfo(info);
+    return settings;
+}
+
+PrintSettings MacosPrintService::settingsForSavingPdf(const std::filesystem::path& output,
+                                                      std::string jobTitle) {
+    NSPrintInfo* info = [[NSPrintInfo sharedPrintInfo] copy];
+    info.jobDisposition = NSPrintSaveJob;
+    const std::string path = output.string();
+    info.dictionary[NSPrintJobSavingURL] =
+        [NSURL fileURLWithPath:[NSString stringWithUTF8String:path.c_str()]];
+    PrintSettings settings;
+    settings.jobTitle = std::move(jobTitle);
+    settings.platformHandle = wrapPrintInfo(info);
+    return settings;
+}
+
+core::Status MacosPrintService::printSpool(const PrintSettings& settings,
+                                           const PrintSpoolDescription& spool) {
+    NSPrintInfo* chosen = unwrapPrintInfo(settings.platformHandle);
+    if (chosen == nil) {
+        return std::unexpected(printError(core::ErrorCode::InvalidArgument,
+                                          "print settings did not come from this print service"));
+    }
+    if (spool.pages.empty()) {
+        return std::unexpected(printError(core::ErrorCode::InvalidArgument, "nothing to print"));
+    }
+
+    NSPrintInfo* info = [chosen copy];
+    // The spool already contains exactly the chosen pages: print all of it.
+    info.dictionary[NSPrintAllPages] = @YES;
+    info.dictionary[NSPrintFirstPage] = @1;
+    info.dictionary[NSPrintLastPage] = @(spool.pages.size());
+    // Print into the printer's imageable area, centered.
+    const NSSize paper = info.paperSize;
+    const NSRect imageable = info.imageablePageBounds;
+    info.leftMargin = NSMinX(imageable);
+    info.bottomMargin = NSMinY(imageable);
+    info.rightMargin = std::max(0.0, paper.width - NSMaxX(imageable));
+    info.topMargin = std::max(0.0, paper.height - NSMaxY(imageable));
+    info.horizontallyCentered = YES;
+    info.verticallyCentered = YES;
+    const double userScale = info.scalingFactor > 0.0 ? info.scalingFactor : 1.0;
+    const NSSize printable = NSMakeSize(NSWidth(imageable) / userScale, NSHeight(imageable) / userScale);
+
+    core::Error failure;
+    RivetSpoolPrintView* view = [[RivetSpoolPrintView alloc] initWithSpool:&spool
+                                                                   failure:&failure
+                                                             printableSize:printable];
+    NSPrintOperation* operation = [NSPrintOperation printOperationWithView:view printInfo:info];
+    operation.showsPrintPanel = NO;
+    operation.showsProgressPanel = showsProgressPanel_ ? YES : NO;
+    operation.canSpawnSeparateThread = NO; // the spool must outlive the drawing
+    if (!settings.jobTitle.empty()) {
+        operation.jobTitle = [NSString stringWithUTF8String:settings.jobTitle.c_str()];
+    }
+    const BOOL ran = [operation runOperation];
+    if (failure.code != core::ErrorCode::None) return std::unexpected(failure);
+    if (!ran) return std::unexpected(printError(core::ErrorCode::Cancelled, "print cancelled"));
     return core::ok();
 }
 

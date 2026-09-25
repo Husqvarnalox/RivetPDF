@@ -7,6 +7,7 @@ add_executable(rivet_editor_tests
     TestCommandStack.cpp
     TestDocumentRenderer.cpp
     TestDocumentSession.cpp
+    TestPrintSpooler.cpp
 )
 
 add_test(NAME editor COMMAND rivet_editor_tests)

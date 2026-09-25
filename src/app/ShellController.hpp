@@ -3,6 +3,7 @@
 
 #include "app/DocumentWorkspace.hpp"
 #include "app/PasswordPromptController.hpp"
+#include "app/PrintCoordinator.hpp"
 #include "app/SearchBarController.hpp"
 #include "app/ShellContext.hpp"
 #include "app/SidebarController.hpp"
@@ -102,6 +103,9 @@ private:
     void setPresentationMode(bool enabled);
     bool presentationMode() const { return presentationMode_; }
     void handlePrintRequest();
+    // Cancels (and waits for) a print spool that renders the tab's document;
+    // must run before the tab's session is destroyed.
+    void cancelPrintForTab(std::size_t index);
 
     platform::ShellServices services_;
     // Declaration order = reverse destruction order: the feature controllers
@@ -134,6 +138,10 @@ private:
     std::unique_ptr<SearchBarController> searchBar_;
     std::unique_ptr<PasswordPromptController> passwordPrompt_;
     std::unique_ptr<StatusBarController> statusBar_;
+
+    // Print flow (panel -> worker spool -> platform print). Declared last:
+    // destroyed first, while the sessions its worker borrows are alive.
+    PrintCoordinator printCoordinator_;
 };
 
 // Factory used by the platform entry point (main).

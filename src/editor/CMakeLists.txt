@@ -8,6 +8,7 @@ add_library(rivet_editor STATIC
     CommandStack.cpp
     DocumentRenderer.cpp
     DocumentSession.cpp
+    PrintSpooler.cpp
 )
 
 add_library(rivet::editor ALIAS rivet_editor)

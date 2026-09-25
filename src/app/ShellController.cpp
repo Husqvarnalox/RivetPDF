@@ -27,9 +27,14 @@ ShellController::ShellController(const platform::ShellServices& services)
     : services_(services),
       scheduler_(0),
       engine_(pdf::createEngine()),
-      workspace_(*engine_, scheduler_, services.mainDispatcher) {}
+      workspace_(*engine_, scheduler_, services.mainDispatcher),
+      printCoordinator_(scheduler_, services.mainDispatcher, services.printService,
+                        [this](std::string text) { setStatus(std::move(text)); }) {}
 
 ShellController::~ShellController() {
+    // A print spool borrows a session's document: stop it before anything
+    // is torn down.
+    printCoordinator_.cancel();
     // The viewport must drop its render-source/layout/state pointers before
     // the sessions and the widget tree die.
     viewport_->clearDocument();
@@ -61,7 +66,10 @@ void ShellController::buildWidgets() {
     auto tabStrip = std::make_unique<ui::TabStrip>();
     tabStrip_ = tabStrip.get();
     tabStrip_->setOnTabActivated([this](std::size_t index) { workspace_.activateTab(index); });
-    tabStrip_->setOnTabCloseRequested([this](std::size_t index) { workspace_.closeTab(index); });
+    tabStrip_->setOnTabCloseRequested([this](std::size_t index) {
+        cancelPrintForTab(index);
+        workspace_.closeTab(index);
+    });
     root_->addChild(std::move(tabStrip));
 
     auto toolbar = std::make_unique<ui::Toolbar>(kToolbarHeight);
@@ -296,6 +304,9 @@ void ShellController::setFocus(ui::Widget* widget) {
 }
 
 bool ShellController::handleKeyEvent(const ui::KeyEvent& event) {
+    // 0. Escape cancels a print job being prepared before anything else.
+    if (event.key == ui::Key::Escape && printCoordinator_.requestCancel()) return true;
+
     // 1. The focused widget (a text field) consumes its keys first.
     if (focusedWidget_ != nullptr && focusedWidget_->onKey(event)) return true;
 
@@ -338,6 +349,7 @@ bool ShellController::handleShortcut(const ui::KeyEvent& event) {
                 return true;
             }
             if (event.text == "w") {
+                cancelPrintForTab(workspace_.activeIndex());
                 workspace_.closeActiveTab();
                 return true;
             }
@@ -405,50 +417,21 @@ void ShellController::updateWindowTitle() {
     services_.setWindowTitle(tab != nullptr ? std::format("{} — Rivet", tab->title()) : "Rivet");
 }
 
-// Printing: builds the request from the ACTIVE tab; page content comes from
-// the session's Rivet render path (whole pages at the platform's capped
-// density). The callback runs during the print operation on the main thread;
-// the global PDFium gate serializes it with any background rendering.
+// Printing: the coordinator runs panel -> worker spool -> platform print for
+// the ACTIVE tab; nothing is rasterized on the main thread.
 void ShellController::handlePrintRequest() {
     DocumentTab* tab = readyActiveTab();
     if (tab == nullptr || tab->session() == nullptr) {
         setStatus("Nothing to print — open a document first");
         return;
     }
-    if (services_.printService == nullptr) {
-        setStatus("No print service available on this platform backend");
-        return;
-    }
-    editor::DocumentSession* session = tab->session();
+    printCoordinator_.print(*tab->session(), tab->title());
+}
 
-    platform::PrintRequest request;
-    request.jobTitle = tab->title();
-    request.pageSizesPoints.reserve(session->pageCount());
-    for (std::size_t i = 0; i < session->pageCount(); ++i) {
-        request.pageSizesPoints.push_back(session->pageSizePoints(i));
+void ShellController::cancelPrintForTab(std::size_t index) {
+    if (DocumentTab* tab = workspace_.tab(index); tab != nullptr && tab->session() != nullptr) {
+        printCoordinator_.cancelIfDocument(tab->session()->id());
     }
-    // Render at the print density; the whole page in one bitmap (bounded by
-    // the platform's density cap). Runs on the main thread inside the print
-    // operation; the gate serializes with worker renders.
-    request.renderPage = [session](std::size_t pageIndex, double devicePixelsPerPoint)
-        -> core::Result<core::Bitmap> {
-        if (pageIndex >= session->pageCount()) {
-            return std::unexpected(core::Error{core::ErrorCode::InvalidArgument,
-                                               "page index out of range", "app"});
-        }
-        const core::Size size = session->pageSizePoints(pageIndex);
-        return session->document().renderPage(
-            pageIndex, core::Rect{core::Point{0.0, 0.0}, size}, devicePixelsPerPoint);
-    };
-
-    const core::Status printed = services_.printService->printDocument(request);
-    if (!printed.has_value()) {
-        if (printed.error().code != core::ErrorCode::Cancelled) {
-            setStatus("Print failed: " + core::describe(printed.error()));
-        }
-        return;
-    }
-    setStatus(std::format("Printed {} ", tab->title()));
 }
 
 std::unique_ptr<ShellController> createShell(const platform::ShellServices& services) {

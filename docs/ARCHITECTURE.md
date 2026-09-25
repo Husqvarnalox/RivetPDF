@@ -239,6 +239,7 @@ Precisely:
 - **Shared `TaskScheduler`**: fixed-size `std::jthread` pool, FIFO queue, used for background rasterization. Shutdown is intentionally fast: pending tasks are discarded, in-flight tasks run to completion before join.
 - **`SerialExecutor` per open document**: exactly one task of a given executor runs at any moment, in FIFO post order, executed on the shared `TaskScheduler`. Idle executors cost nothing. This serializes all access to one PDFium document handle without dedicating an OS thread per document.
 - **Process-wide PDFium call gate**: PDFium's entire public API is not thread-safe (it also holds process-global state such as font caches and `FPDF_GetLastError`), so no two `FPDF_*` calls may run concurrently even for *different* documents. The PDFium adapter serializes every call through an internal `PdfiumCallGate` (a mutex that never leaves `rivet_pdfium`); the per-document executors remain in charge of FIFO ordering, coalescing, cancellation and lifecycle. See [ADR-0006](adr/ADR-0006-serialized-pdf-access-per-document.md) and its correction section.
+- **Print spooling**: `editor::PrintSpooler` renders print bands on its own `SerialExecutor` (over the shared pool) and delivers progress/completion through `IMainThreadDispatcher`; the main thread only shows panels and composites pre-rendered band files (section 6, Printing).
 - **Main-thread marshaling**: render callbacks are delivered via `IMainThreadDispatcher`, implemented by the platform layer (dispatch to the macOS main queue in production). All widget and event handling is main-thread-only.
 - **`TileCache`** is internally mutex-guarded: entries may be inserted, looked up and evicted from scheduler threads and the main thread concurrently.
 - `ZoomState` and widget state are main-thread-only and not internally synchronized.
@@ -290,6 +291,28 @@ Rules:
 - Results are delivered exactly once per accepted request, on the main thread when a dispatcher is configured (tests may run callbacks inline on the worker thread).
 - `cancelAll()` drops queued requests; results report `Cancelled` or do not fire.
 - Pages load lazily: only tiles for visible/impending pages are scheduled, so documents with thousands of pages never render fully into memory.
+
+### Printing
+
+Printing never rasterizes on the main thread and never uses an alternate PDF engine:
+
+```text
+ PrintCoordinator (app, main)   platform::IPrintService::choosePrintSettings
+     |                           (native panel, modal, no rendering, no preview)
+     v
+ editor::PrintSpooler           own SerialExecutor over the shared TaskScheduler
+     |  plan densities + bands   (pure arithmetic, main thread)
+     |  worker: per band -> PdfDocument::renderPage(page, bandRect, dpp)
+     |          -> raw BGRA file in an owner-only temp spool directory
+     v  onProgress / onComplete(Result<PrintSpool>)   [via IMainThreadDispatcher]
+ platform::IPrintService::printSpool   (main) composites file-backed band images
+```
+
+- **Density policy** (`PrintSpoolOptions`): 150 dpi target; each page is reduced so its raster fits 48 Mi-pixels (A0 still gets the full 150 dpi), with a 0.5 px/pt floor so huge posters still print; a whole-job 1 GiB spool budget scales density down globally before rendering starts and fails with a clear error when even the floor does not fit.
+- **Memory bound**: bands are full-width horizontal strips of at most 4 Mi-pixels; only one band exists in memory at a time. A page so wide that a 1-pixel strip exceeds the band budget gets a lower density (the band bound beats the floor).
+- **Failure model**: the first render or I/O error aborts the job, removes the spool and is reported - never a partial or blank print. A band that cannot be read while printing cancels the AppKit job (`printInfo.jobDisposition = NSPrintCancelJob`, which makes `-runOperation` return NO with no output) and is reported.
+- **Cancellation/lifetime**: Esc cancels an active spool (checked between bands). Closing the tab or tearing down the shell cancels and waits for the worker (at most one band render), because the spool borrows the session's `PdfDocument`. Completions queued after the spooler died are no-ops.
+- Oversized pages are scaled down uniformly to fit the sheet's printable area (never up); each sheet keeps its page's display size/orientation.
 
 ---
 
