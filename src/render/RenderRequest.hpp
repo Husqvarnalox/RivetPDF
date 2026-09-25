@@ -11,7 +11,11 @@ struct RasterParams {
     // Sub-rectangle of the rotated page in page display coordinates
     // (points, origin at the top-left of the displayed page, y-down).
     core::Rect pageRectPoints;
-    // Physical device pixels per point (zoom * display backing scale).
+    // Physical device pixels per point. MUST be derived from the request's
+    // TileKey: params.devicePixelsPerPoint == key.scale.scale() exactly (both
+    // are the same quantized PhysicalRenderScaleKey value divided by the
+    // denominator). DocumentRenderer rejects requests where they disagree, so
+    // a cache entry's identity and its pixel dimensions can never diverge.
     double devicePixelsPerPoint = 1.0;
 };
 

@@ -1,5 +1,6 @@
 #include "PdfiumEngine.h"
 
+#include "PdfiumCallGate.hpp"
 #include "PdfiumDocument.h"
 #include "PdfiumLibrary.h"
 #include "core/Log.hpp"
@@ -35,9 +36,25 @@ core::Result<std::unique_ptr<PdfDocument>> PdfiumEngine::openDocument(const std:
     PdfiumLibrary::instance(); // ensure the library is initialized
 
     const std::string passwordString(password);
-    FPDF_DOCUMENT document = FPDF_LoadDocument(path.string().c_str(), passwordString.c_str());
+
+    // One gate acquisition for the whole open operation: FPDF_LoadDocument,
+    // FPDF_GetLastError and PdfiumDocument's constructor (which queries page
+    // count and metadata) form a single PDFium-serialized step.
+    //
+    // A document that was opened with a non-empty password required that
+    // password, i.e. it is encrypted. PDFium exposes no richer public query,
+    // so this open-time observation is the recorded state.
+    std::unique_ptr<PdfDocument> document;
+    int lastError = 0;
+    globalPdfiumCallGate().invoke([&] {
+        FPDF_DOCUMENT handle = FPDF_LoadDocument(path.string().c_str(), passwordString.c_str());
+        if (handle == nullptr) {
+            lastError = static_cast<int>(FPDF_GetLastError());
+            return;
+        }
+        document = std::make_unique<PdfiumDocument>(handle, !passwordString.empty());
+    });
     if (document == nullptr) {
-        const int lastError = static_cast<int>(FPDF_GetLastError());
         switch (lastError) {
             case FPDF_ERR_PASSWORD:
                 return std::unexpected(core::makeError(
@@ -74,11 +91,7 @@ core::Result<std::unique_ptr<PdfDocument>> PdfiumEngine::openDocument(const std:
         }
     }
 
-    // A document that was opened with a non-empty password required that
-    // password, i.e. it is encrypted. PDFium exposes no richer public query,
-    // so this open-time observation is the recorded state.
-    auto pdfiumDocument = std::make_unique<PdfiumDocument>(document, !passwordString.empty());
-    return std::unique_ptr<PdfDocument>(std::move(pdfiumDocument));
+    return document;
 }
 
 } // namespace rivet::pdf

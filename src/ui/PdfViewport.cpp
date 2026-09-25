@@ -2,6 +2,7 @@
 
 #include "core/Error.hpp"
 #include "render/PageLayout.hpp"
+#include "render/PhysicalRenderScaleKey.hpp"
 #include "render/RenderPriority.hpp"
 #include "render/RenderRequest.hpp"
 #include "render/RenderScaleKey.hpp"
@@ -31,13 +32,44 @@ std::uint32_t tileCount(double deviceExtent) {
     return static_cast<std::uint32_t>(std::ceil(deviceExtent / static_cast<double>(PdfViewport::kTileSize)));
 }
 
+// Backs the last visible tile index off by this much (in points) so a tile
+// boundary landing exactly on the visible edge does not spawn the next tile.
+// Far above double rounding noise at page scales, far below any meaningful
+// fraction of a point.
+constexpr double kEdgeEpsilon = 1e-7;
+
+// Visible tile index range along one axis: floor of the first/last visible
+// coordinate over the tile extent, clamped to [0, axisTileCount - 1]. The
+// signed 64-bit intermediates keep floor() results well-defined before the
+// narrowing casts - a negative floor (razor-thin sliver at the axis origin)
+// must never be cast through an unsigned type. Inputs are page-local points,
+// so the unclamped floors are bounded by the grid.
+std::pair<std::uint32_t, std::uint32_t> visibleTileRange(double minPoints, double maxPoints,
+                                                         double tileExtentPoints,
+                                                         std::uint32_t axisTileCount) {
+    const std::int64_t maxIndex = static_cast<std::int64_t>(axisTileCount) - 1;
+    const std::int64_t first = static_cast<std::int64_t>(std::floor(minPoints / tileExtentPoints));
+    const std::int64_t last =
+        static_cast<std::int64_t>(std::floor((maxPoints - kEdgeEpsilon) / tileExtentPoints));
+    return {static_cast<std::uint32_t>(std::clamp(first, std::int64_t{0}, maxIndex)),
+            static_cast<std::uint32_t>(std::clamp(last, std::int64_t{0}, maxIndex))};
+}
+
 } // namespace
 
 PdfViewport::PdfViewport()
     : aliveFlag_(std::make_shared<std::atomic<bool>>(true)) {
-    // Single funnel for zoom changes: repaint + status-bar notification.
+    // Single funnel for zoom changes: repaint + dropping stale queued renders
+    // + status-bar notification.
     zoom_.setCallback([this](double value) {
         invalidate();
+        // Queued renders were requested at the previous scale; drop them so
+        // the next paint re-requests tiles at the new scale instead of
+        // delivering stale ones. cancelAll fires Cancelled callbacks, which
+        // only invalidate - no re-entry into zoom logic. The in-flight job,
+        // if any, finishes into the cache under its own key. source_ is
+        // non-null only between setDocument() and clearDocument().
+        if (source_ != nullptr) source_->cancelAll();
         if (onZoomChanged_) onZoomChanged_(value);
     });
 }
@@ -230,14 +262,23 @@ void PdfViewport::paintSelf(PaintContext& context) const {
 // anchored at the page's top-left. Page display coordinates are top-left
 // origin / y-down (same orientation as viewport-local logical space), so the
 // grid maps directly with no flip: the cell (tx, ty) covers page points
-// {tx*512, ty*512, 512, 512} / devicePixelsPerPoint.
+// {tx * E, ty * E, E, E} with E = kTileSize / devicePixelsPerPoint, where the
+// density is the PhysicalRenderScaleKey of quantized zoom x display backing
+// scale. Cache identity and RasterParams derive from that ONE key, so a cache
+// entry's pixel dimensions can never disagree with its identity.
+//
+// Only tiles overlapping the visible region are visited: per axis the index
+// range is [floor(min / E), floor((max - epsilon) / E)] clamped to the grid
+// (see visibleTileRange), instead of sweeping the whole grid and skipping
+// invisible cells - a large page under a small viewport must not touch every
+// tile of the grid on each repaint.
 //
 // The raster rect recorded in RasterParams is the tile cell CLIPPED to the
 // page bounds (page display points). Cache identity is stable across scrolls
 // and repaints because the clip depends only on the page size; the bitmap
-// returned by cachedTile() for a TileKey is therefore expected to raster
-// exactly params.pageRectPoints at params.devicePixelsPerPoint, and the
-// viewport draws it scaled into that same region mapped to viewport space.
+// returned by cachedTile() for a TileKey therefore rasters exactly
+// params.pageRectPoints at params.devicePixelsPerPoint, and the viewport draws
+// it scaled into that same region mapped to viewport space.
 //
 // Missing tiles: paint a gray placeholder and ask the render source for the
 // tile at Visible priority. Deduplicating identical in-flight requests is
@@ -248,8 +289,14 @@ void PdfViewport::paintPageTiles(std::size_t pageIndex, const core::Rect& pageFr
                                  const core::Rect& pageInViewport, const core::Rect& contentRect,
                                  std::uint64_t revision, PaintContext& context) const {
     const render::PageLayout::PageInfo& info = layout_->pages()[pageIndex];
-    const render::RenderScaleKey scaleKey = render::RenderScaleKey::fromZoom(zoom_.zoom());
-    const double devicePixelsPerPoint = scaleKey.scale() * context.backingScale();
+    const render::RenderScaleKey zoomKey = render::RenderScaleKey::fromZoom(zoom_.zoom());
+    // Physical cache identity: quantized zoom x display backing scale. The
+    // raster density below is DERIVED from this key (never the raw product),
+    // so requests rasterizing at different pixel dimensions never share a
+    // cache entry - 100% zoom on 1x and 2x displays are different identities.
+    const render::PhysicalRenderScaleKey physicalKey =
+        render::PhysicalRenderScaleKey::fromDensities(zoomKey.scale(), context.backingScale());
+    const double devicePixelsPerPoint = physicalKey.scale();
 
     // Visible region inside the page, in page-local display points (culling).
     const core::Rect pageBounds{core::Point{}, pageFramePoints.size};
@@ -260,16 +307,22 @@ void PdfViewport::paintPageTiles(std::size_t pageIndex, const core::Rect& pageFr
     const double tileExtentPoints = static_cast<double>(kTileSize) / devicePixelsPerPoint;
     const std::uint32_t tilesX = tileCount(pageFramePoints.size.width * devicePixelsPerPoint);
     const std::uint32_t tilesY = tileCount(pageFramePoints.size.height * devicePixelsPerPoint);
+    if (tilesX == 0 || tilesY == 0) return;
 
-    for (std::uint32_t ty = 0; ty < tilesY; ++ty) {
-        for (std::uint32_t tx = 0; tx < tilesX; ++tx) {
+    const auto [txMin, txMax] =
+        visibleTileRange(visibleLocal.minX(), visibleLocal.maxX(), tileExtentPoints, tilesX);
+    const auto [tyMin, tyMax] =
+        visibleTileRange(visibleLocal.minY(), visibleLocal.maxY(), tileExtentPoints, tilesY);
+
+    for (std::uint32_t ty = tyMin; ty <= tyMax; ++ty) {
+        for (std::uint32_t tx = txMin; tx <= txMax; ++tx) {
             const core::Rect tileRect{static_cast<double>(tx) * tileExtentPoints,
                                       static_cast<double>(ty) * tileExtentPoints,
                                       tileExtentPoints, tileExtentPoints};
             const core::Rect clipped = tileRect.intersection(pageBounds);
-            if (clipped.isEmpty() || !visibleLocal.intersects(clipped)) continue;
+            if (clipped.isEmpty()) continue;
 
-            const render::TileKey key{documentId_, info.id, scaleKey, tx, ty};
+            const render::TileKey key{documentId_, info.id, physicalKey, tx, ty};
             const core::Rect dest{pageInViewport.origin + clipped.origin * zoom_.zoom(),
                                   clipped.size * zoom_.zoom()};
             if (const std::shared_ptr<const core::Bitmap> tile = source_->cachedTile(key, revision)) {
@@ -286,10 +339,11 @@ void PdfViewport::requestTile(const render::TileKey& key, const render::RasterPa
     const render::RenderRequest request{key, params};
     // Shared alive flag: a callback delivered after destruction (or from a
     // misbehaving thread) sees false and does nothing. Capture `alive` by
-    // value so the flag outlives this stack frame.
+    // value so the flag outlives this stack frame. The payload is ignored:
+    // the cache is re-read on the next paint.
     const std::shared_ptr<std::atomic<bool>> alive = aliveFlag_;
     source_->requestRender(request, render::RenderPriority::Visible,
-                           [this, alive](core::Result<core::Bitmap> /*result*/) {
+                           [this, alive](render::RenderResult /*result*/) {
                                if (alive->load(std::memory_order_acquire)) invalidate();
                            });
 }

@@ -1,19 +1,21 @@
 #pragma once
 
 #include "core/StrongId.hpp"
-#include "render/RenderScaleKey.hpp"
+#include "render/PhysicalRenderScaleKey.hpp"
 
 #include <cstdint>
 #include <functional>
 
 namespace rivet::render {
 
-// Identity of a rendered tile: which document, which page, at which
-// quantized scale, which cell of the tile grid.
+// Identity of a rendered tile: which document, which page, at which quantized
+// PHYSICAL density (quantized zoom x display backing scale, see
+// PhysicalRenderScaleKey - 100% zoom on 1x vs 2x displays are different
+// identities), which cell of the tile grid.
 struct TileKey {
     core::DocumentId documentId;
     core::PageId pageId;
-    RenderScaleKey scale;
+    PhysicalRenderScaleKey scale;
     std::uint32_t tileX = 0;
     std::uint32_t tileY = 0;
 

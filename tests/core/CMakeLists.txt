@@ -1,5 +1,6 @@
 add_executable(rivet_core_tests
     TestBitmap.cpp
+    TestCheckedArithmetic.cpp
     TestError.cpp
     TestGeometry.cpp
     TestStrongId.cpp

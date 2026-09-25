@@ -40,8 +40,10 @@ namespace rivet::ui {
 //     sink paints the newly arrived tile on the next frame.
 //
 // Zoom callbacks: the viewport installs the ZoomState::setCallback hook
-// itself (invalidate + status notification). The shell must use
-// setZoomChangedCallback rather than replacing ZoomState's callback.
+// itself (invalidate + cancelAll on the render source, dropping queued
+// renders that were requested at the previous scale + status notification).
+// The shell must use setZoomChangedCallback rather than replacing ZoomState's
+// callback.
 class PdfViewport : public Widget {
 public:
     static constexpr std::uint32_t kTileSize = 512; // device px per tile edge

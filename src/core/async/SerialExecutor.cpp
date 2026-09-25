@@ -10,8 +10,15 @@ SerialExecutor::~SerialExecutor() {
     cancelPending();
     // Wait until the in-flight task (if any) has finished and no drain is
     // scheduled anymore. destroy-from-own-task is not supported (see header).
+    waitUntilIdle();
+}
+
+void SerialExecutor::waitUntilIdle() {
+    // running_ is only ever true while a drain is scheduled or executing, and
+    // a drain exits only when the queue is empty, so the predicate means
+    // "nothing queued, nothing executing".
     std::unique_lock<std::mutex> lock(mutex_);
-    idle_.wait(lock, [this] { return !running_; });
+    idle_.wait(lock, [this] { return !running_ && queue_.empty(); });
 }
 
 void SerialExecutor::post(std::function<void()> task) {
@@ -29,7 +36,17 @@ void SerialExecutor::post(std::function<void()> task) {
         // Exactly one drain is ever scheduled at a time: while running_ is
         // true, a drain is scheduled or looping, and it picks up everything
         // appended in the meantime (including recursive posts).
-        scheduler_.post([this] { drain(); });
+        try {
+            scheduler_.post([this] { drain(); });
+        } catch (...) {
+            // Scheduling failed (e.g. allocation failure). running_ is already
+            // true, so if nothing were scheduled the destructor would wait
+            // forever. TaskScheduler::post either queues the drain or throws
+            // without queueing it, and running_ was false before this post -
+            // so no drain is in flight and draining inline on this thread
+            // preserves FIFO and the one-at-a-time guarantee.
+            drain();
+        }
     }
 }
 

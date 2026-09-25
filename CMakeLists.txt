@@ -3,14 +3,21 @@ cmake_minimum_required(VERSION 3.28)
 project(rivet
     VERSION 0.1.0
     DESCRIPTION "Rivet - a fast, native, open-source PDF editor"
-    LANGUAGES CXX OBJCXX)
+    LANGUAGES CXX)
+
+# Objective-C++ exists only for the macOS platform backend; Windows/Linux
+# builds must not require it. Non-Apple platforms configure the portable
+# libraries and tests, but no desktop executable yet (src/platform/CMakeLists.txt).
+if(APPLE)
+    enable_language(OBJCXX)
+    set(CMAKE_OBJCXX_STANDARD 23)
+    set(CMAKE_OBJCXX_STANDARD_REQUIRED ON)
+    set(CMAKE_OBJCXX_EXTENSIONS OFF)
+endif()
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
-set(CMAKE_OBJCXX_STANDARD 23)
-set(CMAKE_OBJCXX_STANDARD_REQUIRED ON)
-set(CMAKE_OBJCXX_EXTENSIONS OFF)
 
 if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
     set(CMAKE_BUILD_TYPE "Debug" CACHE STRING "Build type" FORCE)
@@ -34,7 +41,7 @@ if(RIVET_WITH_PDFIUM)
             "    -D RIVET_PDFIUM_ROOT=/absolute/path/to/pdfium-install\n"
             "Expected layout:\n"
             "    <root>/include/fpdfview.h   (plus fpdf_*.h headers)\n"
-            "    <root>/lib/libpdfium.dylib  (macOS) / libpdfium.so (Linux) / pdfium.lib (Windows)")
+            "    <root>/lib/libpdfium.a      (macOS/Linux static; .dylib/.so also accepted)")
     endif()
     message(STATUS "Rivet: PDFium found: ${PDFIUM_LIBRARY}")
 else()

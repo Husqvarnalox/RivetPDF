@@ -1,0 +1,42 @@
+# Rivet CI: portable foundation (PDFium-OFF).
+#
+# PDFium is intentionally NOT downloaded or built here: Rivet never fetches
+# PDFium automatically, and a cacheable, maintainable CI strategy for a local
+# static PDFium build is a separate later task. These jobs cover the
+# PDFium-independent foundation: configure, build, ctest, zero warnings.
+# The Linux job additionally proves the tree configures without Objective-C++.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build-test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install toolchain (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build clang
+
+      - name: Configure (PDFium OFF, warnings visible)
+        run: |
+          cmake -S . -B build -G Ninja \
+                -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+                -DCMAKE_CXX_FLAGS="-Werror" \
+                -DRIVET_BUILD_TESTS=ON
+
+      - name: Build
+        run: cmake --build build
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure

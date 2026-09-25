@@ -80,3 +80,40 @@ over the **shared `TaskScheduler`** (`std::jthread` worker pool):
 - **Unbounded task pool (thread-per-task)**: scheduler thrash and unbounded
   concurrency against a single document handle; a fixed pool plus per-document
   serialization is simpler and safer.
+
+## Correction (2026-09-25): process-wide PDFium call gate
+
+The original decision serialized each document's work onto its own
+`SerialExecutor` and treated that as sufficient for PDFium's threading
+requirements. That assumption was wrong: PDFium's whole public API is not
+thread-safe at the process level, not merely per document. PDFium holds
+process-global state - font/glyph and image caches, `FPDF_GetLastError` - so
+even calls against *unrelated* `FPDF_DOCUMENT`s race when they run on
+different `TaskScheduler` workers. Per-document executors order work within
+one document but do not prevent cross-document overlap.
+
+Corrective design (implemented in `rivet_pdfium`):
+
+- Every `FPDF_*` call issued by the adapter now runs inside
+  `PdfiumCallGate::invoke()` on `globalPdfiumCallGate()`: a process-wide
+  `std::mutex` internal to `rivet_pdfium`, invisible outside the adapter.
+- The per-document `SerialExecutor` is retained unchanged for what it does
+  well: FIFO ordering (visible-tiles-first), request coalescing/dedup before
+  posting, and cancellation on session close. It no longer carries any
+  correctness claim about PDFium thread safety by itself.
+- Acquisition discipline: exactly one gate acquisition per public adapter
+  entry operation (whole method body); internal helpers never acquire, since
+  the mutex is non-recursive and a nested acquisition is a guaranteed
+  self-deadlock.
+- The gate singleton is intentionally never destroyed (leaked): every PDFium
+  call, including document closes during static teardown, must be able to
+  acquire it for the whole process lifetime. The gate only serializes; it
+  cannot make calls safe after `FPDF_DestroyLibrary`, which is why the
+  ownership contract "no document outlives the library" (sessions die before
+  main returns) remains mandatory.
+
+Consequences: cross-document rendering now contends on one lock, so PDFium
+work is effectively process-serialized at the PDFium-call level; the
+per-document executors continue to bound queueing, dedup, and backpressure
+above it. Deadlock risk from re-entrancy is documented and forbidden
+(one-acquire-per-operation).

@@ -137,11 +137,13 @@ public:
     int cancelAllCount = 0;
 
     void requestRender(const RenderRequest& request, RenderPriority priority,
-                       std::function<void(core::Result<core::Bitmap>)> onDone) override {
+                       RenderCallback onDone) override {
         requests.push_back(RequestRecord{request, priority});
         if (!completeImmediately || !onDone) return;
         core::Result<core::Bitmap> bitmap = core::Bitmap::create(4, 4);
-        if (bitmap.has_value()) onDone(std::move(bitmap));
+        if (bitmap.has_value()) {
+            onDone(std::make_shared<const core::Bitmap>(std::move(*bitmap)));
+        }
     }
 
     std::shared_ptr<const core::Bitmap> cachedTile(const TileKey& key,

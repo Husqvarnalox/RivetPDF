@@ -38,7 +38,7 @@
 }
 @end
 
-int main() {
+int main(int argc, char** argv) {
     @autoreleasepool {
         [NSApplication sharedApplication];
         [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
@@ -99,6 +99,13 @@ int main() {
         bridge->shell = shell.get();
 
         [window makeKeyAndOrderFront:nil];
+
+        // Open-on-launch: `rivet /path/to/document.pdf`. The path must exist;
+        // failures surface in the shell's status label exactly like a failed
+        // dialog open.
+        if (argc > 1 && argv[1] != nullptr) {
+            shell->openDocument(std::filesystem::path(argv[1]));
+        }
         if (@available(macOS 14.0, *)) {
             [NSApp activate];
         } else {

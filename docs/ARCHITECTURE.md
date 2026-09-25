@@ -65,8 +65,13 @@ Dependency direction (an arrow `A -> B` means A may depend on B):
         ^                                          ^
         |                                          |
     rivet (executable)                       rivet_platform_macos
-                                                   |
-                              depends on: rivet_app, rivet_ui, rivet_core
+         |      \                                     |
+         v       v                        depends on: rivet_ui, rivet_core, rivet_platform
+   rivet_app    rivet_platform_macos
+
+The `rivet` executable is the composition root: it may depend on both the
+application layer and the platform backend; the platform backend itself never
+depends on the application layer.
 ```
 
 Hard rules:
@@ -91,7 +96,7 @@ Foundation types shared by everything else.
 - **Geometry** (`core/geometry/`): `Point`, `Size`, `Rect`, `Insets`, `Matrix`, and `PageRotation` (0/90/180/270 clockwise, matching the PDF `/Rotate` integer encoding). Types are convention-neutral; see section 4 for coordinate spaces.
 - **`StrongId<Tag>`** (`core/StrongId.hpp`): typed identifiers (`DocumentId`, `PageId`, `ObjectId`). Distinct tags produce distinct, non-interchangeable types; value 0 is reserved as the invalid ID. `IdGenerator<Tag>` mints sequential IDs.
 - **Errors** (`core/Error.hpp`): `Result<T>` = `std::expected<T, Error>`, `Error{code, message, subsystem}`, shared `ErrorCode` enum. See section 8.
-- **`Bitmap`** (`core/Bitmap.hpp`): Rivet-owned raster surface, `BGRA8888Premultiplied`, move-only, explicit stride. Allocation arithmetic is overflow-checked and bounded (`kMaxBitmapDimension` = 1M px per axis, `kMaxBitmapBytes` = 512 MiB) because document-driven dimensions are untrusted input.
+- **`Bitmap`** (`core/Bitmap.hpp`): Rivet-owned raster surface, `BGRA8888Straight` (matching PDFium's `FPDFBitmap_BGRA`), move-only, explicit stride. Allocation arithmetic is overflow-checked and bounded (`kMaxBitmapDimension` = 1M px per axis, `kMaxBitmapBytes` = 512 MiB) because document-driven dimensions are untrusted input.
 - **`log`** (`core/Log.hpp`): minimal built-in, thread-safe stderr logging with levels. Never logs document contents or user text.
 - **`Time`** (`core/Time.hpp`): wall-clock milliseconds and a monotonic `Stopwatch`.
 - **Async** (`core/async/`): `TaskScheduler` (shared worker pool over `std::jthread`), `SerialExecutor` (FIFO serialization over the shared pool), `IMainThreadDispatcher` (marshal-to-main-thread abstraction). See section 5.
@@ -221,7 +226,8 @@ Precisely:
 ```
 
 - **Shared `TaskScheduler`**: fixed-size `std::jthread` pool, FIFO queue, used for background rasterization. Shutdown is intentionally fast: pending tasks are discarded, in-flight tasks run to completion before join.
-- **`SerialExecutor` per open document**: exactly one task of a given executor runs at any moment, in FIFO post order, executed on the shared `TaskScheduler`. Idle executors cost nothing. This serializes all access to one PDFium document handle (PDFium document access is not thread-safe) without dedicating an OS thread per document. See [ADR-0006](adr/ADR-0006-serialized-pdf-access-per-document.md).
+- **`SerialExecutor` per open document**: exactly one task of a given executor runs at any moment, in FIFO post order, executed on the shared `TaskScheduler`. Idle executors cost nothing. This serializes all access to one PDFium document handle without dedicating an OS thread per document.
+- **Process-wide PDFium call gate**: PDFium's entire public API is not thread-safe (it also holds process-global state such as font caches and `FPDF_GetLastError`), so no two `FPDF_*` calls may run concurrently even for *different* documents. The PDFium adapter serializes every call through an internal `PdfiumCallGate` (a mutex that never leaves `rivet_pdfium`); the per-document executors remain in charge of FIFO ordering, coalescing, cancellation and lifecycle. See [ADR-0006](adr/ADR-0006-serialized-pdf-access-per-document.md) and its correction section.
 - **Main-thread marshaling**: render callbacks are delivered via `IMainThreadDispatcher`, implemented by the platform layer (dispatch to the macOS main queue in production). All widget and event handling is main-thread-only.
 - **`TileCache`** is internally mutex-guarded: entries may be inserted, looked up and evicted from scheduler threads and the main thread concurrently.
 - `ZoomState` and widget state are main-thread-only and not internally synchronized.
@@ -234,7 +240,8 @@ Rendering is tile-oriented from day one ([ADR-0005](adr/ADR-0005-tile-based-rend
 
 - **Tile size**: 512 x 512 device pixels.
 - **`RenderScaleKey`**: zoom quantized UP to multiples of 1/64 (`ceil(zoom * 64) / 64`, clamped to `[0.10, 64.0]`). Rounding up guarantees the raster is never produced at a lower resolution than requested; the painter scales down by less than 1/64. Zoom levels that quantize to the same key share tiles.
-- **`TileKey`** = `(DocumentId, PageId, RenderScaleKey, tileX, tileY)` - cache identity per tile cell of the page grid.
+- **`PhysicalRenderScaleKey`**: device pixels per point = quantized zoom x display backing scale, quantized UP to multiples of 1/64 and clamped to `[0.1, 512]`. Two render requests that would produce different pixel dimensions (e.g. 100% zoom on a 1x vs a 2x display) never share a cache entry: `RasterParams::devicePixelsPerPoint` is always derived from this key, and `DocumentRenderer` rejects requests whose params disagree with the key.
+- **`TileKey`** = `(DocumentId, PageId, PhysicalRenderScaleKey, tileX, tileY)` - cache identity per tile cell of the page grid.
 - **`RenderRequest`** = `TileKey` + `RasterParams{ pageRectPoints (page display space), devicePixelsPerPoint }`.
 - **`RenderPriority`**: `Visible` (on screen now), `Impending` (about to become visible via scroll lookahead), `Prefetch`.
 
@@ -263,7 +270,7 @@ Pipeline from a viewport request to a painted tile:
  onDone(Result<Bitmap>) -> viewport repaints that tile
 ```
 
-The synchronous paint path is `IRenderSource::cachedTile(TileKey, revision)`: a non-blocking cache probe used while painting; on a miss the viewport schedules an async `requestRender` and paints what it has (checkerboard/blank until the tile arrives).
+The synchronous paint path is `IRenderSource::cachedTile(TileKey, revision)`: a non-blocking cache probe used while painting; on a miss the viewport schedules an async `requestRender` and paints what it has (gray placeholder until the tile arrives). Paint enumerates only the tiles overlapping the visible region (direct index math, clamped to the page grid - never a full-page grid sweep). Permanently failed tiles are recorded by `DocumentRenderer` and replay their error without re-scheduling, so a broken tile cannot create a repaint/render loop; a revision change or an explicit `retryFailedTiles()` clears the record. On a zoom change the viewport drops queued-not-started requests so renders for the previous scale are not drained pointlessly.
 
 Rules:
 
@@ -352,6 +359,19 @@ Within the approved scope, the architecture leaves room for:
 
 - **Multi-document tabs** - one `DocumentSession` per open document, each with its own `SerialExecutor` and revision counter. No new machinery is required: `TileKey` already includes `DocumentId`, the shared `TaskScheduler` already multiplexes executors, and one cache can serve all sessions. Session lifetime follows tab lifetime.
 - **Page editing** - page operations (reorder, rotate, delete, insert, ...) become `Command`s on the session's `CommandStack` (depth-bounded undo/redo is already in place). A successful command bumps the document revision, which lazily invalidates all affected tiles via the revision stamp in `TileCache`; `PageLayout` is recomputed for the new page list. Content editing (text/objects) is expected to be the hardest part and will be developed gradually on the same command/revision foundation.
+
+Known limitations of the current foundation, recorded as future
+architectural requirements:
+
+- **Lazy page metadata**: `DocumentSession::create` loads every page's
+  metadata synchronously on the calling (main) thread. Measured cost is a few
+  microseconds per page for small documents, but a thousands-page document
+  will need incremental/lazy metadata loading behind the same `PageLayout`
+  interface.
+- **Immutable page model**: the `PageId` -> backend page index mapping is
+  fixed at open time. This is fine for the viewer; page editing/reordering
+  (next phase) requires a mutable page model with the mapping owned by the
+  session and updated by commands.
 
 Features beyond this (annotations, forms, OCR, encryption, ...) are roadmap
 items in the README and are not yet part of the architecture described here.

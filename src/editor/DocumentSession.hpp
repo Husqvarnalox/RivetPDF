@@ -83,6 +83,21 @@ public:
     // commands call this after a successful apply.
     void markModified();
 
+    // NOTE (future architectural requirement, do not build yet): pages_ is an
+    // immutable PageId -> backend page index snapshot taken at open time.
+    // That is sufficient for the viewer, but page editing/reordering (a later
+    // phase) needs a mutable page model owned by the session and updated by
+    // commands, so PageId identities survive reordering. See
+    // docs/ARCHITECTURE.md, "Planned evolution".
+    //
+    // NOTE (performance): create() loads every page's metadata synchronously
+    // on the calling (main) thread. Measured against local fixtures, one
+    // pageInfo() round-trip costs a few microseconds (Debug build), so even a
+    // thousands-page document costs single-digit milliseconds of synchronous
+    // work - acceptable for now, but page metadata loading on network or slow
+    // storage will need an incremental/lazy design behind the same PageLayout
+    // interface instead of this upfront loop.
+
 private:
     struct PageMeta {
         core::PageId id;

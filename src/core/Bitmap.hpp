@@ -1,5 +1,6 @@
 #pragma once
 
+#include "core/CheckedArithmetic.hpp" // roundUpToAlignment
 #include "core/Error.hpp"
 
 #include <cstddef>
@@ -10,16 +11,14 @@ namespace rivet::core {
 
 enum class PixelFormat : std::uint8_t {
     // 32 bits per pixel, 8 bits per channel, byte order B,G,R,A,
-    // premultiplied alpha. Matches the native PDFium raster output format.
-    BGRA8888Premultiplied,
+    // straight (non-premultiplied) alpha. Matches the native PDFium AGG
+    // raster output format (FPDFBitmap_BGRA: "pixel components are
+    // independent of alpha"; see docs/BUILDING_PDFIUM.md).
+    BGRA8888Straight,
 };
 
 inline constexpr std::uint32_t kMaxBitmapDimension = 1u << 20; // 1M pixels per axis
 inline constexpr std::size_t kMaxBitmapBytes = std::size_t{512} << 20; // 512 MiB
-
-// Rounds value up to the next multiple of alignment (alignment must be a
-// power of two).
-std::size_t roundUpToAlignment(std::size_t value, std::size_t alignment);
 
 // Rivet-owned raster surface. Move-only. Stride is explicit and may exceed
 // width * bytesPerPixel; all allocation arithmetic is overflow-checked and
@@ -45,7 +44,7 @@ public:
     std::uint32_t height() const { return height_; }
     std::size_t stride() const { return stride_; }
     std::size_t bytesPerPixel() const;
-    PixelFormat format() const { return PixelFormat::BGRA8888Premultiplied; }
+    PixelFormat format() const { return PixelFormat::BGRA8888Straight; }
 
     // Bytes actually in use: stride * height (excluding any allocator slack).
     std::size_t sizeBytes() const { return stride_ * static_cast<std::size_t>(height_); }

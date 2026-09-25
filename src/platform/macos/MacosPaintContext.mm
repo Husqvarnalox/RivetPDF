@@ -181,11 +181,14 @@ void MacosPaintContext::drawBitmap(const core::Bitmap& bitmap, const core::Rect&
     if (!bitmap.isValid() || bitmap.width() == 0 || bitmap.height() == 0) return;
     if (destLogicalRect.isEmpty()) return;
 
-    // core::Bitmap is 8bpc premultiplied BGRA in memory, which is exactly
-    // little-endian ARGB for CoreGraphics. The alpha and byte-order infos are
-    // separate enum types; OR them numerically before the parameter cast.
+    // core::Bitmap is 8bpc straight-alpha BGRA in memory, which is exactly
+    // little-endian ARGB for CoreGraphics; kCGImageAlphaFirst is the matching
+    // straight-alpha layout (tiles are opaque in practice today — pages are
+    // filled white — but the info must match the actual contract). The alpha
+    // and byte-order infos are separate enum types; OR them numerically
+    // before the parameter cast.
     const auto bitmapInfo = static_cast<CGImageAlphaInfo>(
-        static_cast<unsigned>(kCGImageAlphaPremultipliedFirst) |
+        static_cast<unsigned>(kCGImageAlphaFirst) |
         static_cast<unsigned>(kCGBitmapByteOrder32Little));
     CGColorSpaceRef colorSpace = CGColorSpaceCreateDeviceRGB();
     CGDataProviderRef provider = CGDataProviderCreateWithData(

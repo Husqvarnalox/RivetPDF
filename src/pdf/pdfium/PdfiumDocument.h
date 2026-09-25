@@ -19,11 +19,18 @@ namespace rivet::pdf {
 // (PdfiumEngine::openDocument): it takes ownership of a document handle
 // returned by FPDF_LoadDocument and closes it deterministically on
 // destruction. All page/bitmap handles are RAII-wrapped internally.
+//
+// PDFium call-gate discipline (PdfiumCallGate): every public entry operation
+// acquires the process-wide gate exactly once. The constructor is the tail of
+// PdfiumEngine::openDocument's single acquisition, so it does not acquire;
+// the destructor, pageInfo() and renderPage() acquire themselves and must
+// therefore never be called while the gate is held.
 class PdfiumDocument final : public PdfDocument {
 public:
     // Internal to the pdfium backend: `document` must be a valid
     // FPDF_DOCUMENT. isEncrypted records whether a password was required to
-    // open the document.
+    // open the document. Caller must hold the PDFium gate: this runs
+    // FPDF_GetPageCount and FPDF_GetMetaText.
     PdfiumDocument(FPDF_DOCUMENT document, bool isEncrypted);
 
     ~PdfiumDocument() override;
@@ -41,7 +48,8 @@ public:
 
 private:
     // Reads a UTF-16LE metadata string (e.g. "Title") and converts it to
-    // UTF-8. Empty when the key is missing.
+    // UTF-8. Empty when the key is missing. Caller must hold the PDFium gate
+    // (this runs FPDF_GetMetaText); never acquires it.
     std::string metaText(const char* tag) const;
 
     FPDF_DOCUMENT document_ = nullptr;

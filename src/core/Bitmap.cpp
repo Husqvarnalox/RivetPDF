@@ -5,20 +5,9 @@
 
 namespace rivet::core {
 
-std::size_t roundUpToAlignment(std::size_t value, std::size_t alignment) {
-    if (alignment == 0 || (alignment & (alignment - 1)) != 0) {
-        return value; // require power-of-two alignment; pass through otherwise
-    }
-    const std::size_t mask = alignment - 1;
-    if (value > (SIZE_MAX & ~mask)) {
-        return SIZE_MAX; // overflow indicator; callers must range-check
-    }
-    return (value + mask) & ~mask;
-}
-
 std::size_t Bitmap::bytesPerPixel() const {
     switch (format()) {
-        case PixelFormat::BGRA8888Premultiplied: return 4;
+        case PixelFormat::BGRA8888Straight: return 4;
     }
     return 4;
 }
@@ -33,12 +22,12 @@ Result<Bitmap> Bitmap::create(std::uint32_t width, std::uint32_t height, std::si
                                          "Bitmap dimensions exceed the supported maximum", "core"));
     }
 
-    const std::size_t bpp = 4; // BGRA8888Premultiplied
+    const std::size_t bpp = 4; // BGRA8888Straight
 
     std::size_t stride = bytesPerRow;
     if (stride == 0) {
         std::size_t rawStride = 0;
-        if (__builtin_mul_overflow(static_cast<std::size_t>(width), bpp, &rawStride)) {
+        if (!checkedMultiply(static_cast<std::size_t>(width), bpp, rawStride)) {
             return std::unexpected(makeError(ErrorCode::InvalidArgument,
                                              "Bitmap row size overflows", "core"));
         }
@@ -46,7 +35,7 @@ Result<Bitmap> Bitmap::create(std::uint32_t width, std::uint32_t height, std::si
     }
 
     std::size_t totalBytes = 0;
-    if (__builtin_mul_overflow(stride, static_cast<std::size_t>(height), &totalBytes)) {
+    if (!checkedMultiply(stride, static_cast<std::size_t>(height), totalBytes)) {
         return std::unexpected(makeError(ErrorCode::InvalidArgument,
                                          "Bitmap size overflows", "core"));
     }

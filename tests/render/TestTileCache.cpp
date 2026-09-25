@@ -1,8 +1,8 @@
 #include "RivetTest.h"
 
 #include "core/Bitmap.hpp"
+#include "render/PhysicalRenderScaleKey.hpp"
 #include "render/TileCache.hpp"
-#include "render/RenderScaleKey.hpp"
 
 #include <cstdint>
 #include <memory>
@@ -12,7 +12,7 @@
 using rivet::core::Bitmap;
 using rivet::core::DocumentId;
 using rivet::core::PageId;
-using rivet::render::RenderScaleKey;
+using rivet::render::PhysicalRenderScaleKey;
 using rivet::render::TileCache;
 using rivet::render::TileKey;
 
@@ -29,7 +29,7 @@ TileKey makeTileKey(std::uint64_t document, std::uint64_t page, std::uint32_t ti
     TileKey key;
     key.documentId = DocumentId{document};
     key.pageId = PageId{page};
-    key.scale = RenderScaleKey::fromZoom(1.0);
+    key.scale = PhysicalRenderScaleKey::fromDensities(1.0, 1.0);
     key.tileX = tileX;
     key.tileY = tileY;
     return key;

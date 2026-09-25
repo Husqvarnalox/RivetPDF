@@ -23,7 +23,7 @@ namespace rivet::ui {
 //     this to paint every child in its own local coordinate space, so
 //     widget paint code always works in bounds()-relative coordinates.
 //   - drawBitmap scales the source bitmap to fit destLogicalRect exactly;
-//     the bitmap is premultiplied BGRA8888 (core::Bitmap format).
+//     the bitmap is straight-alpha BGRA8888 (core::Bitmap format).
 //   - drawText draws the string vertically centered in rect, horizontally
 //     aligned per `align`; measureText returns the laid-out extents for the
 //     same font, so the two must agree.

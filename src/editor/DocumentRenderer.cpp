@@ -1,10 +1,8 @@
 #include "editor/DocumentRenderer.hpp"
 
-#include <chrono>
-#include <cstring>
 #include <exception>
 #include <iterator>
-#include <thread>
+#include <optional>
 #include <utility>
 
 namespace rivet::editor {
@@ -32,12 +30,10 @@ DocumentRenderer::DocumentRenderer(core::DocumentId documentId,
 DocumentRenderer::~DocumentRenderer() {
     cancelAll();
     // The executor stream is dedicated to this renderer (see class comment).
-    // Wait until nothing is queued or running on it, so no worker can touch
+    // Block until nothing is queued or running on it, so no worker can touch
     // this object once the destructor returns. A render blocked inside the
     // PDF backend blocks here, mirroring SerialExecutor's own in-flight wait.
-    while (executor_.hasPendingWork()) {
-        std::this_thread::sleep_for(std::chrono::microseconds(200));
-    }
+    executor_.waitUntilIdle();
 }
 
 void DocumentRenderer::requestRender(const render::RenderRequest& request,
@@ -47,24 +43,53 @@ void DocumentRenderer::requestRender(const render::RenderRequest& request,
         return;
     }
 
+    const auto reject = [this](Callback callback, const core::Error& error) {
+        deliverCallbacks(std::vector<Callback>{std::move(callback)}, nullptr, error, mainDispatcher_);
+    };
+
     // A TileKey for another document is a wiring bug; fail loudly instead of
     // polluting the cache under the wrong identity.
     if (request.key.documentId != documentId_) {
-        deliverCallbacks(std::vector<Callback>{std::move(onDone)}, nullptr,
-                         core::Error{core::ErrorCode::InvalidArgument,
-                                     "render request does not belong to this document", "editor"},
+        reject(std::move(onDone),
+               core::Error{core::ErrorCode::InvalidArgument,
+                           "render request does not belong to this document", "editor"});
+        return;
+    }
+
+    // Cache identity derives the raster parameters: the key's physical scale
+    // IS the density the tile is rasterized at. Both sides hold the same
+    // quantized PhysicalRenderScaleKey value, so the exact comparison is
+    // well-defined (same numerator over the same constant denominator -> the
+    // same double). A mismatch would let a cache entry's pixel dimensions
+    // diverge from its identity; reject instead.
+    if (request.params.devicePixelsPerPoint != request.key.scale.scale()) {
+        reject(std::move(onDone),
+               core::Error{core::ErrorCode::InvalidArgument,
+                           "devicePixelsPerPoint does not match the tile key's physical scale",
+                           "editor"});
+        return;
+    }
+
+    std::uint64_t revision = 0;
+    std::optional<core::Error> recordedFailure;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        revision = currentRevision_;
+        if (const auto it = failed_.find(PendingKey{request.key, revision}); it != failed_.end()) {
+            recordedFailure = it->second;
+        }
+    }
+    if (recordedFailure.has_value()) {
+        // Failed tiles never re-enter the render pipeline: replay the recorded
+        // error inline, without scheduling (see the failed-tile contract). This
+        // is what breaks the repaint -> request -> fail loop.
+        deliverCallbacks(std::vector<Callback>{std::move(onDone)}, nullptr, *recordedFailure,
                          mainDispatcher_);
         return;
     }
 
-    std::uint64_t revision;
-    {
-        std::lock_guard<std::mutex> lock(mutex_);
-        revision = currentRevision_;
-    }
-
     // Fast path: already rendered for this revision -> synchronous delivery on
-    // the calling thread, no job scheduled.
+    // the calling thread, sharing the cached bitmap, no job scheduled.
     if (auto cached = cache_.get(request.key, revision)) {
         deliverCallbacks(std::vector<Callback>{std::move(onDone)}, std::move(cached), core::Error{},
                          mainDispatcher_);
@@ -75,7 +100,7 @@ void DocumentRenderer::requestRender(const render::RenderRequest& request,
     {
         std::lock_guard<std::mutex> lock(mutex_);
         const PendingKey pendingKey{request.key, revision};
-        auto it = pending_.find(pendingKey);
+        const auto it = pending_.find(pendingKey);
         if (it != pending_.end()) {
             // Same tile is already being produced: coalesce onto that entry.
             it->second.callbacks.push_back(std::move(onDone));
@@ -104,7 +129,7 @@ void DocumentRenderer::cancelAll() {
     {
         std::lock_guard<std::mutex> lock(mutex_);
         for (auto it = pending_.begin(); it != pending_.end();) {
-            if (it->second.inFlight) {
+            if (it->second.state == PendingEntry::State::InFlight) {
                 // Its job is running and delivers its own result normally.
                 ++it;
                 continue;
@@ -131,6 +156,20 @@ std::uint64_t DocumentRenderer::revision() const {
 void DocumentRenderer::setRevision(std::uint64_t revision) {
     std::lock_guard<std::mutex> lock(mutex_);
     currentRevision_ = revision;
+    // Failure records are keyed by revision, so stale ones can never match new
+    // requests; clearing them here bounds their memory instead.
+    failed_.clear();
+}
+
+void DocumentRenderer::retryFailedTiles() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    for (auto it = failed_.begin(); it != failed_.end();) {
+        if (it->first.revision == currentRevision_) {
+            it = failed_.erase(it);
+        } else {
+            ++it;
+        }
+    }
 }
 
 void DocumentRenderer::postJob(const render::TileKey& key, const render::RasterParams& params,
@@ -140,11 +179,11 @@ void DocumentRenderer::postJob(const render::TileKey& key, const render::RasterP
         // job started (its callbacks already received Cancelled).
         {
             std::lock_guard<std::mutex> lock(mutex_);
-            auto it = pending_.find(PendingKey{key, revision});
+            const auto it = pending_.find(PendingKey{key, revision});
             if (it == pending_.end()) {
                 return;
             }
-            it->second.inFlight = true;
+            it->second.state = PendingEntry::State::InFlight;
         }
 
         // Another path may have produced the tile after this entry was created
@@ -210,10 +249,22 @@ void DocumentRenderer::completePending(const PendingKey& pendingKey,
     std::vector<Callback> callbacks;
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        auto it = pending_.find(pendingKey);
-        if (it != pending_.end()) {
-            callbacks = std::move(it->second.callbacks);
-            pending_.erase(it);
+        const auto it = pending_.find(pendingKey);
+        if (it == pending_.end()) {
+            // The entry is already gone (cancelled before its job started);
+            // its callbacks already received Cancelled, deliver nothing.
+            return;
+        }
+        callbacks = std::move(it->second.callbacks);
+        pending_.erase(it);
+        // Record failures BEFORE delivery so later requests replay the error
+        // instead of scheduling (see the failed-tile contract). Cancellations
+        // never reach this function. A success erases any record so
+        // subsequent requests go through the cache's hit path.
+        if (bitmap) {
+            failed_.erase(pendingKey);
+        } else {
+            failed_.insert_or_assign(pendingKey, error);
         }
     }
     if (!callbacks.empty()) {
@@ -231,12 +282,9 @@ void DocumentRenderer::deliverCallbacks(std::vector<Callback> callbacks,
                 continue;
             }
             if (bitmap) {
-                auto payload = cloneBitmap(*bitmap);
-                if (payload.has_value()) {
-                    callback(std::move(payload));
-                } else {
-                    callback(std::unexpected<core::Error>(payload.error()));
-                }
+                // Shared ownership, no pixel copy: receivers get the very
+                // bitmap the cache stores, and must treat it as immutable.
+                callback(bitmap);
             } else {
                 callback(std::unexpected<core::Error>(error));
             }
@@ -248,21 +296,6 @@ void DocumentRenderer::deliverCallbacks(std::vector<Callback> callbacks,
     } else {
         invokeAll();
     }
-}
-
-core::Result<core::Bitmap> DocumentRenderer::cloneBitmap(const core::Bitmap& source) {
-    if (!source.isValid()) {
-        return std::unexpected(
-            core::Error{core::ErrorCode::InvalidArgument, "cannot clone an invalid bitmap", "editor"});
-    }
-    auto copy = core::Bitmap::create(source.width(), source.height(), source.stride());
-    if (!copy.has_value()) {
-        return std::unexpected(copy.error());
-    }
-    if (source.sizeBytes() > 0) {
-        std::memcpy(copy->data(), source.data(), source.sizeBytes());
-    }
-    return copy;
 }
 
 } // namespace rivet::editor

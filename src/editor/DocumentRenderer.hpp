@@ -32,18 +32,43 @@ inline constexpr std::size_t kInvalidPageIndex = static_cast<std::size_t>(-1);
 // stores results in the shared TileCache and delivers them to callers.
 //
 // Callback contract (every callback is invoked EXACTLY once):
-//   - Cache hit at request time: the callback fires synchronously, on the
-//     calling thread, with a copy of the cached bitmap. No job is scheduled.
+//   - Validation failures fire inline on the calling thread with
+//     ErrorCode::InvalidArgument; no job is scheduled and nothing is recorded:
+//     a TileKey belonging to another document, or RasterParams not derived from
+//     the key (params.devicePixelsPerPoint must equal key.scale.scale()).
+//   - A tile that already FAILED for the current revision fires inline on the
+//     calling thread with the recorded error, WITHOUT scheduling. Failed tiles
+//     never re-enter the render pipeline (see failed-tile contract below).
+//   - Cache hit at request time: the callback fires synchronously with the
+//     cache-shared bitmap. No job is scheduled.
 //   - Otherwise the request joins (or creates) a pending entry keyed by
 //     (TileKey, revision); duplicate requests are coalesced onto that entry
-//     and every registered callback receives the same outcome: the bitmap on
-//     success, the backend error on failure, ErrorCode::NotFound for an
-//     unmapped PageId, ErrorCode::InvalidArgument for a TileKey belonging to
-//     another document. Success results are also put() into the TileCache.
-//   - Threading: with a mainDispatcher, callbacks fire posted on the main
+//     and every registered callback receives the same outcome: the cache-shared
+//     bitmap on success, the backend error on failure, ErrorCode::NotFound for
+//     an unmapped PageId. Success results are also put() into the TileCache.
+//   - Threading: with a mainDispatcher, ALL callbacks fire posted on the main
 //     thread; with a null dispatcher (tests) they fire inline on the worker
-//     thread that produced the result. Cache hits and synchronous rejections
-//     always fire inline on the calling thread.
+//     thread that produced the result (synchronous deliveries: inline on the
+//     calling thread).
+//
+// Payload ownership: on success every callback receives the SAME
+// shared_ptr<const core::Bitmap> the TileCache stores. Ownership is shared;
+// the pixel data is never copied and must be treated as immutable by receivers.
+//
+// Failed-tile contract:
+//   - A job that completes with an error (backend failure, unmapped PageId,
+//     OOM while retaining the tile) records the error for its (TileKey,
+//     revision) BEFORE delivering it. Later requestRender() calls for the same
+//     key + revision replay that error inline instead of scheduling work - a
+//     missing tile is re-requested on every repaint, and without the record
+//     each of those would re-schedule a doomed job forever.
+//   - Cancellations (cancelAll) are NOT failures and leave no record.
+//   - A success erases any record for the key, so a retry that succeeds hands
+//     subsequent requests over to the cache's hit path.
+//   - setRevision() clears all records (a new revision keys new entries
+//     anyway; clearing also bounds memory). retryFailedTiles() clears the
+//     CURRENT revision's records so an explicitly requested retry schedules
+//     fresh work.
 //
 // Cancellation contract (cancelAll):
 //   - Queued, not-yet-started requests are dropped and their callbacks receive
@@ -55,14 +80,15 @@ inline constexpr std::size_t kInvalidPageIndex = static_cast<std::size_t>(-1);
 // setRevision). A tile rendered under revision X is invisible to cachedTile()
 // and to later requestRender() calls once the revision moves past X.
 //
-// Lifetime: the destructor cancelAll()s and then WAITS until the dedicated
-// executor stream has no queued or in-flight job left (a render blocked inside
-// the PDF backend blocks destruction, mirroring SerialExecutor's own wait for
-// its in-flight task). The executor must be dedicated to this renderer, as it
-// is in DocumentSession. After the destructor returns, no callback is pending
-// and no worker touches this object. The document, cache, executor and
-// scheduler references must outlive the renderer; DocumentSession declares its
-// members so the renderer is destroyed first.
+// Lifetime: the destructor cancelAll()s and then waits until the dedicated
+// executor stream has no queued or in-flight job left (SerialExecutor::
+// waitUntilIdle). A render blocked inside the PDF backend blocks destruction,
+// mirroring SerialExecutor's own wait for its in-flight task. The executor
+// must be dedicated to this renderer, as it is in DocumentSession. After the
+// destructor returns, no callback is pending and no worker touches this
+// object. The document, cache, executor and scheduler references must outlive
+// the renderer; DocumentSession declares its members so the renderer is
+// destroyed first.
 class DocumentRenderer final : public render::IRenderSource {
 public:
     // pageIndexForId maps PageId -> zero-based PDF page index (the session
@@ -84,7 +110,7 @@ public:
 
     void requestRender(const render::RenderRequest& request,
                        render::RenderPriority priority,
-                       std::function<void(core::Result<core::Bitmap>)> onDone) override;
+                       render::RenderCallback onDone) override;
 
     std::shared_ptr<const core::Bitmap> cachedTile(const render::TileKey& key,
                                                    std::uint64_t revision) const override;
@@ -96,11 +122,18 @@ public:
     std::uint64_t revision() const;
 
     // Called by the owning session when the document content changes; new
-    // requests render and cache under the new revision. Main-thread use.
+    // requests render and cache under the new revision, and failure records
+    // are cleared. Main-thread use.
     void setRevision(std::uint64_t revision);
 
+    // Clears the failure records of the CURRENT revision so the next
+    // requestRender for those tiles schedules fresh work. Call after fixing
+    // whatever made tiles fail; repaints alone never retry a failed tile.
+    // Main-thread use.
+    void retryFailedTiles();
+
 private:
-    using Callback = std::function<void(core::Result<core::Bitmap>)>;
+    using Callback = render::RenderCallback;
 
     struct PendingKey {
         render::TileKey key;
@@ -115,7 +148,9 @@ private:
 
     struct PendingEntry {
         std::vector<Callback> callbacks;
-        bool inFlight = false; // true once its job started executing
+
+        enum class State : std::uint8_t { Queued, InFlight };
+        State state = State::Queued;
     };
 
     // Schedules the rasterization job for one pending entry. pdf::PdfDocument
@@ -124,8 +159,10 @@ private:
     void postJob(const render::TileKey& key, const render::RasterParams& params, std::uint64_t revision);
 
     // Worker-side completion: takes the pending entry's callbacks (erasing the
-    // entry) and delivers `bitmap` (success) or `error` to all of them. Safe to
-    // call when the entry is already gone (cancelled before start): it then
+    // entry), records `error` in failed_ when the outcome is a failure (see
+    // the failed-tile contract; cancellations never reach this path) and
+    // delivers `bitmap` (success) or `error` to all callbacks. Safe to call
+    // when the entry is already gone (cancelled before start): it then
     // delivers nothing.
     void completePending(const PendingKey& pendingKey,
                          const std::shared_ptr<const core::Bitmap>& bitmap,
@@ -133,15 +170,12 @@ private:
 
     // Runs `callbacks` with the outcome, on the main dispatcher when set,
     // otherwise inline on the calling (worker) thread. Static and independent
-    // of `this`: posted deliveries stay safe during teardown.
+    // of `this`: posted deliveries stay safe during teardown. The bitmap is
+    // shared, never copied.
     static void deliverCallbacks(std::vector<Callback> callbacks,
                                  const std::shared_ptr<const core::Bitmap>& bitmap,
                                  const core::Error& error,
                                  core::IMainThreadDispatcher* mainDispatcher);
-
-    // Deep-copies a cached/stored bitmap so it can be handed out as an owned
-    // Result<core::Bitmap> (the interface moves bitmaps, the cache shares them).
-    static core::Result<core::Bitmap> cloneBitmap(const core::Bitmap& source);
 
     core::DocumentId documentId_;
     pdf::PdfDocument& document_;
@@ -150,9 +184,12 @@ private:
     core::SerialExecutor& executor_;
     core::IMainThreadDispatcher* mainDispatcher_;
 
-    // Guards pending_ and currentRevision_.
+    // Guards pending_, failed_ and currentRevision_.
     mutable std::mutex mutex_;
     std::unordered_map<PendingKey, PendingEntry, PendingKeyHash> pending_;
+    // Recorded job failures per (TileKey, revision): see the failed-tile
+    // contract in the class comment.
+    std::unordered_map<PendingKey, core::Error, PendingKeyHash> failed_;
     std::uint64_t currentRevision_ = 1;
 };
 

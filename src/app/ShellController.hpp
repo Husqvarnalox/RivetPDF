@@ -43,6 +43,10 @@ public:
     // chosen document.
     void handleOpenRequest();
 
+    // Opens a document directly (no dialog). Used by handleOpenRequest() and
+    // by the platform entry point for open-on-launch (`rivet file.pdf`).
+    void openDocument(const std::filesystem::path& path);
+
 private:
     // Root container that re-runs the shell layout whenever its frame changes.
     class ShellRoot final : public ui::Container {
@@ -57,7 +61,6 @@ private:
 
     void buildWidgets();
     void layoutShell();
-    void openDocument(const std::filesystem::path& path);
     void closeDocument();
     void updateSidebar();
     void setStatus(std::string text);

@@ -6,7 +6,7 @@ add_library(rivet_editor STATIC
 
 add_library(rivet::editor ALIAS rivet_editor)
 
-target_link_libraries(rivet_editor PUBLIC rivet::core rivet::render rivet::pdf)
+target_link_libraries(rivet_editor PUBLIC rivet::render rivet::pdf rivet::core)
 
 rivet_set_target_warnings(rivet_editor)
 rivet_set_target_sanitizers(rivet_editor)

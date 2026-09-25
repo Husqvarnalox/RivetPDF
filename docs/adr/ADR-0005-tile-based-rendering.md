@@ -87,3 +87,22 @@ Rendering is **tile-oriented from day one**:
   work on every edit; lazy stale-on-read is cheaper and sufficient.
 - **Eager full-document loading**: contradicts lazy page loading; documents
   with thousands of pages would saturate memory and startup time.
+
+## Correction (2026-09-25): physical render scale is part of cache identity
+
+The original decision identified tiles by quantized *zoom* only. The actual
+raster resolution also depends on the display backing scale: 100% zoom on a 1x
+display and 100% zoom on a Retina 2x display produce different pixel
+dimensions and must not share a cache entry.
+
+`TileKey` therefore embeds a **`PhysicalRenderScaleKey`** - device pixels per
+point (quantized zoom x backing scale), quantized UP to multiples of 1/64 and
+clamped to `[0.1, 512]` - instead of the zoom-only `RenderScaleKey`. The
+invariant: two render requests that would produce different pixel dimensions
+never share a cache key. This holds because `RasterParams::devicePixelsPerPoint`
+is always derived from the key (never the raw product), and
+`DocumentRenderer` rejects requests whose params disagree with the key's
+scale. The zoom-only `RenderScaleKey` remains the zoom quantization policy;
+raw floating-point equality is never used as cache identity. Moving a window
+between displays with different backing scales therefore cannot reuse stale
+low- or high-resolution tiles: the next paint computes a different key.

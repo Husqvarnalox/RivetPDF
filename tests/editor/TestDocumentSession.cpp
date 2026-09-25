@@ -10,9 +10,11 @@
 #include "editor/DocumentSession.hpp"
 #include "pdf/PdfEngine.hpp"
 #include "pdf/PdfTypes.hpp"
+#include "render/PhysicalRenderScaleKey.hpp"
 #include "render/RenderPriority.hpp"
 #include "render/RenderRequest.hpp"
 #include "render/RenderScaleKey.hpp"
+#include "render/RenderSource.hpp"
 
 #include <atomic>
 #include <chrono>
@@ -40,9 +42,10 @@ using rivet::pdf::PdfDocument;
 using rivet::pdf::PdfDocumentInfo;
 using rivet::pdf::PdfEngine;
 using rivet::pdf::PdfPageInfo;
+using rivet::render::PhysicalRenderScaleKey;
 using rivet::render::RenderPriority;
 using rivet::render::RenderRequest;
-using rivet::render::RenderScaleKey;
+using rivet::render::RenderResult;
 
 namespace {
 
@@ -145,12 +148,14 @@ RenderRequest makeRequest(const DocumentSession& session, std::size_t pageIndex,
     RenderRequest request;
     request.key.documentId = session.id();
     request.key.pageId = session.pageId(pageIndex);
-    request.key.scale = RenderScaleKey::fromZoom(1.0);
+    // 1.0 zoom on a 1x display: physical density 1.0.
+    request.key.scale = PhysicalRenderScaleKey::fromDensities(1.0, 1.0);
     request.key.tileX = 0;
     request.key.tileY = tileY;
     const Size pageSize = session.pageSizePoints(pageIndex);
     request.params.pageRectPoints = Rect{0.0, 0.0, pageSize.width, pageSize.height};
-    request.params.devicePixelsPerPoint = 1.0;
+    // MUST derive from the key: DocumentRenderer rejects mismatches.
+    request.params.devicePixelsPerPoint = request.key.scale.scale();
     return request;
 }
 
@@ -161,7 +166,7 @@ bool settled(const Future& future, std::chrono::milliseconds timeout = std::chro
     return future.wait_for(timeout) == std::future_status::ready;
 }
 
-void recordDelivery(std::promise<Result<Bitmap>>& target, Result<Bitmap> result) {
+void recordDelivery(std::promise<RenderResult>& target, RenderResult result) {
     target.set_value(std::move(result));
 }
 
@@ -224,19 +229,20 @@ RIVET_TEST(requestRenderDeliversBitmap) {
     auto& source = session->renderSource();
     const RenderRequest request = makeRequest(*session, 0);
 
-    std::promise<Result<Bitmap>> delivered;
+    std::promise<RenderResult> delivered;
     auto deliveredFuture = delivered.get_future();
     source.requestRender(request, RenderPriority::Visible,
-                         [&delivered](Result<Bitmap> result) { recordDelivery(delivered, std::move(result)); });
+                         [&delivered](RenderResult result) { recordDelivery(delivered, std::move(result)); });
 
     CHECK(settled(deliveredFuture));
-    const Result<Bitmap> result = deliveredFuture.get();
+    const RenderResult result = deliveredFuture.get();
     CHECK(result.has_value());
-    CHECK_EQ(result->width(), 200u);
-    CHECK_EQ(result->height(), 300u);
+    const std::shared_ptr<const Bitmap> first = *result;
+    CHECK_EQ(first->width(), 200u);
+    CHECK_EQ(first->height(), 300u);
     // The fake fills every byte with 0xAB: check the first and the very last.
-    CHECK(result->data()[0] == std::byte{0xAB});
-    CHECK(result->data()[result->stride() * (result->height() - 1) + result->width() * 4 - 1] ==
+    CHECK(first->data()[0] == std::byte{0xAB});
+    CHECK(first->data()[first->stride() * (first->height() - 1) + first->width() * 4 - 1] ==
           std::byte{0xAB});
     CHECK_EQ(fake->renderCalls.load(), 1);
     CHECK_EQ(fake->lastPageIndex.load(), std::size_t{0});
@@ -245,18 +251,20 @@ RIVET_TEST(requestRenderDeliversBitmap) {
     CHECK(source.cachedTile(request.key, session->revision()) != nullptr);
 
     // ...so a second identical request completes SYNCHRONOUSLY from the cache,
-    // without another rasterization pass.
+    // without another rasterization pass - and receives the SAME shared
+    // bitmap, not a copy.
     std::atomic<bool> secondDelivered{false};
-    Result<Bitmap> secondResult;
+    std::shared_ptr<const Bitmap> secondTile;
     source.requestRender(request, RenderPriority::Visible,
-                         [&secondDelivered, &secondResult](Result<Bitmap> delivered2) {
-                             secondResult = std::move(delivered2);
+                         [&secondDelivered, &secondTile](RenderResult delivered2) {
+                             if (delivered2.has_value()) secondTile = *delivered2;
                              secondDelivered.store(true, std::memory_order_release);
                          });
     CHECK(secondDelivered.load(std::memory_order_acquire));
-    CHECK(secondResult.has_value());
-    CHECK_EQ(secondResult->width(), 200u);
-    CHECK_EQ(secondResult->height(), 300u);
+    CHECK(secondTile != nullptr);
+    CHECK_EQ(secondTile->width(), 200u);
+    CHECK_EQ(secondTile->height(), 300u);
+    CHECK_EQ(secondTile.get(), first.get()); // shared ownership, no deep copy
     CHECK_EQ(fake->renderCalls.load(), 1);
 }
 
@@ -271,13 +279,13 @@ RIVET_TEST(renderFailureDeliversError) {
     auto& source = session->renderSource();
     const RenderRequest request = makeRequest(*session, 1);
 
-    std::promise<Result<Bitmap>> delivered;
+    std::promise<RenderResult> delivered;
     auto deliveredFuture = delivered.get_future();
     source.requestRender(request, RenderPriority::Visible,
-                         [&delivered](Result<Bitmap> result) { recordDelivery(delivered, std::move(result)); });
+                         [&delivered](RenderResult result) { recordDelivery(delivered, std::move(result)); });
 
     CHECK(settled(deliveredFuture));
-    const Result<Bitmap> result = deliveredFuture.get();
+    const RenderResult result = deliveredFuture.get();
     CHECK(!result.has_value());
     CHECK_EQ(result.error().code, ErrorCode::Io);
     CHECK_EQ(fake->renderCalls.load(), 1);
@@ -298,26 +306,26 @@ RIVET_TEST(cancelAllDeliversCancelled) {
     // Request A: goes in flight and blocks inside the fake's renderPage.
     fake->blockNextRender = true;
     const RenderRequest requestA = makeRequest(*session, 0, /*tileY=*/0);
-    std::promise<Result<Bitmap>> deliveredA;
+    std::promise<RenderResult> deliveredA;
     auto futureA = deliveredA.get_future();
     source.requestRender(requestA, RenderPriority::Visible,
-                         [&deliveredA](Result<Bitmap> result) { recordDelivery(deliveredA, std::move(result)); });
+                         [&deliveredA](RenderResult result) { recordDelivery(deliveredA, std::move(result)); });
     auto entered = fake->renderEntered();
     CHECK(settled(entered)); // A's job is inside renderPage now
     CHECK_EQ(fake->renderCalls.load(), 1);
 
     // Request B (same page, different tile): queued behind blocked A.
     const RenderRequest requestB = makeRequest(*session, 0, /*tileY=*/1);
-    std::promise<Result<Bitmap>> deliveredB;
+    std::promise<RenderResult> deliveredB;
     auto futureB = deliveredB.get_future();
     source.requestRender(requestB, RenderPriority::Visible,
-                         [&deliveredB](Result<Bitmap> result) { recordDelivery(deliveredB, std::move(result)); });
+                         [&deliveredB](RenderResult result) { recordDelivery(deliveredB, std::move(result)); });
 
     // cancelAll: queued B is dropped and its callback receives Cancelled.
     // With a null dispatcher that delivery happens inline, synchronously.
     source.cancelAll();
     CHECK(futureB.wait_for(std::chrono::seconds(0)) == std::future_status::ready);
-    const Result<Bitmap> resultB = futureB.get();
+    const RenderResult resultB = futureB.get();
     CHECK(!resultB.has_value());
     CHECK_EQ(resultB.error().code, ErrorCode::Cancelled);
 
@@ -325,10 +333,10 @@ RIVET_TEST(cancelAllDeliversCancelled) {
     // and deliver its bitmap normally.
     fake->releaseRender();
     CHECK(settled(futureA));
-    const Result<Bitmap> resultA = futureA.get();
+    const RenderResult resultA = futureA.get();
     CHECK(resultA.has_value());
-    CHECK_EQ(resultA->width(), 200u);
-    CHECK_EQ(resultA->height(), 300u);
+    CHECK_EQ((*resultA)->width(), 200u);
+    CHECK_EQ((*resultA)->height(), 300u);
 
     // Exactly-once, both sides: A rendered once, B never reached the backend.
     CHECK_EQ(fake->renderCalls.load(), 1);
@@ -349,10 +357,10 @@ RIVET_TEST(revisionPropagation) {
     CHECK_EQ(revisionX, std::uint64_t{1});
 
     // Render at revision X.
-    std::promise<Result<Bitmap>> delivered;
+    std::promise<RenderResult> delivered;
     auto deliveredFuture = delivered.get_future();
     source.requestRender(request, RenderPriority::Visible,
-                         [&delivered](Result<Bitmap> result) { recordDelivery(delivered, std::move(result)); });
+                         [&delivered](RenderResult result) { recordDelivery(delivered, std::move(result)); });
     CHECK(settled(deliveredFuture));
     CHECK(deliveredFuture.get().has_value());
     CHECK(source.cachedTile(request.key, revisionX) != nullptr);
@@ -365,10 +373,10 @@ RIVET_TEST(revisionPropagation) {
 
     // A request after the edit re-renders under the new revision.
     const int callsBefore = fake->renderCalls.load();
-    std::promise<Result<Bitmap>> delivered2;
+    std::promise<RenderResult> delivered2;
     auto deliveredFuture2 = delivered2.get_future();
     source.requestRender(request, RenderPriority::Visible,
-                         [&delivered2](Result<Bitmap> result) { recordDelivery(delivered2, std::move(result)); });
+                         [&delivered2](RenderResult result) { recordDelivery(delivered2, std::move(result)); });
     CHECK(settled(deliveredFuture2));
     CHECK(deliveredFuture2.get().has_value());
     CHECK_EQ(fake->renderCalls.load(), callsBefore + 1);

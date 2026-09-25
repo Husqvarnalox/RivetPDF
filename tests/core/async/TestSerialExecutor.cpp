@@ -5,6 +5,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <functional>
 #include <future>
 #include <mutex>
 #include <thread>
@@ -224,4 +225,173 @@ RIVET_TEST(recursivePostRunsAfterCurrentTask) {
     CHECK_EQ(order.size(), std::size_t{2});
     CHECK_EQ(order[0], 0);
     CHECK_EQ(order[1], 1);
+}
+
+// Queued-not-started tasks must never run once the executor is torn down, and
+// the teardown must still return promptly. Made deterministic by occupying the
+// only worker with a raw scheduler task: the executor's queued task provably
+// cannot start while it is dropped, and the freed worker afterwards runs only
+// the now-empty drain.
+RIVET_TEST(destructorDropsQueuedTasks) {
+    TaskScheduler scheduler(1); // single worker, held by the blocker below
+    std::atomic<bool> victimRan{false};
+
+    std::promise<void> workerGate;
+    auto workerGateFuture = workerGate.get_future();
+    std::atomic<bool> blockerStarted{false};
+    scheduler.post([&] {
+        blockerStarted.store(true, std::memory_order_release);
+        workerGateFuture.wait();
+    });
+    CHECK(waitFor([&] { return blockerStarted.load(std::memory_order_acquire); }));
+
+    {
+        SerialExecutor executor(scheduler);
+        executor.post([&] { victimRan.store(true, std::memory_order_relaxed); });
+        CHECK(executor.hasPendingWork());
+
+        // The worker is provably stuck in the blocker, so this drop happens
+        // before the victim could ever start (the destructor performs the
+        // same drop if it wins the race; either way the task must not run).
+        executor.cancelPending();
+
+        // Free the worker so the (now empty) drain can complete and the
+        // destructor's wait returns promptly.
+        workerGate.set_value();
+    }
+
+    CHECK(!victimRan.load());
+}
+
+// A task that keeps re-posting itself a bounded number of times must run
+// every iteration, in FIFO order, and leave the executor idle afterwards.
+RIVET_TEST(recursivePostChainRunsEveryIteration) {
+    TaskScheduler scheduler(2);
+    SerialExecutor executor(scheduler);
+
+    constexpr int kIterations = 100;
+    std::mutex mutex;
+    std::vector<int> order;
+    std::atomic<int> runs{0};
+    std::promise<void> done;
+    auto doneFuture = done.get_future();
+
+    std::function<void()> step = [&] {
+        const int index = runs.fetch_add(1, std::memory_order_relaxed);
+        {
+            std::lock_guard<std::mutex> lock(mutex);
+            order.push_back(index);
+        }
+        if (index + 1 < kIterations) {
+            executor.post(step);
+        } else {
+            done.set_value();
+        }
+    };
+    executor.post(step);
+
+    CHECK(doneFuture.wait_for(std::chrono::seconds(5)) == std::future_status::ready);
+    executor.waitUntilIdle(); // must return promptly now
+
+    std::lock_guard<std::mutex> lock(mutex);
+    CHECK_EQ(order.size(), std::size_t{kIterations});
+    for (int i = 0; i < kIterations; ++i) {
+        CHECK_EQ(order[static_cast<std::size_t>(i)], i);
+    }
+}
+
+// Posts from several threads concurrently: every post must run exactly once.
+RIVET_TEST(concurrentPostsAllRun) {
+    TaskScheduler scheduler(4);
+    SerialExecutor executor(scheduler);
+
+    constexpr int kThreads = 4;
+    constexpr int kPostsPerThread = 200;
+    std::atomic<int> runs{0};
+
+    std::vector<std::thread> posters;
+    for (int t = 0; t < kThreads; ++t) {
+        posters.emplace_back([&] {
+            for (int i = 0; i < kPostsPerThread; ++i) {
+                executor.post([&runs] { ++runs; });
+            }
+        });
+    }
+    for (auto& poster : posters) {
+        poster.join();
+    }
+
+    executor.waitUntilIdle();
+    CHECK_EQ(runs.load(), kThreads * kPostsPerThread);
+}
+
+// cancelPending clears queued work; waitUntilIdle then returns promptly once
+// the in-flight task (the only survivor) completes.
+RIVET_TEST(cancelPendingThenWaitUntilIdle) {
+    TaskScheduler scheduler(1);
+    SerialExecutor executor(scheduler);
+
+    std::atomic<int> ranCount{0};
+    std::atomic<bool> blockerStarted{false};
+
+    std::promise<void> gate;
+    auto gateFuture = gate.get_future();
+
+    executor.post([&] {
+        blockerStarted.store(true, std::memory_order_release);
+        gateFuture.wait();
+        ++ranCount;
+    });
+    CHECK(waitFor([&] { return blockerStarted.load(std::memory_order_acquire); }));
+
+    for (int i = 0; i < 50; ++i) {
+        executor.post([&] { ++ranCount; });
+    }
+    executor.cancelPending();
+    // Only the in-flight blocker remains pending.
+    CHECK(executor.hasPendingWork());
+
+    gate.set_value();
+    executor.waitUntilIdle(); // bounded: nothing queued, blocker finishes
+    CHECK_EQ(ranCount.load(), 1);
+}
+
+// The documented ownership order, written out explicitly: the executor is
+// destroyed while the scheduler is still alive; the scheduler goes last.
+RIVET_TEST(executorDestroyedBeforeScheduler) {
+    TaskScheduler scheduler(2);
+
+    std::atomic<int> ran{0};
+    {
+        SerialExecutor executor(scheduler);
+        for (int i = 0; i < 10; ++i) {
+            executor.post([&ran] { ++ran; });
+        }
+    } // executor dies first: cancels queued work, joins, returns
+
+    // Whatever ran, the scheduler is still fully usable afterwards.
+    std::atomic<int> postDtorRuns{0};
+    {
+        SerialExecutor executor(scheduler);
+        executor.post([&postDtorRuns] { ++postDtorRuns; });
+        executor.waitUntilIdle();
+    }
+    CHECK_EQ(postDtorRuns.load(), 1);
+    CHECK_GE(ran.load(), 0);
+    CHECK_LE(ran.load(), 10);
+}
+
+// Every executor dies before the scheduler that backs it; scheduler shutdown
+// then finds no work referencing executors and joins cleanly.
+RIVET_TEST(schedulerOutlivesAllExecutors) {
+    TaskScheduler scheduler(2);
+    {
+        SerialExecutor executorA(scheduler);
+        SerialExecutor executorB(scheduler);
+        executorA.post([] {});
+        executorB.post([] {});
+    } // both executors destroyed here, per the documented order
+
+    // The scheduler destructor runs at function exit: reaching this point
+    // without hanging or asserting is the contract under test.
 }

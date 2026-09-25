@@ -1,6 +1,7 @@
 add_executable(rivet_render_tests
     TestPageLayout.cpp
     TestPageTransform.cpp
+    TestPhysicalRenderScaleKey.cpp
     TestRenderScaleKey.cpp
     TestTileCache.cpp
     TestZoomState.cpp

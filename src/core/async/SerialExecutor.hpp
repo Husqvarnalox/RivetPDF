@@ -37,6 +37,11 @@ public:
     // Drops queued-not-started tasks; the in-flight task continues.
     void cancelPending();
 
+    // Blocks until no task of this executor is queued or running. The
+    // destructor uses it; tests and owners (DocumentRenderer teardown) may
+    // call it to join the stream deterministically instead of polling.
+    void waitUntilIdle();
+
     // True when a task is queued or currently running.
     bool hasPendingWork() const;
 
