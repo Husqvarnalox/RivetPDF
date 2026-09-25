@@ -12,11 +12,23 @@
 namespace rivet::ui {
 
 // One overlay rectangle painted OVER the page tiles (selection highlights,
-// search matches, later link hover). rect is in PAGE DISPLAY space (points,
+// search matches, link hover). rect is in PAGE DISPLAY space (points,
 // top-left origin, y-down) - the same space the render source rasters in.
 struct OverlayRect {
     core::Rect rect;
     Color color;
+};
+
+// A link hit resolved by the bridge. Internal links navigate by page index
+// (+ optional target point in page display space); external links carry the
+// URL for the host's scheme-validated opener.
+struct ViewerLinkHit {
+    enum class Kind : std::uint8_t { Internal, External };
+    Kind kind = Kind::Internal;
+    std::size_t pageIndex = 0;      // Internal only
+    bool hasPoint = false;          // Internal only
+    core::Point point;              // page display points
+    std::string url;                // External only
 };
 
 // Bridges the viewport to viewer text features (text hit testing, selection
@@ -55,6 +67,18 @@ public:
     virtual void selectionDragMoved(std::size_t pageIndex, std::uint32_t charIndex) = 0;
     virtual void selectionDragEnded() = 0;
     virtual void selectionCleared() = 0;
+
+    // Link interaction. The bridge resolves page links (they load
+    // asynchronously; a page with links not yet loaded reports none). Hit
+    // testing is in page display space.
+    virtual std::optional<ViewerLinkHit> linkAtPoint(std::size_t pageIndex,
+                                                     const core::Point& pagePoint) = 0;
+    // Rects to stroke as a subtle hover indication (page display space).
+    virtual std::vector<core::Rect> linkRects(std::size_t pageIndex) = 0;
+    // Fired for a click on a link (mouse down + up over the same link).
+    // The host navigates internally / opens external URLs only after this
+    // EXPLICIT user interaction.
+    virtual void linkActivated(const ViewerLinkHit& hit) = 0;
 };
 
 } // namespace rivet::ui

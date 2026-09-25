@@ -1,5 +1,6 @@
 add_executable(rivet_app_tests
     TestDocumentWorkspace.cpp
+    TestUrlPolicy.cpp
 )
 
 add_test(NAME app COMMAND rivet_app_tests)

@@ -4,6 +4,7 @@
 #include "core/Bitmap.hpp"
 #include "core/geometry/Rect.hpp"
 #include "pdf/PdfText.hpp"
+#include "pdf/PdfNavigation.hpp"
 #include "pdf/PdfTypes.hpp"
 
 #include <cstddef>
@@ -39,6 +40,31 @@ public:
     virtual core::Result<core::Bitmap> renderPage(std::size_t pageIndex,
                                                   const core::Rect& pageRectPoints,
                                                   double devicePixelsPerPoint) = 0;
+
+    // Document outline ("bookmarks") as a Rivet-owned tree; the synthetic
+    // root wraps the top-level items as children. std::nullopt = the document
+    // has no outline (not an error). The tree is depth/node-bounded and
+    // cycle-safe at extraction time. Default: NotAvailable.
+    virtual core::Result<std::optional<PdfOutlineNode>> outline() const {
+        (void)0;
+        return std::unexpected(core::makeError(core::ErrorCode::NotAvailable,
+                                               "this backend has no outline support", "pdf"));
+    }
+
+    // Label of a page per the PDF page-label tree ("i", "A-1", ...), or an
+    // empty string when the document defines no labels. Default: NotAvailable.
+    virtual core::Result<std::string> pageLabel(std::size_t pageIndex) const {
+        (void)pageIndex;
+        return std::unexpected(core::makeError(core::ErrorCode::NotAvailable,
+                                               "this backend has no page label support", "pdf"));
+    }
+
+    // All links of a page. Default: NotAvailable.
+    virtual core::Result<std::vector<PdfPageLink>> pageLinks(std::size_t pageIndex) const {
+        (void)pageIndex;
+        return std::unexpected(core::makeError(core::ErrorCode::NotAvailable,
+                                               "this backend has no link support", "pdf"));
+    }
 
     // Extracts the text of a page. The returned PdfTextPage is immutable,
     // Rivet-owned data with no engine handles, so it may outlive any call and

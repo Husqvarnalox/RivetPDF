@@ -3,6 +3,7 @@
 #include "core/Error.hpp"
 #include "core/async/IMainThreadDispatcher.hpp"
 #include "platform/Clipboard.hpp"
+#include "platform/ExternalUrlOpener.hpp"
 
 #include <filesystem>
 
@@ -41,6 +42,9 @@ struct ShellServices {
 
     // System clipboard. May be null (copy disabled on this backend).
     IClipboard* clipboard = nullptr;
+
+    // System URL opener. May be null (external links then do nothing).
+    IExternalUrlOpener* urlOpener = nullptr;
 
     // Sets the window title (UTF-8). May be null; the shell then never
     // touches the platform window title. Used for the active document name.

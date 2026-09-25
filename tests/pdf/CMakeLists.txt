@@ -11,6 +11,9 @@ add_executable(rivet_pdf_tests
     # Text-extraction tests against the text fixtures: PDFium-ON bodies only
     # (same skip-when-unavailable pattern).
     TestPdfiumText.cpp
+    # Document-navigation tests (outline, page labels, links): PDFium-ON
+    # bodies only.
+    TestPdfNavigation.cpp
     # Compiled directly into the test binary rather than linked from
     # rivet_pdfium, so the gate tests run with RIVET_WITH_PDFIUM=OFF too. The
     # gate translation unit has no FPDF_* dependency. In PDFium-ON builds the

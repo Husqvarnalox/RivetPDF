@@ -32,6 +32,7 @@ DocumentSession::DocumentSession(core::DocumentId id,
                                  std::filesystem::path path,
                                  pdf::PdfDocumentInfo info,
                                  std::vector<PageMeta> pages,
+                                 std::vector<std::string> pageLabels,
                                  std::unique_ptr<pdf::PdfDocument> document,
                                  core::TaskScheduler& scheduler,
                                  core::IMainThreadDispatcher* mainDispatcher,
@@ -41,6 +42,7 @@ DocumentSession::DocumentSession(core::DocumentId id,
       info_(std::move(info)),
       mainDispatcher_(mainDispatcher),
       pages_(std::move(pages)),
+      pageLabels_(std::move(pageLabels)),
       document_(std::move(document)),
       executor_(scheduler),
       renderer_(id_,
@@ -54,7 +56,8 @@ DocumentSession::DocumentSession(core::DocumentId id,
                 executor_,
                 mainDispatcher),
       pageIndexMap_(std::move(pageIndexMap)),
-      textService_(*this) {
+      textService_(*this),
+      linkService_(*this) {
     std::vector<render::PageLayout::PageInfo> layoutPages;
     layoutPages.reserve(pages_.size());
     for (const PageMeta& page : pages_) {
@@ -86,6 +89,8 @@ core::Result<std::unique_ptr<DocumentSession>> DocumentSession::create(
     const pdf::PdfDocumentInfo info = document->info();
     std::vector<PageMeta> pages;
     pages.reserve(info.pageCount);
+    std::vector<std::string> labels;
+    labels.reserve(info.pageCount);
     core::IdGenerator<core::PageIdTag> pageIds;
     for (std::size_t index = 0; index < info.pageCount; ++index) {
         auto page = document->pageInfo(index);
@@ -93,13 +98,15 @@ core::Result<std::unique_ptr<DocumentSession>> DocumentSession::create(
             return std::unexpected(std::move(page).error());
         }
         pages.push_back(PageMeta{pageIds.next(), page->sizePoints, page->rotation});
+        // Optional metadata: a label failure never blocks the document.
+        labels.push_back(document->pageLabel(index).value_or(std::string{}));
     }
 
     // Build the index map BEFORE pages is moved into the constructor.
     auto pageIndexMap = buildPageIndexMap(pages);
     return std::unique_ptr<DocumentSession>(new DocumentSession(
-        mintDocumentId(), path, info, std::move(pages), std::move(document), scheduler,
-        mainDispatcher, std::move(pageIndexMap)));
+        mintDocumentId(), path, info, std::move(pages), std::move(labels), std::move(document),
+        scheduler, mainDispatcher, std::move(pageIndexMap)));
 }
 
 std::size_t DocumentSession::pageIndexFor(core::PageId pageId) const {
@@ -115,6 +122,11 @@ core::PageId DocumentSession::pageId(std::size_t index) const {
 core::Size DocumentSession::pageSizePoints(std::size_t index) const {
     assert(index < pages_.size());
     return pages_[index].sizePoints;
+}
+
+const std::string& DocumentSession::pageLabel(std::size_t index) const {
+    assert(index < pageLabels_.size());
+    return pageLabels_[index];
 }
 
 void DocumentSession::markModified() {

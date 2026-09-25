@@ -199,6 +199,12 @@ private:
     // True while a mouse drag is selecting text.
     bool selecting_ = false;
 
+    // Pending link press (down over a link; fires on up over the same one).
+    bool linkPressed_ = false;
+    std::optional<ViewerLinkHit> pressedLink_;
+    // Hover state for the link under the pointer (repaint on change).
+    bool linkHovered_ = false;
+
     // Alive flag shared with in-flight render callbacks (see class comment).
     std::shared_ptr<std::atomic<bool>> aliveFlag_;
 };

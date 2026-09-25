@@ -71,6 +71,10 @@ public:
     // Fired after the user clicks a row (not for programmatic selection).
     void setOnSelectionChanged(std::function<void(std::size_t)> onSelectionChanged);
 
+    // Page labels from the PDF page-label tree ("i", "A-1", ...); rows with
+    // an empty label fall back to "Page N". Call after setDocument.
+    void setPageLabels(std::vector<std::string> labels);
+
     // Scrolls the given page row fully into view. Called by the shell when
     // the tracked current page changes so the list follows the document.
     void revealPage(std::size_t index);
@@ -103,6 +107,7 @@ private:
 
     std::optional<std::size_t> selectedIndex_;
     std::function<void(std::size_t)> onSelectionChanged_;
+    std::vector<std::string> pageLabels_;
 
     // Prefix sums of row heights (prefixHeights_[i] = top of row i;
     // prefixHeights_.back() + last height = total content height).

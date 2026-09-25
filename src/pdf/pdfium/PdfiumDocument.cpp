@@ -4,11 +4,14 @@
 #include <cmath>
 #include <cstdint>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 #include "PdfiumCallGate.hpp"
 #include "PdfiumTextPage.h"
 #include "fpdf_doc.h"  // FPDF_GetMetaText
+#include "PdfiumDisplayTransform.h"
+#include "fpdf_doc.h"    // bookmarks, dests, actions, links, page labels
 #include "fpdf_edit.h" // FPDFPage_GetRotation
 
 namespace rivet::pdf {
@@ -387,6 +390,290 @@ core::Result<std::shared_ptr<const PdfTextPage>> PdfiumDocument::textPage(std::s
             }
             return extractTextPage(document_, pageIndex, info_.pageCount);
         });
+}
+
+
+namespace {
+
+// Title of one bookmark (UTF-16LE per FPDFBookmark_GetTitle). Caller holds
+// the gate. Empty on failure.
+std::string metaTextFromBookmark(FPDF_BOOKMARK bookmark) {
+    if (bookmark == nullptr) return {};
+    const unsigned long needed = FPDFBookmark_GetTitle(bookmark, nullptr, 0);
+    if (needed < 2 || needed > kMaxMetaTextBytes) return {};
+    std::vector<std::uint8_t> bytes(needed);
+    const unsigned long written = FPDFBookmark_GetTitle(bookmark, bytes.data(), needed);
+    if (written < 2) return {};
+    const std::size_t byteCount = std::min<std::size_t>(written, needed) & ~std::size_t{1};
+    return utf16leToUtf8(bytes.data(), byteCount);
+}
+
+// Safety limits for untrusted outline trees (see ARCHITECTURE.md section 9).
+constexpr int kMaxOutlineDepth = 32;
+constexpr std::size_t kMaxOutlineNodes = 10000;
+
+using VisitedBookmarks = std::unordered_set<FPDF_BOOKMARK>;
+
+// Node budget shared across the whole walk: a pointer so recursion can
+// exhaust it. When it runs out, the enclosing node is marked truncated.
+struct OutlineBudget {
+    std::size_t nodesLeft = kMaxOutlineNodes;
+};
+
+// Extracts the destination of a bookmark/action. Caller holds the gate.
+// Returns nullopt when the destination cannot be resolved (no dest, bad
+// page index) - the node survives without a destination.
+std::optional<PdfDestination> resolveDest(FPDF_DOCUMENT document, FPDF_DEST dest) {
+    if (dest == nullptr) return std::nullopt;
+    const int pageIndex = FPDFDest_GetDestPageIndex(document, dest);
+    if (pageIndex < 0) return std::nullopt;
+
+    PdfDestination result;
+    result.pageIndex = static_cast<std::size_t>(pageIndex);
+
+    FPDF_BOOL hasX = 0;
+    FPDF_BOOL hasY = 0;
+    FPDF_BOOL hasZoom = 0;
+    FS_FLOAT x = 0.0f;
+    FS_FLOAT y = 0.0f;
+    FS_FLOAT zoom = 0.0f;
+    if (FPDFDest_GetLocationInPage(dest, &hasX, &hasY, &hasZoom, &x, &y, &zoom) != 0 && hasX != 0 &&
+        hasY != 0) {
+        // The point needs the destination PAGE's display geometry (a dest may
+        // reference a different page than the one being processed).
+        internal::ScopedPage targetPage(FPDF_LoadPage(document, pageIndex));
+        if (targetPage.get() != nullptr) {
+            if (const auto geometry = internal::makeDisplayGeometry(targetPage.get());
+                geometry.has_value()) {
+                result.point = internal::userToDisplay(*geometry, static_cast<double>(x),
+                                                       static_cast<double>(y));
+                result.hasPoint = true;
+            }
+        }
+    }
+
+    unsigned long numParams = 0;
+    FS_FLOAT params[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+    const unsigned long view = FPDFDest_GetView(dest, &numParams, params);
+    switch (view) {
+        case PDFDEST_VIEW_XYZ: result.fit = PdfDestination::Fit::XYZ; break;
+        case PDFDEST_VIEW_FIT: result.fit = PdfDestination::Fit::Fit; break;
+        case PDFDEST_VIEW_FITH: result.fit = PdfDestination::Fit::FitH; break;
+        case PDFDEST_VIEW_FITV: result.fit = PdfDestination::Fit::FitV; break;
+        case PDFDEST_VIEW_FITR: result.fit = PdfDestination::Fit::FitR; break;
+        case PDFDEST_VIEW_FITB: result.fit = PdfDestination::Fit::FitB; break;
+        case PDFDEST_VIEW_FITBH: result.fit = PdfDestination::Fit::FitBH; break;
+        case PDFDEST_VIEW_FITBV: result.fit = PdfDestination::Fit::FitBV; break;
+        default: result.fit = PdfDestination::Fit::Unknown; break;
+    }
+    return result;
+}
+
+// Destination of one bookmark: its GOTO action wins over the bare dest.
+std::optional<PdfDestination> bookmarkDestination(FPDF_DOCUMENT document, FPDF_BOOKMARK bookmark) {
+    const FPDF_ACTION action = FPDFBookmark_GetAction(bookmark);
+    if (action != nullptr &&
+        FPDFAction_GetType(action) == static_cast<unsigned long>(PDFACTION_GOTO)) {
+        return resolveDest(document, FPDFAction_GetDest(document, action));
+    }
+    return resolveDest(document, FPDFBookmark_GetDest(document, bookmark));
+}
+
+// Recursive outline walk. Caller holds the gate. visitedPath guards against
+// circular trees: a bookmark encountered twice on one descent stops that
+// branch (its children are not expanded).
+std::vector<PdfOutlineNode> collectOutlineLevel(FPDF_DOCUMENT document, FPDF_BOOKMARK first,
+                                                int depth, VisitedBookmarks& visitedPath,
+                                                OutlineBudget& budget) {
+    std::vector<PdfOutlineNode> nodes;
+    FPDF_BOOKMARK bookmark = first;
+    while (bookmark != nullptr) {
+        if (budget.nodesLeft == 0) {
+            if (!nodes.empty()) nodes.back().truncated = true;
+            break;
+        }
+        // Cycle guard: a handle seen on the active path must not recurse.
+        if (visitedPath.count(bookmark) != 0) break;
+
+        PdfOutlineNode node;
+        node.title = metaTextFromBookmark(bookmark);
+        node.destination = bookmarkDestination(document, bookmark);
+
+        visitedPath.insert(bookmark);
+        if (depth + 1 < kMaxOutlineDepth && budget.nodesLeft > 0) {
+            node.children = collectOutlineLevel(document, FPDFBookmark_GetFirstChild(document, bookmark),
+                                                depth + 1, visitedPath, budget);
+        } else if (FPDFBookmark_GetFirstChild(document, bookmark) != nullptr) {
+            node.truncated = true;
+        }
+        visitedPath.erase(bookmark);
+
+        --budget.nodesLeft;
+        nodes.push_back(std::move(node));
+        bookmark = FPDFBookmark_GetNextSibling(document, bookmark);
+    }
+    return nodes;
+}
+
+} // namespace
+
+core::Result<std::optional<PdfOutlineNode>> PdfiumDocument::outline() const {
+    // Public entry operation: one gate acquisition for the whole walk.
+    return globalPdfiumCallGate().invoke([&]() -> core::Result<std::optional<PdfOutlineNode>> {
+        VisitedBookmarks visitedPath;
+        OutlineBudget budget;
+        std::vector<PdfOutlineNode> top =
+            collectOutlineLevel(document_, FPDFBookmark_GetFirstChild(document_, nullptr), 0,
+                                visitedPath, budget);
+        if (top.empty()) return std::optional<PdfOutlineNode>{};
+        PdfOutlineNode root;
+        root.children = std::move(top);
+        return std::optional<PdfOutlineNode>(std::move(root));
+    });
+}
+
+core::Result<std::string> PdfiumDocument::pageLabel(std::size_t pageIndex) const {
+    // Public entry operation: one gate acquisition.
+    return globalPdfiumCallGate().invoke([&]() -> core::Result<std::string> {
+        if (pageIndex >= info_.pageCount) {
+            return std::unexpected(core::makeError(core::ErrorCode::InvalidArgument,
+                                                   "page index " + std::to_string(pageIndex) +
+                                                       " out of range (document has " +
+                                                       std::to_string(info_.pageCount) + " pages)",
+                                                   "pdf"));
+        }
+        const unsigned long needed = FPDF_GetPageLabel(document_, static_cast<int>(pageIndex),
+                                                       nullptr, 0);
+        if (needed < 2 || needed > kMaxMetaTextBytes) {
+            return std::string{}; // no label (or absurd): fall back to numbers
+        }
+        std::vector<std::uint8_t> bytes(needed);
+        const unsigned long written = FPDF_GetPageLabel(document_, static_cast<int>(pageIndex),
+                                                        bytes.data(), needed);
+        if (written < 2) return std::string{};
+        const std::size_t byteCount = std::min<std::size_t>(written, needed) & ~std::size_t{1};
+        return utf16leToUtf8(bytes.data(), byteCount);
+    });
+}
+
+namespace {
+
+// Rects of one link: quad-point boxes (display space), annotation-rect
+// fallback. Caller holds the gate.
+std::vector<core::Rect> linkRects(FPDF_LINK link, const internal::DisplayGeometry& geometry) {
+    std::vector<core::Rect> rects;
+    const int quadCount = FPDFLink_CountQuadPoints(link);
+    bool haveQuads = false;
+    for (int q = 0; q < quadCount; ++q) {
+        FS_QUADPOINTSF quad{};
+        if (FPDFLink_GetQuadPoints(link, q, &quad) == 0) continue;
+        // Two opposite corners of the quad's bounding box (quads may skew;
+        // the axis-aligned bound is what the viewer can highlight).
+        const core::Point a = internal::userToDisplay(geometry, static_cast<double>(quad.x1),
+                                                      static_cast<double>(quad.y1));
+        const core::Point b = internal::userToDisplay(geometry, static_cast<double>(quad.x3),
+                                                      static_cast<double>(quad.y3));
+        const core::Point c = internal::userToDisplay(geometry, static_cast<double>(quad.x2),
+                                                      static_cast<double>(quad.y2));
+        const core::Point d = internal::userToDisplay(geometry, static_cast<double>(quad.x4),
+                                                      static_cast<double>(quad.y4));
+        const double minX = std::min({a.x, b.x, c.x, d.x});
+        const double maxX = std::max({a.x, b.x, c.x, d.x});
+        const double minY = std::min({a.y, b.y, c.y, d.y});
+        const double maxY = std::max({a.y, b.y, c.y, d.y});
+        rects.push_back(core::Rect{core::Point{minX, minY}, core::Size{maxX - minX, maxY - minY}});
+        haveQuads = true;
+    }
+    if (!haveQuads) {
+        FS_RECTF annot{};
+        if (FPDFLink_GetAnnotRect(link, &annot) != 0) {
+            rects.push_back(internal::userBoxToDisplayRect(geometry, static_cast<double>(annot.left),
+                                                           static_cast<double>(annot.right),
+                                                           static_cast<double>(annot.bottom),
+                                                           static_cast<double>(annot.top)));
+        }
+    }
+    return rects;
+}
+
+} // namespace
+
+core::Result<std::vector<PdfPageLink>> PdfiumDocument::pageLinks(std::size_t pageIndex) const {
+    // Public entry operation: one gate acquisition.
+    return globalPdfiumCallGate().invoke([&]() -> core::Result<std::vector<PdfPageLink>> {
+        if (pageIndex >= info_.pageCount) {
+            return std::unexpected(core::makeError(core::ErrorCode::InvalidArgument,
+                                                   "page index " + std::to_string(pageIndex) +
+                                                       " out of range (document has " +
+                                                       std::to_string(info_.pageCount) + " pages)",
+                                                   "pdf"));
+        }
+        internal::ScopedPage page(FPDF_LoadPage(document_, static_cast<int>(pageIndex)));
+        if (page.get() == nullptr) {
+            const int lastError = static_cast<int>(FPDF_GetLastError());
+            return std::unexpected(core::makeError(core::ErrorCode::InvalidDocument,
+                                                   "PDFium failed to load page " +
+                                                       std::to_string(pageIndex) +
+                                                       " (FPDF error " + std::to_string(lastError) + ")",
+                                                   "pdf"));
+        }
+        const auto geometry = internal::makeDisplayGeometry(page.get());
+        if (!geometry.has_value()) {
+            return std::unexpected(core::makeError(core::ErrorCode::InvalidDocument,
+                                                   "page " + std::to_string(pageIndex) +
+                                                       " has invalid display dimensions",
+                                                   "pdf"));
+        }
+
+        std::vector<PdfPageLink> links;
+        int startPos = 0;
+        FPDF_LINK link = nullptr;
+        while (FPDFLink_Enumerate(page.get(), &startPos, &link) != 0) {
+            PdfPageLink result;
+
+            const FPDF_ACTION action = FPDFLink_GetAction(link);
+            const unsigned long actionType =
+                action != nullptr ? FPDFAction_GetType(action)
+                                  : static_cast<unsigned long>(PDFACTION_UNSUPPORTED);
+            // A bare /Dest (no /A action) is a plain internal link.
+            FPDF_DEST bareDest = nullptr;
+            if (actionType == static_cast<unsigned long>(PDFACTION_UNSUPPORTED)) {
+                bareDest = FPDFLink_GetDest(document_, link);
+            }
+            if (actionType == static_cast<unsigned long>(PDFACTION_GOTO) || bareDest != nullptr) {
+                result.kind = PdfPageLink::Kind::Internal;
+                result.destination =
+                    resolveDest(document_,
+                                bareDest != nullptr ? bareDest
+                                                    : FPDFAction_GetDest(document_, action))
+                        .value_or(PdfDestination{});
+            } else if (actionType == static_cast<unsigned long>(PDFACTION_URI)) {
+                result.kind = PdfPageLink::Kind::External;
+                const unsigned long needed = FPDFAction_GetURIPath(document_, action, nullptr, 0);
+                if (needed > 0) {
+                    std::string url(needed, '\0');
+                    const unsigned long written =
+                        FPDFAction_GetURIPath(document_, action, url.data(),
+                                              static_cast<unsigned long>(url.size()));
+                    if (written > 0 && written <= needed) {
+                        // The URI is raw bytes terminated by a NUL.
+                        url.resize(std::min<std::size_t>(written, needed) - 1);
+                        result.url = std::move(url);
+                    } else {
+                        result.kind = PdfPageLink::Kind::Other;
+                    }
+                } else {
+                    result.kind = PdfPageLink::Kind::Other;
+                }
+            } else {
+                result.kind = PdfPageLink::Kind::Other;
+            }
+
+            result.rects = linkRects(link, *geometry);
+            links.push_back(std::move(result));
+        }
+        return links;
+    });
 }
 
 } // namespace rivet::pdf

@@ -2,6 +2,7 @@
 
 #include "CommandStack.hpp"
 #include "DocumentRenderer.hpp"
+#include "LinkService.hpp"
 #include "TextService.hpp"
 
 #include "core/Error.hpp"
@@ -72,6 +73,14 @@ public:
     // Display size (post-rotation) of the page. Asserts index < pageCount.
     core::Size pageSizePoints(std::size_t index) const;
 
+    // Page label from the PDF page-label tree ("i", "A-1", ...), or an empty
+    // string when the document has no labels (fall back to 1-based numbers).
+    // Asserts index < pageCount.
+    const std::string& pageLabel(std::size_t index) const;
+
+    // All labels (parallel to pageCount; empty entries = no label).
+    const std::vector<std::string>& pageLabels() const { return pageLabels_; }
+
     const render::PageLayout& layout() const { return layout_; }
 
     // Dependencies the text pipeline needs (scheduler must outlive the
@@ -90,6 +99,9 @@ public:
     // The text pipeline (cache + dedicated extraction stream).
     TextService& textService() { return textService_; }
     const TextService& textService() const { return textService_; }
+
+    // Per-page links (dedicated stream + count-bounded LRU).
+    LinkService& linkService() { return linkService_; }
 
     CommandStack& commands() { return commands_; }
 
@@ -127,6 +139,7 @@ private:
                     std::filesystem::path path,
                     pdf::PdfDocumentInfo info,
                     std::vector<PageMeta> pages,
+                    std::vector<std::string> pageLabels,
                     std::unique_ptr<pdf::PdfDocument> document,
                     core::TaskScheduler& scheduler,
                     core::IMainThreadDispatcher* mainDispatcher,
@@ -143,6 +156,7 @@ private:
     pdf::PdfDocumentInfo info_;
     core::IMainThreadDispatcher* mainDispatcher_ = nullptr;
     std::vector<PageMeta> pages_;
+    std::vector<std::string> pageLabels_;
     render::PageLayout layout_;
     std::uint64_t revision_ = 1;
     CommandStack commands_;
@@ -157,6 +171,7 @@ private:
     DocumentRenderer renderer_;
     std::shared_ptr<const std::unordered_map<core::PageId, std::size_t>> pageIndexMap_;
     TextService textService_;
+    LinkService linkService_;
 };
 
 } // namespace rivet::editor

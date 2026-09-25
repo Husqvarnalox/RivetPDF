@@ -58,9 +58,46 @@ void ShellController::buildWidgets() {
     toolbar_ = toolbar.get();
     root_->addChild(std::move(toolbar));
 
-    auto sidebar = std::make_unique<ui::PageThumbnailList>();
-    sidebar_ = sidebar.get();
-    root_->addChild(std::move(sidebar));
+    // Sidebar: mode header (Pages | Outline) above the active panel.
+    auto sidebarContainer = std::make_unique<ui::Container>();
+    sidebarContainer_ = sidebarContainer.get();
+    sidebarContainer_->setBackgroundColor(ui::Color::rgba(0.93, 0.93, 0.93, 1.0));
+    root_->addChild(std::move(sidebarContainer));
+
+    auto pagesButton = std::make_unique<ui::Button>("Pages");
+    pagesModeButton_ = pagesButton.get();
+    pagesModeButton_->setFrame(core::Rect{8.0, 6.0, 64.0, 24.0});
+    pagesModeButton_->setOnClick([this] { switchSidebarMode(0); });
+    sidebarContainer_->addChild(std::move(pagesButton));
+
+    auto outlineButton = std::make_unique<ui::Button>("Outline");
+    outlineModeButton_ = outlineButton.get();
+    outlineModeButton_->setFrame(core::Rect{76.0, 6.0, 72.0, 24.0});
+    outlineModeButton_->setOnClick([this] { switchSidebarMode(1); });
+    sidebarContainer_->addChild(std::move(outlineButton));
+
+    auto pagesPanel = std::make_unique<ui::PageThumbnailList>();
+    sidebar_ = pagesPanel.get();
+    sidebarContainer_->addChild(std::move(pagesPanel));
+
+    auto outlinePanel = std::make_unique<ui::OutlinePanel>();
+    outlinePanel_ = outlinePanel.get();
+    outlinePanel_->setOnRowActivated([this](std::size_t row) { activateOutlineRow(row); });
+    outlinePanel_->setOnExpansionToggled([this](std::size_t row, bool expanded) {
+        const std::size_t nodePage = row < outlineRowDestinations_.size()
+                                         ? outlineRowDestinations_[row]
+                                         : 0;
+        (void)nodePage;
+        if (row < outlineRowPaths_.size()) {
+            if (expanded) {
+                expandedOutlinePaths_.insert(outlineRowPaths_[row]);
+            } else {
+                expandedOutlinePaths_.erase(outlineRowPaths_[row]);
+            }
+        }
+        rebuildOutlineRows();
+    });
+    sidebarContainer_->addChild(std::move(outlinePanel));
 
     auto viewport = std::make_unique<ui::PdfViewport>();
     viewport_ = viewport.get();
@@ -242,7 +279,13 @@ void ShellController::layoutShell() {
     const double middleHeight = std::max(0.0, height - top - kToolbarHeight - kStatusBarHeight);
     tabStrip_->setFrame(core::Rect{0.0, 0.0, width, kTabStripHeight});
     toolbar_->setFrame(core::Rect{0.0, top, width, kToolbarHeight});
-    sidebar_->setFrame(core::Rect{0.0, top + kToolbarHeight, kSidebarWidth, middleHeight});
+    const core::Rect sidebarFrame{0.0, top + kToolbarHeight, kSidebarWidth, middleHeight};
+    sidebarContainer_->setFrame(sidebarFrame);
+    const double headerH = 34.0;
+    const core::Rect panelFrame{0.0, headerH, kSidebarWidth,
+                                std::max(0.0, middleHeight - headerH)};
+    sidebar_->setFrame(panelFrame);
+    outlinePanel_->setFrame(panelFrame);
     viewport_->setFrame(core::Rect{kSidebarWidth, top + kToolbarHeight,
                                    std::max(0.0, width - kSidebarWidth), middleHeight});
     overlayLabel_->setFrame(viewport_->frame());
@@ -292,6 +335,7 @@ void ShellController::bindActiveTab() {
     if (tab == nullptr) {
         viewport_->clearDocument();
         sidebar_->clearDocument();
+        outlinePanel_->setRows({});
         setStatus("No document open");
         updatePageIndicator();
         setZoomDisplay(viewport_->zoom().zoom());
@@ -304,6 +348,7 @@ void ShellController::bindActiveTab() {
     if (tab->state() == DocumentTab::State::Loading) {
         viewport_->clearDocument();
         sidebar_->clearDocument();
+        outlinePanel_->setRows({});
         overlayLabel_->setText(std::format("Loading {}…", tab->title()));
         setStatus(std::format("Loading {}…", tab->title()));
         updatePageIndicator();
@@ -313,6 +358,7 @@ void ShellController::bindActiveTab() {
     if (tab->state() == DocumentTab::State::Error) {
         viewport_->clearDocument();
         sidebar_->clearDocument();
+        outlinePanel_->setRows({});
         overlayLabel_->setText(std::format("Could not open {} — {}", tab->title(), tab->errorText()));
         setStatus(std::format("Failed to open {}: {}", tab->title(), tab->errorText()));
         updatePageIndicator();
@@ -325,6 +371,8 @@ void ShellController::bindActiveTab() {
                            [session] { return session->revision(); }, &tab->viewState());
     sidebar_->setDocument(session->id(), &session->layout(), &session->renderSource(),
                           [session] { return session->revision(); });
+    sidebar_->setPageLabels(session->pageLabels());
+    rebuildOutlineRows();
 
     // First bind of a fresh tab: open fit-to-width (Phase 1 behavior). The
     // mode stays active (resizes recompute the zoom) until the user zooms.
@@ -543,7 +591,9 @@ DocumentTab* ShellController::readyActiveTab() {
 void ShellController::ShellTextBridge::warmPage(std::size_t pageIndex) {
     DocumentTab* tab = shell_.readyActiveTab();
     if (tab == nullptr || pageIndex >= tab->session()->pageCount()) return;
-    tab->session()->textService().ensureTextPage(tab->session()->pageId(pageIndex));
+    const core::PageId pageId = tab->session()->pageId(pageIndex);
+    tab->session()->textService().ensureTextPage(pageId);
+    tab->session()->linkService().ensurePageLinks(pageId);
 }
 
 std::optional<std::uint32_t> ShellController::ShellTextBridge::charIndexAtPoint(
@@ -583,6 +633,54 @@ void ShellController::ShellTextBridge::selectionDragEnded() {}
 
 void ShellController::ShellTextBridge::selectionCleared() {
     if (DocumentTab* tab = shell_.readyActiveTab(); tab != nullptr) tab->selection().clear();
+}
+
+std::optional<ui::ViewerLinkHit> ShellController::ShellTextBridge::linkAtPoint(
+    std::size_t pageIndex, const core::Point& pagePoint) {
+    DocumentTab* tab = shell_.readyActiveTab();
+    if (tab == nullptr || pageIndex >= tab->session()->pageCount()) return std::nullopt;
+    // Cached links only: the page's links load asynchronously (warmed on
+    // page tracking); a cold page reports no links rather than blocking.
+    const std::vector<pdf::PdfPageLink> links =
+        tab->session()->linkService().cachedLinks(tab->session()->pageId(pageIndex));
+    for (const pdf::PdfPageLink& link : links) {
+        for (const core::Rect& rect : link.rects) {
+            if (rect.contains(pagePoint)) {
+                ui::ViewerLinkHit hit;
+                hit.kind = link.kind == pdf::PdfPageLink::Kind::Internal
+                               ? ui::ViewerLinkHit::Kind::Internal
+                               : ui::ViewerLinkHit::Kind::External;
+                if (link.kind == pdf::PdfPageLink::Kind::Internal) {
+                    hit.pageIndex = link.destination.pageIndex;
+                    hit.hasPoint = link.destination.hasPoint;
+                    hit.point = link.destination.point;
+                }
+                hit.url = link.url;
+                return hit;
+            }
+        }
+    }
+    return std::nullopt;
+}
+
+std::vector<core::Rect> ShellController::ShellTextBridge::linkRects(std::size_t pageIndex) {
+    std::vector<core::Rect> rects;
+    DocumentTab* tab = shell_.readyActiveTab();
+    if (tab == nullptr || pageIndex >= tab->session()->pageCount()) return rects;
+    const std::vector<pdf::PdfPageLink> links =
+        tab->session()->linkService().cachedLinks(tab->session()->pageId(pageIndex));
+    for (const pdf::PdfPageLink& link : links) {
+        rects.insert(rects.end(), link.rects.begin(), link.rects.end());
+    }
+    return rects;
+}
+
+void ShellController::ShellTextBridge::linkActivated(const ui::ViewerLinkHit& hit) {
+    if (hit.kind == ui::ViewerLinkHit::Kind::Internal) {
+        shell_.navigateInternalDestination(hit.pageIndex, hit.point, hit.hasPoint);
+        return;
+    }
+    shell_.openExternalUrl(hit.url);
 }
 
 // Selection + search highlights for one page, in page display space. The
@@ -765,6 +863,142 @@ void ShellController::revealActiveMatch() {
     const std::vector<core::Rect> rects =
         page->rectsForRange(matches[*active].startIndex, matches[*active].count);
     if (!rects.empty()) viewport_->revealContentRect(pageIndex, rects.front());
+}
+
+
+// ---------- Sidebar outline mode ----------
+
+// Depth-first flatten of the document outline into visible rows. Paths
+// (ancestor indexes) key the expansion state so a rebuild keeps it stable;
+// nodes whose path is not in expandedOutlinePaths_ collapse their subtree.
+void ShellController::rebuildOutlineRows() {
+    outlineRows_.clear();
+    outlineRowPaths_.clear();
+    outlineRowDestinations_.clear();
+
+    DocumentTab* tab = readyActiveTab();
+    if (tab == nullptr || tab->session() == nullptr) {
+        outlinePanel_->setRows({});
+        return;
+    }
+    const auto outline = tab->session()->document().outline();
+    if (!outline.has_value() || !outline->has_value()) {
+        outlinePanel_->setRows({});
+        return;
+    }
+
+    // Iterative DFS with an explicit path stack (the tree is depth-bounded
+    // by the adapter, but recursion is still avoided here for uniformity).
+    // The synthetic root is SKIPPED: its children are the top-level rows,
+    // expanded by default so the outline is readable on first open.
+    struct Frame {
+        const rivet::pdf::PdfOutlineNode* node;
+        std::vector<std::size_t> path;
+        std::size_t childIndex;
+    };
+    const rivet::pdf::PdfOutlineNode& rootNode = **outline;
+    std::vector<Frame> stack;
+    for (std::size_t i = rootNode.children.size(); i > 0; --i) {
+        std::vector<std::size_t> path{i - 1};
+        expandedOutlinePaths_.insert(path); // top level starts expanded
+        stack.push_back(Frame{&rootNode.children[i - 1], std::move(path), 0});
+    }
+
+    while (!stack.empty()) {
+        Frame& frame = stack.back();
+        if (frame.childIndex == 0) {
+            ui::OutlineRow row;
+            row.title = frame.node->title;
+            row.depth = static_cast<int>(frame.path.size());
+            row.hasChildren = !frame.node->children.empty();
+            row.expanded =
+                row.hasChildren && expandedOutlinePaths_.count(frame.path) > 0;
+            // Outline rows navigate to the node's destination page.
+            outlineRowDestinations_.push_back(
+                frame.node->destination.has_value() &&
+                        frame.node->destination->pageIndex < tab->session()->pageCount()
+                    ? frame.node->destination->pageIndex
+                    : 0);
+            outlineRowPaths_.push_back(frame.path);
+            outlineRows_.push_back(std::move(row));
+        }
+        const bool expanded =
+            !frame.node->children.empty() &&
+            expandedOutlinePaths_.count(frame.path) > 0;
+        if (expanded && frame.childIndex < frame.node->children.size()) {
+            const rivet::pdf::PdfOutlineNode* child = &frame.node->children[frame.childIndex];
+            std::vector<std::size_t> childPath = frame.path;
+            childPath.push_back(frame.childIndex);
+            ++frame.childIndex;
+            stack.push_back(Frame{child, std::move(childPath), 0});
+        } else {
+            stack.pop_back();
+        }
+    }
+    outlinePanel_->setRows(outlineRows_);
+}
+
+void ShellController::activateOutlineRow(std::size_t rowIndex) {
+    if (rowIndex >= outlineRowDestinations_.size()) return;
+    DocumentTab* tab = readyActiveTab();
+    if (tab == nullptr || tab->session() == nullptr) return;
+    const std::size_t pageIndex = outlineRowDestinations_[rowIndex];
+    if (pageIndex >= tab->session()->pageCount()) return;
+    viewport_->goToPage(pageIndex);
+}
+
+void ShellController::switchSidebarMode(int mode) {
+    sidebarMode_ = mode;
+    const bool pages = mode == 0;
+    // Both panels share the same slot; capture it before reassigning frames.
+    const core::Rect panelFrame = sidebar_->frame();
+    const core::Rect hidden{-1.0, -1.0, 0.0, 0.0};
+    sidebar_->setFrame(pages ? panelFrame : hidden);
+    outlinePanel_->setFrame(pages ? hidden : panelFrame);
+    if (pagesModeButton_ != nullptr) {
+        pagesModeButton_->setLabel(pages ? "Pages •" : "Pages");
+    }
+    if (outlineModeButton_ != nullptr) {
+        outlineModeButton_->setLabel(!pages ? "Outline •" : "Outline");
+    }
+    root_->invalidate();
+}
+
+// ---------- Link navigation ----------
+
+void ShellController::navigateInternalDestination(std::size_t pageIndex,
+                                                  const core::Point& targetPoint,
+                                                  bool hasPoint) {
+    DocumentTab* tab = readyActiveTab();
+    if (tab == nullptr || tab->session() == nullptr || pageIndex >= tab->session()->pageCount()) {
+        return;
+    }
+    if (hasPoint) {
+        // Center a small region around the target point, keeping the zoom.
+        viewport_->revealContentRect(pageIndex,
+                                     core::Rect{targetPoint.x - 50.0, targetPoint.y - 50.0,
+                                                100.0, 100.0});
+    } else {
+        viewport_->goToPage(pageIndex);
+    }
+}
+
+// External URL policy: explicit user click (the viewport fires linkActivated
+// only for real clicks) + the deliberate scheme allow-list in UrlPolicy.hpp.
+void ShellController::openExternalUrl(const std::string& url) {
+    if (!isAllowedExternalUrlScheme(url)) {
+        core::log::warning("blocked external link with a disallowed scheme");
+        setStatus("Blocked external link (unsupported scheme)");
+        return;
+    }
+    if (services_.urlOpener == nullptr) {
+        setStatus("No URL opener available on this platform backend");
+        return;
+    }
+    const core::Status opened = services_.urlOpener->openUrl(url);
+    if (!opened.has_value()) {
+        setStatus("Could not open link: " + core::describe(opened.error()));
+    }
 }
 
 std::unique_ptr<ShellController> createShell(const platform::ShellServices& services) {

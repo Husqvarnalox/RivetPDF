@@ -352,6 +352,56 @@ bool PdfViewport::onMouse(const PointerEvent& event) {
         return true;
     }
 
+    // Link interaction through the bridge: a press over a link arms it and
+    // fires on release over the SAME link (button-like drag-out cancels).
+    // Links take precedence over text selection.
+    if (textBridge_ != nullptr && layout_ != nullptr && !selecting_) {
+        if (event.type == PointerEventType::Down && event.button == 1) {
+            const auto pagePoint = pagePointAt(event.position);
+            if (pagePoint.has_value()) {
+                const auto link = textBridge_->linkAtPoint(pagePoint->first, pagePoint->second);
+                if (link.has_value()) {
+                    linkPressed_ = true;
+                    pressedLink_ = link;
+                    event.accepted = true;
+                    return true;
+                }
+            }
+        } else if (event.type == PointerEventType::Up && event.button == 1 && linkPressed_) {
+            linkPressed_ = false;
+            const auto pagePoint = pagePointAt(event.position);
+            const auto link = pagePoint.has_value()
+                                  ? textBridge_->linkAtPoint(pagePoint->first, pagePoint->second)
+                                  : std::nullopt;
+            if (link.has_value() && pressedLink_.has_value() &&
+                link->kind == pressedLink_->kind && link->pageIndex == pressedLink_->pageIndex &&
+                link->url == pressedLink_->url) {
+                pressedLink_.reset();
+                textBridge_->linkActivated(*link);
+            } else {
+                pressedLink_.reset();
+            }
+            event.accepted = true;
+            return true;
+        } else if (event.type == PointerEventType::Move && event.button == 0) {
+            // Hover: repaint when the hover state changes.
+            const auto pagePoint = pagePointAt(event.position);
+            const bool hovered =
+                pagePoint.has_value() &&
+                textBridge_->linkAtPoint(pagePoint->first, pagePoint->second).has_value();
+            if (hovered != linkHovered_) {
+                linkHovered_ = hovered;
+                event.accepted = true;
+                invalidate();
+                if (hovered) return true;
+            }
+            if (hovered) {
+                event.accepted = true;
+                return true;
+            }
+        }
+    }
+
     // Text selection through the bridge (button 1, document bound).
     if (textBridge_ != nullptr && layout_ != nullptr) {
         if (event.type == PointerEventType::Down && event.button == 1) {
@@ -539,6 +589,17 @@ void PdfViewport::paintSelf(PaintContext& context) const {
 void PdfViewport::paintPageOverlays(std::size_t pageIndex, const core::Rect& pageFramePoints,
                                     PaintContext& context) const {
     if (textBridge_ == nullptr) return;
+    if (linkHovered_) {
+        // Subtle hover indication for the link under the pointer: stroked
+        // rect over the tiles (never baked into them).
+        for (const core::Rect& rect : textBridge_->linkRects(pageIndex)) {
+            const double zoomFactor = state_->zoom().zoom();
+            const core::Rect dest{
+                (pageFramePoints.origin + rect.origin - state_->scrollOffsetPoints()) * zoomFactor,
+                rect.size * zoomFactor};
+            context.strokeRect(dest, Color::rgba(0.15, 0.4, 0.9, 0.8), 1.0);
+        }
+    }
     const std::vector<OverlayRect> overlays = textBridge_->overlayRects(pageIndex);
     if (overlays.empty()) return;
     const double zoomFactor = state_->zoom().zoom();

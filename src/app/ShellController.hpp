@@ -2,6 +2,7 @@
 #pragma once
 
 #include "app/DocumentWorkspace.hpp"
+#include "app/UrlPolicy.hpp"
 #include "app/TextLabel.hpp"
 #include "core/async/TaskScheduler.hpp"
 #include "editor/DocumentSession.hpp"
@@ -9,12 +10,14 @@
 #include "platform/PlatformKit.hpp"
 #include "ui/Button.hpp"
 #include "ui/Container.hpp"
+#include "ui/OutlinePanel.hpp"
 #include "ui/PageThumbnailList.hpp"
 #include "ui/PdfViewport.hpp"
 #include "ui/TabStrip.hpp"
 #include "ui/TextField.hpp"
 #include "ui/Toolbar.hpp"
 #include "ui/ViewerTextBridge.hpp"
+#include <set>
 #include "render/ZoomState.hpp"
 
 #include <cstddef>
@@ -66,7 +69,7 @@ public:
 private:
     // IViewerTextBridge over the ACTIVE tab's text service + selection +
     // search state. Forwards to a no-op when no Ready tab is active.
-    class ShellTextBridge final : public ui::IViewerTextBridge {
+    class ShellTextBridge : public ui::IViewerTextBridge {
     public:
         explicit ShellTextBridge(ShellController& shell) : shell_(shell) {}
 
@@ -78,6 +81,10 @@ private:
         void selectionDragMoved(std::size_t pageIndex, std::uint32_t charIndex) override;
         void selectionDragEnded() override;
         void selectionCleared() override;
+        std::optional<ui::ViewerLinkHit> linkAtPoint(std::size_t pageIndex,
+                                                     const core::Point& pagePoint) override;
+        std::vector<core::Rect> linkRects(std::size_t pageIndex) override;
+        void linkActivated(const ui::ViewerLinkHit& hit) override;
 
     private:
         ShellController& shell_;
@@ -121,6 +128,16 @@ private:
     // Overlay rects for one page of the active tab (selection + search).
     std::vector<ui::OverlayRect> overlayRectsForActiveTab(std::size_t pageIndex) const;
 
+    // Sidebar outline mode: flattening the document outline, expansion state
+    // and row activation.
+    void switchSidebarMode(int mode);   // 0 = pages, 1 = outline
+    void rebuildOutlineRows();
+    void activateOutlineRow(std::size_t rowIndex);
+    // Navigation-metadata wiring (labels, link warm-up).
+    void navigateInternalDestination(std::size_t pageIndex, const core::Point& targetPoint,
+                                     bool hasPoint);
+    void openExternalUrl(const std::string& url);
+
     platform::ShellServices services_;
     // Declaration order = reverse destruction order: the widget tree (root_)
     // dies first (viewport unbinds sessions), then the workspace (sessions,
@@ -160,6 +177,22 @@ private:
     ui::TextField* searchField_ = nullptr;
     TextLabel* searchCountLabel_ = nullptr;
     bool searchVisible_ = false;
+
+    // Sidebar modes: Pages (thumbnails) | Outline. modeButtons_ are the two
+    // header buttons; sidebarContainer_ holds the mode header + the active
+    // panel. Outline rows are rebuilt per tab (flattened from the document
+    // outline); expansion state lives here (per active tab, reset on switch).
+    ui::Container* sidebarContainer_ = nullptr;
+    ui::OutlinePanel* outlinePanel_ = nullptr;
+    ui::Button* pagesModeButton_ = nullptr;
+    ui::Button* outlineModeButton_ = nullptr;
+    int sidebarMode_ = 0;
+    std::vector<ui::OutlineRow> outlineRows_;
+    // Flattened row index -> path of the outline node it came from; the
+    // expansion state keys on the node PATH, not the row index.
+    std::vector<std::vector<std::size_t>> outlineRowPaths_;
+    std::vector<std::size_t> outlineRowDestinations_;  // per row: page index
+    std::set<std::vector<std::size_t>> expandedOutlinePaths_;
 };
 
 // Factory used by the platform entry point (main).

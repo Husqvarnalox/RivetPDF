@@ -199,6 +199,65 @@ def text_objects(font: bytes, lines: list[bytes], rotate: int | None = None) -> 
     ]
 
 
+def text_page_content(label: bytes) -> bytes:
+    stream = b"BT /F1 24 Tf 72 720 Td (" + label + b") Tj ET\n0 .6 1 rg 72 600 200 100 re f\n"
+    return b"<< /Length %d >>\nstream\n" % len(stream) + stream + b"endstream"
+
+
+def link_annot(rect: tuple[int, int, int, int], dest: bytes) -> bytes:
+    return (b"<< /Type /Annot /Subtype /Link /Rect [%d %d %d %d] /Border [0 0 0] /Dest " % rect) + dest + b" >>"
+
+
+def uri_annot(rect: tuple[int, int, int, int], url: bytes) -> bytes:
+    return (
+        b"<< /Type /Annot /Subtype /Link /Rect [%d %d %d %d] /Border [0 0 0] /A << /S /URI /URI (%s) >> >>"
+        % (rect + (url,))
+    )
+
+
+def page_object_numbers(page_count: int, annot_counts: list[int]) -> list[int]:
+    """Object number of each page, given per-page annotation counts. Used to
+    build /Dest references BEFORE the annots themselves exist."""
+    nums = []
+    nxt = 3
+    for i in range(page_count):
+        nums.append(nxt)
+        nxt += 2 + annot_counts[i]
+    return nums
+
+
+def multi_page_objects(page_count: int, annots: dict[int, list[bytes]] | None = None,
+                       catalog_extra: bytes = b"") -> tuple[list[bytes], list[int]]:
+    """Catalog + Pages + (Page + content + annots) per page.
+
+    Each page consumes 2 + annots_count objects, so page object numbers are
+    COMPUTED (not stride-fixed) and also returned, so /Dest arrays can
+    reference them: use page_object_numbers[i] (1-based object numbers)."""
+    annots = annots or {}
+    page_nums = page_object_numbers(
+        page_count, [len(annots.get(i, [])) for i in range(page_count)])
+    kids = [b"%d 0 R" % n for n in page_nums]
+    objects: list[bytes] = [
+        b"<< /Type /Catalog /Pages 2 0 R" + catalog_extra + b" >>",
+        b"<< /Type /Pages /Kids [" + b" ".join(kids) + b"] /Count %d >>" % page_count,
+    ]
+    for i in range(page_count):
+        page_obj = page_nums[i]
+        annot_objs = annots.get(i, [])
+        annot_refs = b""
+        if annot_objs:
+            annot_refs = b" /Annots [" + b" ".join(
+                b"%d 0 R" % (page_obj + 2 + a) for a in range(len(annot_objs))
+            ) + b"]"
+        objects.append(b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources "
+                       b"<< /Font << /F1 2 0 R >> >> /Contents %d 0 R" % (page_obj + 1)
+                       + annot_refs + b" >>")
+        objects.append(text_page_content(b"Page %d of %d" % (i + 1, page_count)))
+        for annot in annot_objs:
+            objects.append(annot)
+    return objects, page_nums
+
+
 def text_line(font_size: float, x: float, y: float, text: bytes) -> bytes:
     return b"BT /F1 %s Tf %s %s Td (%s) Tj ET" % (
         ("%g" % font_size).encode(),
@@ -263,6 +322,65 @@ def main() -> None:
     write("text-rot90.pdf", build_pdf(text_objects(HELVETICA_FONT, [
         text_line(20.0, 72, 720, b"Rotated"),
     ], rotate=90)))
+
+    # outline.pdf: 3 pages + a two-level outline tree. The font object is
+    # appended last; page content streams reference it as FONT_OBJ 0 R.
+    objects, page_nums = multi_page_objects(3)
+    font_obj = len(objects) + 1
+    objects.append(HELVETICA_FONT)
+    objects = [o.replace(b"/F1 2 0 R", b"/F1 %d 0 R" % font_obj) for o in objects]
+    base = len(objects)  # first free object number
+    outlines_obj = base + 1
+    bm1 = outlines_obj + 1
+    bm2 = outlines_obj + 2
+    bm3 = outlines_obj + 3
+    bm4 = outlines_obj + 4
+    objects.append(b"<< /Type /Outlines /First %d 0 R /Last %d 0 R /Count 4 >>" % (bm1, bm4))
+    objects.append(b"<< /Title (Chapter 1) /Parent %d 0 R /Next %d 0 R /First %d 0 R "
+                   b"/Last %d 0 R /Count 2 /Dest [%d 0 R /Fit] >>"
+                   % (outlines_obj, bm4, bm2, bm3, page_nums[0]))
+    objects.append(b"<< /Title (Section 1.1) /Parent %d 0 R /Next %d 0 R "
+                   b"/Dest [%d 0 R /XYZ 72 720 0] >>" % (bm1, bm3, page_nums[1]))
+    objects.append(b"<< /Title (Section 1.2) /Parent %d 0 R /Dest [%d 0 R /Fit] >>"
+                   % (bm1, page_nums[2]))
+    objects.append(b"<< /Title (Chapter 2) /Parent %d 0 R /Dest [%d 0 R /Fit] >>"
+                   % (outlines_obj, page_nums[2]))
+    objects[0] = b"<< /Type /Catalog /Pages 2 0 R /Outlines %d 0 R >>" % outlines_obj
+    write("outline.pdf", build_pdf(objects))
+
+    # internal-links.pdf: two GoTo links on page 0 (to pages 1 and 2), one on
+    # page 1 (to page 2). Rects are in user space (y-up): the first link's
+    # [72 700 320 724] maps to display y 68..92 on the 612x792 page.
+    # Layout first (2 annots on page 0, 1 on page 1), then the annots that
+    # reference the computed page object numbers.
+    nums = page_object_numbers(3, [2, 1, 0])
+    objects, _ = multi_page_objects(3, annots={
+        0: [link_annot((72, 700, 320, 724), b"[%d 0 R /Fit]" % nums[1]),
+            link_annot((72, 600, 320, 624), b"[%d 0 R /Fit]" % nums[2])],
+        1: [link_annot((72, 700, 320, 724), b"[%d 0 R /Fit]" % nums[2])],
+    })
+    font_obj = len(objects) + 1
+    objects.append(HELVETICA_FONT)
+    objects = [o.replace(b"/F1 2 0 R", b"/F1 %d 0 R" % font_obj) for o in objects]
+    write("internal-links.pdf", build_pdf(objects))
+
+    # external-link.pdf: one URI link over the first text line.
+    objects, _ = multi_page_objects(1, annots={
+        0: [uri_annot((72, 700, 320, 724), b"https://example.com/rivet")],
+    })
+    font_obj = len(objects) + 1
+    objects.append(HELVETICA_FONT)
+    objects = [o.replace(b"/F1 2 0 R", b"/F1 %d 0 R" % font_obj) for o in objects]
+    write("external-link.pdf", build_pdf(objects))
+
+    # page-labels.pdf: page 0 label "i" (lowercase roman), pages 1..3 labeled
+    # with the decimal prefix "A-" -> "A-1", "A-2", "A-3".
+    objects, _ = multi_page_objects(4, catalog_extra=b" /PageLabels << /Nums [0 << /S /r >> "
+                                    b"1 << /S /D /P (A-) >> ] >>")
+    font_obj = len(objects) + 1
+    objects.append(HELVETICA_FONT)
+    objects = [o.replace(b"/F1 2 0 R", b"/F1 %d 0 R" % font_obj) for o in objects]
+    write("page-labels.pdf", build_pdf(objects))
 
 
 if __name__ == "__main__":

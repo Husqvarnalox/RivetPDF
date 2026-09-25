@@ -5,6 +5,7 @@
 #include "core/Bitmap.hpp"
 #include "core/geometry/Rect.hpp"
 #include "pdf/PdfText.hpp"
+#include "pdf/PdfNavigation.hpp"
 #include "pdf/PdfTypes.hpp"
 
 #include <cstddef>
@@ -47,6 +48,12 @@ public:
     core::Result<core::Bitmap> renderPage(std::size_t pageIndex,
                                           const core::Rect& pageRectPoints,
                                           double devicePixelsPerPoint) override;
+
+    core::Result<std::optional<PdfOutlineNode>> outline() const override;
+
+    core::Result<std::string> pageLabel(std::size_t pageIndex) const override;
+
+    core::Result<std::vector<PdfPageLink>> pageLinks(std::size_t pageIndex) const override;
 
     core::Result<std::shared_ptr<const PdfTextPage>> textPage(std::size_t pageIndex) const override;
 

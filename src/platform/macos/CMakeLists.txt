@@ -1,5 +1,6 @@
 add_library(rivet_platform_macos STATIC
     MacosClipboard.mm
+    MacosExternalUrlOpener.mm
     MacosFileDialog.mm
     MacosMainThreadDispatcher.mm
     MacosPaintContext.mm

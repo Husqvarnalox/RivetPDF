@@ -91,6 +91,11 @@ void PageThumbnailList::setOnSelectionChanged(std::function<void(std::size_t)> o
     onSelectionChanged_ = std::move(onSelectionChanged);
 }
 
+void PageThumbnailList::setPageLabels(std::vector<std::string> labels) {
+    pageLabels_ = std::move(labels);
+    invalidate();
+}
+
 void PageThumbnailList::revealPage(std::size_t index) {
     if (index >= rowCount()) return;
     const core::Rect row = rowRect(index);
@@ -277,9 +282,13 @@ void PageThumbnailList::paintSelf(PaintContext& context) const {
         }
         context.strokeRect(thumb, kThumbnailBorder, 1.0);
 
-        // Page label: 1-based physical page number (page labels arrive in a
-        // later phase and will replace this string where available).
-        context.drawText(std::format("Page {}", i + 1),
+        // Page label from the PDF page-label tree when present, else the
+        // 1-based physical page number.
+        const std::string labelText =
+            (i < pageLabels_.size() && !pageLabels_[i].empty())
+                ? pageLabels_[i]
+                : std::format("Page {}", i + 1);
+        context.drawText(labelText,
                          core::Rect{0.0, thumb.maxY(), bounds().size.width, kLabelHeight},
                          kLabelFont, kLabelColor, TextAlign::Center);
     }

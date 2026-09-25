@@ -1,5 +1,6 @@
 add_executable(rivet_ui_tests
     TestButton.cpp
+    TestOutlinePanel.cpp
     TestPdfViewport.cpp
     TestScrollBar.cpp
     TestTabStrip.cpp
