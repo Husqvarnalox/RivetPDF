@@ -4,9 +4,11 @@
 
 #include "core/Bitmap.hpp"
 #include "core/geometry/Rect.hpp"
+#include "pdf/PdfText.hpp"
 #include "pdf/PdfTypes.hpp"
 
 #include <cstddef>
+#include <memory>
 #include <string>
 
 // PDFium public headers. Allowed here only: this file lives inside
@@ -18,13 +20,13 @@ namespace rivet::pdf {
 // PDFium-backed PdfDocument. Constructed only by the PDFium backend
 // (PdfiumEngine::openDocument): it takes ownership of a document handle
 // returned by FPDF_LoadDocument and closes it deterministically on
-// destruction. All page/bitmap handles are RAII-wrapped internally.
+// destruction. All page/bitmap/text-page handles are RAII-wrapped internally.
 //
 // PDFium call-gate discipline (PdfiumCallGate): every public entry operation
 // acquires the process-wide gate exactly once. The constructor is the tail of
 // PdfiumEngine::openDocument's single acquisition, so it does not acquire;
-// the destructor, pageInfo() and renderPage() acquire themselves and must
-// therefore never be called while the gate is held.
+// the destructor, pageInfo(), renderPage() and textPage() acquire themselves
+// and must therefore never be called while the gate is held.
 class PdfiumDocument final : public PdfDocument {
 public:
     // Internal to the pdfium backend: `document` must be a valid
@@ -45,6 +47,8 @@ public:
     core::Result<core::Bitmap> renderPage(std::size_t pageIndex,
                                           const core::Rect& pageRectPoints,
                                           double devicePixelsPerPoint) override;
+
+    core::Result<std::shared_ptr<const PdfTextPage>> textPage(std::size_t pageIndex) const override;
 
 private:
     // Reads a UTF-16LE metadata string (e.g. "Title") and converts it to

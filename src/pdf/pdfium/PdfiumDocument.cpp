@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "PdfiumCallGate.hpp"
+#include "PdfiumTextPage.h"
 #include "fpdf_doc.h"  // FPDF_GetMetaText
 #include "fpdf_edit.h" // FPDFPage_GetRotation
 
@@ -368,6 +369,24 @@ core::Result<core::Bitmap> PdfiumDocument::renderPage(std::size_t pageIndex,
 
         return bitmap;
     });
+}
+
+core::Result<std::shared_ptr<const PdfTextPage>> PdfiumDocument::textPage(std::size_t pageIndex) const {
+    // Public entry operation: ONE gate acquisition for the whole extraction.
+    // extractTextPage never acquires the gate itself (documented in
+    // PdfiumTextPage.h) - the page load, text-page load, per-char queries and
+    // the RAII handle closes all run inside this single acquisition.
+    return globalPdfiumCallGate().invoke(
+        [&]() -> core::Result<std::shared_ptr<const PdfTextPage>> {
+            if (pageIndex >= info_.pageCount) {
+                return std::unexpected(core::makeError(core::ErrorCode::InvalidArgument,
+                                                       "page index " + std::to_string(pageIndex) +
+                                                           " out of range (document has " +
+                                                           std::to_string(info_.pageCount) + " pages)",
+                                                       "pdf"));
+            }
+            return extractTextPage(document_, pageIndex, info_.pageCount);
+        });
 }
 
 } // namespace rivet::pdf

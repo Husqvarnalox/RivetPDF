@@ -45,6 +45,43 @@ Fixtures written here (each < 1 KB):
                 followed by repeated ASCII garbage and no xref, no trailer and
                 no %%EOF. PDFium must reject it as malformed.
 
+Text fixtures (each also < 2 KB; all one US-Letter page, MediaBox 0 0 612 792,
+crop box equal to the media box, standard-14 Type1 fonts, no compression and
+no timestamps):
+
+  text-basic.pdf     no /Rotate; Helvetica 24 pt "Hello Rivet" with its
+                     baseline at user (72, 720) and Helvetica 9.5 pt
+                     "9.5 pt tail" with its baseline at user (72, 650).
+                     Extraction must return both lines; the 'H' display box
+                     must land just above the displayed baseline
+                     (display y = 792 - 720 = 72, y-down).
+  text-cyrillic.pdf  Times-Roman 18 pt "Привет Rivet 123" with its baseline
+                     at user (72, 700). WinAnsi cannot encode Cyrillic, so
+                     the font dictionary carries an /Encoding with a
+                     /Differences array mapping single bytes 0x01..0x06 onto
+                     the glyph names /uni041F /uni0440 /uni0438 /uni0432
+                     /uni0435 /uni0442 (П р и в е т); the content string
+                     spells "Привет" with those bytes and the rest of the
+                     line through the WinAnsi base encoding. PDFium resolves
+                     /uniXXXX names to Unicode (FreeType's Adobe glyph-name
+                     mapper), so extraction returns the exact code points.
+  text-multiline.pdf four Helvetica 14 pt lines at user baselines y = 720,
+                     700, 680, 660, each in its own BT..ET block: three
+                     prose lines with different word lengths plus
+                     "Hello, world!  Two  spaces." with doubled interior
+                     spaces and punctuation. PDFium inserts generated \r\n
+                     pairs between the lines (zero-area char boxes), so the
+                     fixture pins line-break handling and row clustering.
+  text-rot90.pdf     /Pages /Rotate 90 (displays 792x612); Helvetica 20 pt
+                     "Rotated" with its baseline at user (72, 720). With the
+                     clockwise quarter turn the line runs VERTICALLY on the
+                     displayed page: the first char's display box starts near
+                     display (720, 72) and reading order walks downward.
+                     This is the ground truth that pins the turn-1 mapping
+                     of the user-space -> display-space transform (same
+                     convention the rot90 render fixture pinned in Phase 1:
+                     content at the user-space top-left lands top-right).
+
 The committed .pdf files ARE the fixtures; tests never run this script. It
 exists only so the bytes can be regenerated and audited.
 """
@@ -117,6 +154,60 @@ def write(name: str, data: bytes) -> None:
     print("%-14s %5d bytes" % (name, len(data)))
 
 
+# ---------------------------------------------------------------------------
+# Text fixtures.
+#
+# Shared layout: object 1 catalog, object 2 pages (optional /Rotate), object 3
+# page, object 4 content stream, object 5 the font. Text strings are plain
+# single-byte PDF string literals; WinAnsi covers ASCII, and the Cyrillic
+# fixture maps bytes 0x01..0x06 through /Differences glyph names.
+# ---------------------------------------------------------------------------
+
+# "Привет" in reading order, spelled with /Differences byte codes 0x01..0x06
+# (see text-cyrillic.pdf in the module docstring).
+CYRILLIC_CODES = (0x01, 0x02, 0x03, 0x04, 0x05, 0x06)
+CYRILLIC_STRING = b"".join(b"\\%03o" % code for code in CYRILLIC_CODES)
+
+HELVETICA_FONT = b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>"
+
+TIMES_CYRILLIC_FONT = (
+    b"<< /Type /Font /Subtype /Type1 /BaseFont /Times-Roman /Encoding << /Type /Encoding "
+    b"/BaseEncoding /WinAnsiEncoding /Differences [1"
+    + b"".join(b" /uni%04X" % cp for cp in (0x041F, 0x0440, 0x0438, 0x0432, 0x0435, 0x0442))
+    + b"] >> >>"
+)
+
+
+def text_objects(font: bytes, lines: list[bytes], rotate: int | None = None) -> list[bytes]:
+    """One page with one Type1 font and one BT..ET block per text line.
+
+    Each line is a full content-stream operator sequence like
+    b"BT /F1 24 Tf 72 720 Td (Hello Rivet) Tj ET".
+    """
+    stream = b"\n".join(lines) + b"\n"
+    pages = b"<< /Type /Pages /Kids [3 0 R] /Count 1"
+    if rotate is not None:
+        pages += b" /Rotate %d" % rotate
+    pages += b" >>"
+    return [
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        pages,
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources "
+        b"<< /Font << /F1 5 0 R >> >> /Contents 4 0 R >>",
+        b"<< /Length %d >>\nstream\n" % len(stream) + stream + b"endstream",
+        font,
+    ]
+
+
+def text_line(font_size: float, x: float, y: float, text: bytes) -> bytes:
+    return b"BT /F1 %s Tf %s %s Td (%s) Tj ET" % (
+        ("%g" % font_size).encode(),
+        ("%g" % x).encode(),
+        ("%g" % y).encode(),
+        text,
+    )
+
+
 def main() -> None:
     # corners.pdf / rot90 / rot180 / rot270: one content stream, varying /Rotate
     # on the (inherited) Pages node.
@@ -143,6 +234,35 @@ def main() -> None:
     prefix = build_pdf(geometry_objects(None))[:100]
     garbage = b"GARBAGE%%GARBAGE%%" * 20
     write("corrupted.pdf", prefix + b"\n" + garbage + b"\n")
+
+    # text-basic.pdf: two Helvetica lines, no /Rotate. The 24 pt line's
+    # displayed baseline is at y = 792 - 720 = 72 (display space, y-down).
+    write("text-basic.pdf", build_pdf(text_objects(HELVETICA_FONT, [
+        text_line(24.0, 72, 720, b"Hello Rivet"),
+        text_line(9.5, 72, 650, b"9.5 pt tail"),
+    ])))
+
+    # text-cyrillic.pdf: "Привет" byte-coded through /Differences /uniXXXX
+    # glyph names, " Rivet 123" through the WinAnsi base encoding.
+    write("text-cyrillic.pdf", build_pdf(text_objects(TIMES_CYRILLIC_FONT, [
+        text_line(18.0, 72, 700, CYRILLIC_STRING + b" Rivet 123"),
+    ])))
+
+    # text-multiline.pdf: four 14 pt lines; PDFium inserts generated \r\n
+    # pairs between consecutive lines, so extraction sees line breaks with
+    # zero-area boxes.
+    write("text-multiline.pdf", build_pdf(text_objects(HELVETICA_FONT, [
+        text_line(14.0, 72, 720, b"The quick brown fox jumps"),
+        text_line(14.0, 72, 700, b"over the lazy dog today"),
+        text_line(14.0, 72, 680, b"Third line has prose"),
+        text_line(14.0, 72, 660, b"Hello, world!  Two  spaces."),
+    ])))
+
+    # text-rot90.pdf: one 20 pt line on a /Rotate 90 page; the display-space
+    # boxes pin the turn-1 mapping of the user->display transform.
+    write("text-rot90.pdf", build_pdf(text_objects(HELVETICA_FONT, [
+        text_line(20.0, 72, 720, b"Rotated"),
+    ], rotate=90)))
 
 
 if __name__ == "__main__":

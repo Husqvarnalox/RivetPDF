@@ -3,6 +3,7 @@
 #include "core/Error.hpp"
 #include "core/Bitmap.hpp"
 #include "core/geometry/Rect.hpp"
+#include "pdf/PdfText.hpp"
 #include "pdf/PdfTypes.hpp"
 
 #include <cstddef>
@@ -38,6 +39,15 @@ public:
     virtual core::Result<core::Bitmap> renderPage(std::size_t pageIndex,
                                                   const core::Rect& pageRectPoints,
                                                   double devicePixelsPerPoint) = 0;
+
+    // Extracts the text of a page. The returned PdfTextPage is immutable,
+    // Rivet-owned data with no engine handles, so it may outlive any call and
+    // be cached freely. Default: NotAvailable (backends without text support).
+    virtual core::Result<std::shared_ptr<const PdfTextPage>> textPage(std::size_t pageIndex) const {
+        (void)pageIndex;
+        return std::unexpected(core::makeError(core::ErrorCode::NotAvailable,
+                                               "this backend has no text support", "pdf"));
+    }
 };
 
 // A PDF backend. Rivet keeps the concrete engine (PDFium) behind this

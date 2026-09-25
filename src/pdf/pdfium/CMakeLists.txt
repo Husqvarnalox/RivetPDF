@@ -3,6 +3,7 @@ add_library(rivet_pdfium STATIC
     PdfiumCallGate.cpp
     PdfiumEngine.cpp
     PdfiumDocument.cpp
+    PdfiumTextPage.cpp
     PdfiumLibrary.cpp
 )
 add_library(rivet::pdfium ALIAS rivet_pdfium)
