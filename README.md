@@ -500,11 +500,8 @@ Future contribution areas may include:
 
 ## License
 
-The final project license has not yet been selected.
-
-The intended license will allow Rivet to remain open-source while remaining compatible with the licenses of its dependencies.
-
-A `LICENSE` file will be added before the first public release.
+Rivet is licensed under the Mozilla Public License 2.0.
+See LICENSE for details.
 
 ---
 
