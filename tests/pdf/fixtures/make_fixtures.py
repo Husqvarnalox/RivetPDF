@@ -82,6 +82,33 @@ no timestamps):
                      convention the rot90 render fixture pinned in Phase 1:
                      content at the user-space top-left lands top-right).
 
+Page-editing fixtures (views, assembly; all Helvetica, no compression, no
+timestamps, MediaBox on every page dictionary):
+
+  markers-5.pdf  5 US-Letter pages. Page i (1-based) shows Helvetica 48 pt
+                 "PAGE-i" with its baseline at user (72, 700) - so page order
+                 is verifiable by text extraction - and a 60x60 black block
+                 at user x 72 + 100*(i-1), y 100..160 (display y 632..692),
+                 so order is also verifiable visually.
+  import-3.pdf   3 pages "IMPORT-1".."IMPORT-3" (Helvetica 36 pt, baseline
+                 at user (72, 500)); page 2 is landscape (MediaBox
+                 [0 0 792 612]), pages 1 and 3 are US Letter. Page i also
+                 has a 40x40 black block at user x 400 + 80*(i-1), y 50..90.
+  cropbox.pdf    3 pages with non-trivial boxes:
+                   page 1: MediaBox [0 0 612 792], CropBox [36 36 576 756]
+                           (displays 540x720). A 36x36 black block fills the
+                           crop box's top-left corner (user 36..72 x
+                           720..756 -> display 0..36 x 0..36), a 30x30 block
+                           sits in the media box's bottom-left corner OUTSIDE
+                           the crop box (user 0..30 x 0..30: only a media-box
+                           view shows it), and Helvetica 24 pt "CROP" has its
+                           baseline at user (100, 400).
+                   page 2: the same page with /Rotate 90 (displays 720x540).
+                   page 3: MediaBox [100 200 400 600] (non-zero origin,
+                           300x400, no CropBox); a 30x30 block at user
+                           100..130 x 570..600 (display 0..30 x 0..30) and
+                           "OFFSET" (24 pt) at user (120, 400).
+
 The committed .pdf files ARE the fixtures; tests never run this script. It
 exists only so the bytes can be regenerated and audited.
 """
@@ -377,6 +404,65 @@ def _encrypt_strings_and_streams(obj: bytes, key: bytes, obj_num: int) -> bytes:
     return head + encrypted + rest
 
 
+# ---------------- page-editing fixtures ----------------
+#
+# Layout: object 1 catalog, object 2 pages, then (page dict, content stream)
+# per page, then the shared Helvetica font last.
+
+
+def boxed_pages_pdf(pages: list[tuple[bytes, bytes]]) -> bytes:
+    """pages: (extra page-dict entries incl. /MediaBox, content stream)."""
+    count = len(pages)
+    font_obj = 3 + 2 * count
+    kids = b" ".join(b"%d 0 R" % (3 + 2 * i) for i in range(count))
+    objects = [
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Kids [" + kids + b"] /Count %d >>" % count,
+    ]
+    for i, (entries, stream) in enumerate(pages):
+        objects.append(b"<< /Type /Page /Parent 2 0 R " + entries +
+                       b" /Resources << /Font << /F1 %d 0 R >> >> /Contents %d 0 R >>"
+                       % (font_obj, 3 + 2 * i + 1))
+        objects.append(b"<< /Length %d >>\nstream\n" % len(stream) + stream + b"endstream")
+    objects.append(HELVETICA_FONT)
+    return build_pdf(objects)
+
+
+def labeled_content(size: int, x: int, y: int, label: bytes,
+                    blocks: list[tuple[int, int, int, int]]) -> bytes:
+    lines = [text_line(float(size), x, y, label), b"0 0 0 rg"]
+    lines += [b"%d %d %d %d re f" % block for block in blocks]
+    return b"\n".join(lines) + b"\n"
+
+
+def markers_pdf() -> bytes:
+    pages = []
+    for i in range(1, 6):
+        stream = labeled_content(48, 72, 700, b"PAGE-%d" % i, [(72 + 100 * (i - 1), 100, 60, 60)])
+        pages.append((b"/MediaBox [0 0 612 792]", stream))
+    return boxed_pages_pdf(pages)
+
+
+def import_pdf() -> bytes:
+    pages = []
+    for i in range(1, 4):
+        media = b"/MediaBox [0 0 792 612]" if i == 2 else b"/MediaBox [0 0 612 792]"
+        stream = labeled_content(36, 72, 500, b"IMPORT-%d" % i, [(400 + 80 * (i - 1), 50, 40, 40)])
+        pages.append((media, stream))
+    return boxed_pages_pdf(pages)
+
+
+def cropbox_pdf() -> bytes:
+    crop_stream = labeled_content(24, 100, 400, b"CROP", [(36, 720, 36, 36), (0, 0, 30, 30)])
+    crop_entries = b"/MediaBox [0 0 612 792] /CropBox [36 36 576 756]"
+    offset_stream = labeled_content(24, 120, 400, b"OFFSET", [(100, 570, 30, 30)])
+    return boxed_pages_pdf([
+        (crop_entries, crop_stream),
+        (crop_entries + b" /Rotate 90", crop_stream),
+        (b"/MediaBox [100 200 400 600]", offset_stream),
+    ])
+
+
 def main() -> None:
     # corners.pdf / rot90 / rot180 / rot270: one content stream, varying /Rotate
     # on the (inherited) Pages node.
@@ -528,6 +614,11 @@ def main() -> None:
                     % (p_value, o_value.hex().encode(), u_value.hex().encode()))
     objects.append(encrypt_dict)  # stored unencrypted (spec exemption)
     write("password.pdf", build_encrypted_pdf(objects, encrypt_num, encrypt_dict, doc_id, key))
+
+    # Page-editing fixtures (see the module docstring).
+    write("markers-5.pdf", markers_pdf())
+    write("import-3.pdf", import_pdf())
+    write("cropbox.pdf", cropbox_pdf())
 
 
 if __name__ == "__main__":

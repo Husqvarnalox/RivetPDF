@@ -4,6 +4,7 @@
 #include "core/geometry/Point.hpp"
 #include "core/geometry/Rect.hpp"
 
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -13,7 +14,11 @@ namespace rivet::pdf {
 
 // Destination of an outline item or internal link. pageIndex is zero-based;
 // point (when present) is in DISPLAYED-PAGE space (points, top-left origin,
-// y-down) - the same space renderPage and the text APIs expose.
+// y-down) of the target page's NATIVE view - the same space renderPage and
+// the text APIs expose. userX/userY (when hasUserPoint) carry the same
+// location in PDF user space of the TARGET page, so a consumer presenting
+// that page through a different view (rotate/crop in the page model) can
+// re-map it with userToDisplay(view, userX, userY).
 struct PdfDestination {
     std::size_t pageIndex = 0;
     bool hasPoint = false;
@@ -30,6 +35,9 @@ struct PdfDestination {
         FitBV,
     };
     Fit fit = Fit::Unknown;
+    bool hasUserPoint = false;
+    double userX = 0.0;
+    double userY = 0.0;
 };
 
 // A tree of document outline items ("bookmarks"). Depth- and count-bounded

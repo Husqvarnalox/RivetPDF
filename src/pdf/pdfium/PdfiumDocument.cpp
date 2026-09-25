@@ -3,12 +3,16 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 #include "PdfiumCallGate.hpp"
+#include "PdfiumFileSource.h"
 #include "PdfiumTextPage.h"
+#include "core/geometry/Matrix.hpp"
 #include "fpdf_doc.h"  // FPDF_GetMetaText
 #include "PdfiumDisplayTransform.h"
 #include "fpdf_doc.h"    // bookmarks, dests, actions, links, page labels
@@ -139,20 +143,34 @@ std::string utf16leToUtf8(const std::uint8_t* bytes, std::size_t byteLength) {
 // Caller must hold the PDFium gate: this runs FPDF_GetPageCount and
 // FPDF_GetMetaText. It is the tail of PdfiumEngine::openDocument's single
 // gate acquisition and must not acquire itself.
-PdfiumDocument::PdfiumDocument(FPDF_DOCUMENT document, bool isEncrypted) : document_(document) {
+PdfiumDocument::PdfiumDocument(FPDF_DOCUMENT document,
+                               bool isEncrypted,
+                               std::shared_ptr<PdfiumFileSource> source,
+                               std::string password,
+                               const PdfiumEngine* owner)
+    : document_(document), source_(std::move(source)), password_(std::move(password)), owner_(owner) {
     info_.isEncrypted = isEncrypted;
     info_.pageCount = static_cast<std::size_t>(std::max(0, FPDF_GetPageCount(document_)));
     info_.title = metaText("Title");
 }
 
 PdfiumDocument::~PdfiumDocument() {
+    // Best-effort wipe of the retained password (volatile writes are not
+    // elided as dead stores).
+    volatile char* secret = password_.data();
+    for (std::size_t i = 0; i < password_.size(); ++i) {
+        secret[i] = '\0';
+    }
+
     if (document_ == nullptr) {
         return;
     }
     const FPDF_DOCUMENT handle = document_;
     document_ = nullptr;
     // Public entry operation: one gate acquisition for the close. The gate is
-    // a leaked singleton, so this remains valid during static teardown.
+    // a leaked singleton, so this remains valid during static teardown. The
+    // file source (a member) is released only after this body, i.e. after
+    // PDFium is done with it.
     globalPdfiumCallGate().invoke([handle] { FPDF_CloseDocument(handle); });
 }
 
@@ -205,14 +223,28 @@ core::Result<PdfPageInfo> PdfiumDocument::pageInfo(std::size_t pageIndex) const 
                                                    "pdf"));
         }
 
+        // The native view: effective /Rotate plus the effective crop box
+        // (FPDF_GetPageBoundingBox = CropBox ∩ MediaBox). Its display size
+        // is exactly what FPDF_GetPageWidthF/FPDF_GetPageHeightF report
+        // (both derive from CPDF_Page's bbox and rotation), i.e. the
+        // displayed, rotation-aware page size.
+        const std::optional<PdfPageView> view = internal::nativePageView(page.get());
+        if (!view.has_value()) {
+            // Degenerate page geometry: report what PDFium reports (as before
+            // views existed) with zero-origin boxes; rendering such a page
+            // fails with InvalidDocument later.
+            return PdfPageInfo(pageIndex,
+                               core::Size{static_cast<double>(FPDF_GetPageWidthF(page.get())),
+                                          static_cast<double>(FPDF_GetPageHeightF(page.get()))},
+                               core::rotationFromQuarterTurns(FPDFPage_GetRotation(page.get())));
+        }
+
         PdfPageInfo result;
         result.index = pageIndex;
-        // FPDF_GetPageWidthF/FPDF_GetPageHeightF report the displayed page
-        // size, i.e. already accounting for /Rotate ("Changing the rotation
-        // of |page| affects the return value", fpdfview.h).
-        result.sizePoints = core::Size{static_cast<double>(FPDF_GetPageWidthF(page.get())),
-                                       static_cast<double>(FPDF_GetPageHeightF(page.get()))};
-        result.rotation = core::rotationFromQuarterTurns(FPDFPage_GetRotation(page.get()));
+        result.view = *view;
+        result.mediaBox = internal::pageMediaBox(page.get(), *view);
+        result.sizePoints = displaySize(*view);
+        result.rotation = view->rotation;
         return result;
     });
 }
@@ -220,6 +252,20 @@ core::Result<PdfPageInfo> PdfiumDocument::pageInfo(std::size_t pageIndex) const 
 core::Result<core::Bitmap> PdfiumDocument::renderPage(std::size_t pageIndex,
                                                       const core::Rect& pageRectPoints,
                                                       double devicePixelsPerPoint) {
+    return renderPageImpl(pageIndex, nullptr, pageRectPoints, devicePixelsPerPoint);
+}
+
+core::Result<core::Bitmap> PdfiumDocument::renderPageInView(std::size_t pageIndex,
+                                                            const PdfPageView& view,
+                                                            const core::Rect& pageRectPoints,
+                                                            double devicePixelsPerPoint) {
+    return renderPageImpl(pageIndex, &view, pageRectPoints, devicePixelsPerPoint);
+}
+
+core::Result<core::Bitmap> PdfiumDocument::renderPageImpl(std::size_t pageIndex,
+                                                          const PdfPageView* view,
+                                                          const core::Rect& pageRectPoints,
+                                                          double devicePixelsPerPoint) {
     // Public entry operation: one gate acquisition for the whole body. Every
     // step below (page load, dimension queries, bitmap fill, render) issues
     // FPDF_* calls that must not overlap with any other PDFium call.
@@ -253,18 +299,17 @@ core::Result<core::Bitmap> PdfiumDocument::renderPage(std::size_t pageIndex,
                                                    "pdf"));
         }
 
-        const double pageWidth = static_cast<double>(FPDF_GetPageWidthF(page.get()));
-        const double pageHeight = static_cast<double>(FPDF_GetPageHeightF(page.get()));
-        if (!std::isfinite(pageWidth) || !std::isfinite(pageHeight) || pageWidth <= 0.0 ||
-            pageHeight <= 0.0) {
-            return std::unexpected(core::makeError(core::ErrorCode::InvalidDocument,
-                                                   "page " + std::to_string(pageIndex) +
-                                                       " has invalid display dimensions",
-                                                   "pdf"));
+        // Native geometry plus the requested view's (validated: quarter turn,
+        // crop box within the media box).
+        const auto geometry = internal::resolvePageGeometry(page.get(), pageIndex, view);
+        if (!geometry.has_value()) {
+            return std::unexpected(geometry.error());
         }
+        const double pageWidth = geometry->display.displaySize.width;
+        const double pageHeight = geometry->display.displaySize.height;
 
-        // pageRectPoints is in displayed-page coordinates (top-left origin,
-        // y-down) and must be contained in the page bounds.
+        // pageRectPoints is in displayed-page coordinates of the VIEW
+        // (top-left origin, y-down) and must be contained in its bounds.
         if (pageRectPoints.minX() < -kContainmentEpsilon ||
             pageRectPoints.minY() < -kContainmentEpsilon ||
             pageRectPoints.maxX() > pageWidth + kContainmentEpsilon ||
@@ -339,24 +384,56 @@ core::Result<core::Bitmap> PdfiumDocument::renderPage(std::size_t pageIndex,
         // bottom edge in the last row, for tiles and full pages alike, with
         // displayed-page orientation preserved (a tile above another tile
         // also renders above it in the bitmap).
-        const double matrixE = -pageRectPoints.minX() * devicePixelsPerPoint;
-        const double matrixF = -pageRectPoints.minY() * devicePixelsPerPoint;
-        if (!std::isfinite(matrixE) || !std::isfinite(matrixF) || std::fabs(matrixE) > 1e9 ||
-            std::fabs(matrixF) > 1e9) {
-            // Possible only for pathological page geometry (origin far
-            // outside any real page); PDFium consumes the matrix as floats.
-            return std::unexpected(core::makeError(core::ErrorCode::InvalidArgument,
-                                                   "page rectangle is too far from the page origin",
-                                                   "pdf"));
+        //
+        // A non-native VIEW: pageRectPoints is in the view's display space,
+        // but PDFium always applies the page's NATIVE display matrix first.
+        // The caller matrix therefore undoes it and applies the view's
+        // instead (core::Matrix composition: rightmost applies first):
+        //     caller = tile * viewDisplay * inverse(nativeDisplay)
+        // i.e. native display -> user space -> view display -> bitmap. All
+        // three are exact quarter-turn/translation matrices, composed in
+        // doubles and validated before the float conversion. For the native
+        // view the middle terms cancel and the plain tile matrix is used
+        // (bit-identical to the pre-view code path). Clipping is purely the
+        // bitmap clip rect (CPDFSDK_RenderPage sets it as the device clip;
+        // no crop-box clip is applied), and the bitmap covers only the
+        // requested tile of the view, so content outside the view's crop box
+        // never lands in it - while content outside the NATIVE crop box but
+        // inside the view (still within the media box) does render.
+        const core::Matrix tile =
+            core::Matrix::scaling(devicePixelsPerPoint, devicePixelsPerPoint) *
+            core::Matrix::translation(-pageRectPoints.minX(), -pageRectPoints.minY());
+        core::Matrix caller = tile;
+        if (geometry->display.view != geometry->nativeView) {
+            const std::optional<core::Matrix> nativeInverse =
+                userToDisplayMatrix(geometry->nativeView).inverted();
+            if (!nativeInverse.has_value()) {
+                return std::unexpected(core::makeError(core::ErrorCode::InvalidDocument,
+                                                       "page " + std::to_string(pageIndex) +
+                                                           " has a singular display matrix",
+                                                       "pdf"));
+            }
+            caller = tile * userToDisplayMatrix(geometry->display.view) * *nativeInverse;
+        }
+        const double coefficients[] = {caller.a, caller.b, caller.c, caller.d, caller.tx, caller.ty};
+        for (const double value : coefficients) {
+            if (!std::isfinite(value) || std::fabs(value) > 1e9) {
+                // Possible only for pathological page geometry (origin far
+                // outside any real page); PDFium consumes the matrix as
+                // floats.
+                return std::unexpected(core::makeError(core::ErrorCode::InvalidArgument,
+                                                       "page rectangle is too far from the page origin",
+                                                       "pdf"));
+            }
         }
 
         FS_MATRIX matrix{};
-        matrix.a = static_cast<float>(devicePixelsPerPoint);
-        matrix.b = 0.0f;
-        matrix.c = 0.0f;
-        matrix.d = static_cast<float>(devicePixelsPerPoint);
-        matrix.e = static_cast<float>(matrixE);
-        matrix.f = static_cast<float>(matrixF);
+        matrix.a = static_cast<float>(caller.a);
+        matrix.b = static_cast<float>(caller.b);
+        matrix.c = static_cast<float>(caller.c);
+        matrix.d = static_cast<float>(caller.d);
+        matrix.e = static_cast<float>(caller.tx);
+        matrix.f = static_cast<float>(caller.ty);
 
         // The clipping rect must be non-null: a null clip degenerates to the
         // empty device clip FX_RECT(0, 0, 0, 0) (CFX_FloatRect's zero default
@@ -375,6 +452,16 @@ core::Result<core::Bitmap> PdfiumDocument::renderPage(std::size_t pageIndex,
 }
 
 core::Result<std::shared_ptr<const PdfTextPage>> PdfiumDocument::textPage(std::size_t pageIndex) const {
+    return textPageImpl(pageIndex, nullptr);
+}
+
+core::Result<std::shared_ptr<const PdfTextPage>> PdfiumDocument::textPageInView(std::size_t pageIndex,
+                                                                                const PdfPageView& view) const {
+    return textPageImpl(pageIndex, &view);
+}
+
+core::Result<std::shared_ptr<const PdfTextPage>> PdfiumDocument::textPageImpl(std::size_t pageIndex,
+                                                                              const PdfPageView* view) const {
     // Public entry operation: ONE gate acquisition for the whole extraction.
     // extractTextPage never acquires the gate itself (documented in
     // PdfiumTextPage.h) - the page load, text-page load, per-char queries and
@@ -388,7 +475,7 @@ core::Result<std::shared_ptr<const PdfTextPage>> PdfiumDocument::textPage(std::s
                                                            std::to_string(info_.pageCount) + " pages)",
                                                        "pdf"));
             }
-            return extractTextPage(document_, pageIndex, info_.pageCount);
+            return extractTextPage(document_, pageIndex, info_.pageCount, view);
         });
 }
 
@@ -439,8 +526,14 @@ std::optional<PdfDestination> resolveDest(FPDF_DOCUMENT document, FPDF_DEST dest
     FS_FLOAT zoom = 0.0f;
     if (FPDFDest_GetLocationInPage(dest, &hasX, &hasY, &hasZoom, &x, &y, &zoom) != 0 && hasX != 0 &&
         hasY != 0) {
-        // The point needs the destination PAGE's display geometry (a dest may
-        // reference a different page than the one being processed).
+        // The user-space point needs no page: it is what the file says, and
+        // lets a consumer re-map it into any view of the target page.
+        result.hasUserPoint = true;
+        result.userX = static_cast<double>(x);
+        result.userY = static_cast<double>(y);
+        // The display point needs the destination PAGE's native display
+        // geometry (a dest may reference a different page than the one being
+        // processed).
         internal::ScopedPage targetPage(FPDF_LoadPage(document, pageIndex));
         if (targetPage.get() != nullptr) {
             if (const auto geometry = internal::makeDisplayGeometry(targetPage.get());
@@ -599,6 +692,16 @@ std::vector<core::Rect> linkRects(FPDF_LINK link, const internal::DisplayGeometr
 } // namespace
 
 core::Result<std::vector<PdfPageLink>> PdfiumDocument::pageLinks(std::size_t pageIndex) const {
+    return pageLinksImpl(pageIndex, nullptr);
+}
+
+core::Result<std::vector<PdfPageLink>> PdfiumDocument::pageLinksInView(std::size_t pageIndex,
+                                                                       const PdfPageView& view) const {
+    return pageLinksImpl(pageIndex, &view);
+}
+
+core::Result<std::vector<PdfPageLink>> PdfiumDocument::pageLinksImpl(std::size_t pageIndex,
+                                                                     const PdfPageView* view) const {
     // Public entry operation: one gate acquisition.
     return globalPdfiumCallGate().invoke([&]() -> core::Result<std::vector<PdfPageLink>> {
         if (pageIndex >= info_.pageCount) {
@@ -617,13 +720,12 @@ core::Result<std::vector<PdfPageLink>> PdfiumDocument::pageLinks(std::size_t pag
                                                        " (FPDF error " + std::to_string(lastError) + ")",
                                                    "pdf"));
         }
-        const auto geometry = internal::makeDisplayGeometry(page.get());
-        if (!geometry.has_value()) {
-            return std::unexpected(core::makeError(core::ErrorCode::InvalidDocument,
-                                                   "page " + std::to_string(pageIndex) +
-                                                       " has invalid display dimensions",
-                                                   "pdf"));
+        // Link rects are reported in the requested view's display space.
+        const auto resolved = internal::resolvePageGeometry(page.get(), pageIndex, view);
+        if (!resolved.has_value()) {
+            return std::unexpected(resolved.error());
         }
+        const internal::DisplayGeometry* geometry = &resolved->display;
 
         std::vector<PdfPageLink> links;
         int startPos = 0;

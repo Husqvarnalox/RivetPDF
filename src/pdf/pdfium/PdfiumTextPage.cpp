@@ -32,7 +32,8 @@ char32_t sanitizeUnicode(unsigned int unicode) {
 // acquires the gate itself (see PdfiumTextPage.h).
 core::Result<std::shared_ptr<const PdfTextPage>> extractTextPage(FPDF_DOCUMENT document,
                                                                  std::size_t pageIndex,
-                                                                 std::size_t pageCount) {
+                                                                 std::size_t pageCount,
+                                                                 const PdfPageView* view) {
     if (document == nullptr) {
         return std::unexpected(
             core::makeError(core::ErrorCode::InvalidArgument, "document handle is null", "pdf"));
@@ -55,13 +56,13 @@ core::Result<std::shared_ptr<const PdfTextPage>> extractTextPage(FPDF_DOCUMENT d
                                                "pdf"));
     }
 
-    const std::optional<internal::DisplayGeometry> geometry = internal::makeDisplayGeometry(page.get());
-    if (!geometry.has_value()) {
-        return std::unexpected(core::makeError(core::ErrorCode::InvalidDocument,
-                                               "page " + std::to_string(pageIndex) +
-                                                   " has invalid display dimensions",
-                                               "pdf"));
+    // Char boxes come back in user space; they are mapped into the display
+    // space of the requested view (the native one when view is null).
+    const auto resolved = internal::resolvePageGeometry(page.get(), pageIndex, view);
+    if (!resolved.has_value()) {
+        return std::unexpected(resolved.error());
     }
+    const internal::DisplayGeometry* geometry = &resolved->display;
 
     internal::ScopedTextPage textPage(FPDFText_LoadPage(page.get()));
     if (textPage.get() == nullptr) {

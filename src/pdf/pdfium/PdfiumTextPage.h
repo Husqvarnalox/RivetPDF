@@ -3,6 +3,7 @@
 #pragma once
 
 #include "core/Error.hpp"
+#include "pdf/PdfPageGeometry.hpp"
 #include "pdf/PdfText.hpp"
 
 #include <cstddef>
@@ -22,11 +23,16 @@ namespace rivet::pdf {
 // the gate itself and must only be called from inside globalPdfiumCallGate()
 // .invoke() (see PdfiumCallGate.hpp - a nested acquisition self-deadlocks).
 //
+// Char bounds are reported in the display space of `view` (null = the
+// page's native view); a view that is invalid or exceeds the media box is
+// rejected with InvalidArgument.
+//
 // pageCount bounds the range check on pageIndex (InvalidArgument on overflow);
 // a page or text page that PDFium fails to load reports InvalidDocument with
 // FPDF_GetLastError(). Never logs document contents.
 core::Result<std::shared_ptr<const PdfTextPage>> extractTextPage(FPDF_DOCUMENT document,
                                                                  std::size_t pageIndex,
-                                                                 std::size_t pageCount);
+                                                                 std::size_t pageCount,
+                                                                 const PdfPageView* view = nullptr);
 
 } // namespace rivet::pdf

@@ -2,7 +2,9 @@ add_library(rivet_pdfium STATIC
     PdfSystem_pdfium.cpp
     PdfiumCallGate.cpp
     PdfiumEngine.cpp
+    PdfiumAssembly.cpp
     PdfiumDocument.cpp
+    PdfiumFileSource.cpp
     PdfiumTextPage.cpp
     PdfiumLibrary.cpp
 )

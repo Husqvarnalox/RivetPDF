@@ -1,8 +1,9 @@
 if(RIVET_WITH_PDFIUM)
-    # Interface (PdfEngine.hpp etc.) plus the Rivet-owned text model, which is
-    # engine-independent; the PDFium-specific implementation lives in
-    # rivet_pdfium.
+    # Interface (PdfEngine.hpp etc.) plus the Rivet-owned text model and page
+    # geometry (views, box mapping), which are engine-independent; the
+    # PDFium-specific implementation lives in rivet_pdfium.
     add_library(rivet_pdf STATIC
+        PdfPageGeometry.cpp
         PdfText.cpp
     )
     add_library(rivet::pdf ALIAS rivet_pdf)
@@ -12,6 +13,7 @@ if(RIVET_WITH_PDFIUM)
     add_subdirectory(pdfium)
 else()
     add_library(rivet_pdf STATIC
+        PdfPageGeometry.cpp
         PdfSystem_null.cpp
         PdfText.cpp
     )

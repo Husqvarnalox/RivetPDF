@@ -14,6 +14,11 @@ add_executable(rivet_pdf_tests
     # Document-navigation tests (outline, page labels, links): PDFium-ON
     # bodies only.
     TestPdfNavigation.cpp
+    # Engine-independent page-view geometry: runs in both build modes.
+    TestPdfPageGeometry.cpp
+    # View-aware reads and document assembly round trips (page editing
+    # foundation): PDFium-ON bodies only.
+    TestPdfPageEditing.cpp
     # Compiled directly into the test binary rather than linked from
     # rivet_pdfium, so the gate tests run with RIVET_WITH_PDFIUM=OFF too. The
     # gate translation unit has no FPDF_* dependency. In PDFium-ON builds the
