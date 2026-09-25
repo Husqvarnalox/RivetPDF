@@ -9,6 +9,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <future>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -145,18 +146,24 @@ RIVET_TEST(textServiceExtractsAndCaches) {
     FakeTextDocument& document = *static_cast<FakeTextDocument*>(&session->document());
 
     const PageId page0 = session->pageId(0);
-    std::shared_ptr<const PdfTextPage> delivered;
-    text.requestTextPage(page0, [&](std::shared_ptr<const PdfTextPage> page) { delivered = page; });
-
-    CHECK(waitFor([&] { return delivered != nullptr; }));
+    // Promise/future: the callback fires on the worker thread (null
+    // dispatcher); the future provides the test-thread synchronization TSan
+    // requires.
+    auto promise0 = std::make_shared<std::promise<std::shared_ptr<const PdfTextPage>>>();
+    text.requestTextPage(page0, [promise0](std::shared_ptr<const PdfTextPage> page) {
+        promise0->set_value(std::move(page));
+    });
+    auto delivered = promise0->get_future().get();
     CHECK(delivered != nullptr);
     CHECK_EQ(delivered->text(), "alpha beta gamma");
     CHECK_EQ(document.extractions.load(), 1);
 
     // Second request: cache hit, no new extraction.
-    std::shared_ptr<const PdfTextPage> second;
-    text.requestTextPage(page0, [&](std::shared_ptr<const PdfTextPage> page) { second = page; });
-    CHECK(waitFor([&] { return second != nullptr; }));
+    auto promise1 = std::make_shared<std::promise<std::shared_ptr<const PdfTextPage>>>();
+    text.requestTextPage(page0, [promise1](std::shared_ptr<const PdfTextPage> page) {
+        promise1->set_value(std::move(page));
+    });
+    auto second = promise1->get_future().get();
     CHECK_EQ(second.get(), delivered.get());
     CHECK_EQ(document.extractions.load(), 1);
 }

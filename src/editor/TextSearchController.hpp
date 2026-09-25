@@ -16,6 +16,8 @@
 #include <string>
 #include <vector>
 
+#include "core/async/SerialExecutor.hpp"
+
 namespace rivet::editor {
 
 // Asynchronous, cancellable document text search over a TextService.
@@ -85,6 +87,10 @@ private:
 
     DocumentSession& session_;
     TextService& text_;
+    // Walks run here: exactly one walker at a time, so the single
+    // walkerActive_ heartbeat is unambiguous (two concurrent walkers could
+    // otherwise each clear it while the other is still running).
+    core::SerialExecutor walkExecutor_;
 
     mutable std::mutex mutex_;
     std::vector<Match> matches_;

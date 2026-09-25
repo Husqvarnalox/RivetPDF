@@ -47,7 +47,16 @@ void TextService::requestTextPage(core::PageId pageId, TextCallback onDone) {
 // requests racing) delivers once per entry - the second job finds no pending
 // entry and becomes a no-op.
 void TextService::scheduleExtraction(core::PageId pageId) {
-    executor_.post([this, pageId] {
+    // The job captures everything it needs BY VALUE (document reference,
+    // page index, revision, dispatcher): it must not dereference the session
+    // while running, because it can outlive the calling stack and overlap
+    // session/service teardown (the executor's idle-wait provides the final
+    // ordering edge).
+    pdf::PdfDocument& document = session_.document();
+    const std::size_t pageIndex = session_.pageIndexFor(pageId);
+    const std::uint64_t revision = session_.revision();
+    core::IMainThreadDispatcher* dispatcher = session_.mainDispatcher();
+    executor_.post([this, pageId, pageIndex, revision, &document, dispatcher] {
         std::vector<TextCallback> callbacks;
         {
             std::lock_guard<std::mutex> lock(mutex_);
@@ -58,19 +67,15 @@ void TextService::scheduleExtraction(core::PageId pageId) {
         }
 
         // Cache probe again: another job may have produced the page.
-        auto page = cachedTextPage(pageId);
-        if (page == nullptr) {
-            const std::size_t pageIndex = session_.pageIndexFor(pageId);
-            if (pageIndex != DocumentSession::kInvalidPage) {
-                page = session_.document().textPage(pageIndex).value_or(nullptr);
-            }
+        auto page = cache_.get(pageId, revision);
+        if (page == nullptr && pageIndex != DocumentSession::kInvalidPage) {
+            page = document.textPage(pageIndex).value_or(nullptr);
             if (page != nullptr) {
-                cache_.put(pageId, session_.revision(), page);
+                cache_.put(pageId, revision, page);
             }
         }
 
         if (callbacks.empty()) return;
-        core::IMainThreadDispatcher* dispatcher = session_.mainDispatcher();
         if (dispatcher != nullptr) {
             dispatcher->post([callbacks = std::move(callbacks), page]() mutable {
                 for (auto& callback : callbacks) callback(page);

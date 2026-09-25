@@ -131,12 +131,16 @@ private:
     // Sidebar outline mode: flattening the document outline, expansion state
     // and row activation.
     void switchSidebarMode(int mode);   // 0 = pages, 1 = outline
+    // Presentation mode: chrome hidden, one page centered; Esc exits.
+    void setPresentationMode(bool enabled);
+    bool presentationMode() const { return presentationMode_; }
     void rebuildOutlineRows();
     void activateOutlineRow(std::size_t rowIndex);
     // Navigation-metadata wiring (labels, link warm-up).
     void navigateInternalDestination(std::size_t pageIndex, const core::Point& targetPoint,
                                      bool hasPoint);
     void openExternalUrl(const std::string& url);
+    void handlePrintRequest();
 
     platform::ShellServices services_;
     // Declaration order = reverse destruction order: the widget tree (root_)
@@ -199,6 +203,13 @@ private:
     std::vector<std::vector<std::size_t>> outlineRowPaths_;
     std::vector<std::size_t> outlineRowDestinations_;  // per row: page index
     std::set<std::vector<std::size_t>> expandedOutlinePaths_;
+    bool presentationMode_ = false;
+    // Saved chrome frames for presentation-mode exit (layoutShell writes
+    // them on every normal layout pass).
+    core::Rect tabStripFrame_;
+    core::Rect toolbarFrame_;
+    core::Rect sidebarFrame_;
+    core::Rect statusBarFrame_;
 };
 
 // Factory used by the platform entry point (main).

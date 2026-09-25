@@ -259,6 +259,11 @@ void ShellController::buildWidgets() {
     fitPage->setFrame(core::Rect{0.0, 0.0, 56.0, 28.0});
     toolbar_->addItem(std::move(fitPage));
 
+    auto printButton = std::make_unique<ui::Button>("Print");
+    printButton->setOnClick([this] { handlePrintRequest(); });
+    printButton->setFrame(core::Rect{0.0, 0.0, 60.0, 28.0});
+    toolbar_->addItem(std::move(printButton));
+
     auto statusLabel = std::make_unique<TextLabel>(
         engine_->isAvailable() ? "Ready" : "Ready — PDF support is not built into this binary",
         ui::Font{12.0}, ui::Color::gray(0.35), ui::TextAlign::Left);
@@ -318,10 +323,35 @@ void ShellController::layoutShell() {
     const double width = bounds.size.width;
     const double height = bounds.size.height;
 
+    if (presentationMode_) {
+        // Chrome stays hidden (its saved frames are stale while presenting);
+        // the viewport fills the window.
+        viewport_->setFrame(core::Rect{0.0, 0.0, width, height});
+        overlayLabel_->setFrame(viewport_->frame());
+        if (searchVisible_) {
+            const double barWidth = 360.0;
+            const double barX = std::max(0.0, width - barWidth - 12.0);
+            searchBar_->setFrame(core::Rect{barX, 8.0, barWidth, 34.0});
+        } else {
+            searchBar_->setFrame(core::Rect{-1.0, -1.0, 0.0, 0.0});
+        }
+        return;
+    }
+
     const double top = kTabStripHeight;
     const double middleHeight = std::max(0.0, height - top - kToolbarHeight - kStatusBarHeight);
-    tabStrip_->setFrame(core::Rect{0.0, 0.0, width, kTabStripHeight});
-    toolbar_->setFrame(core::Rect{0.0, top, width, kToolbarHeight});
+    const core::Rect newTabStrip{0.0, 0.0, width, kTabStripHeight};
+    const core::Rect newToolbar{0.0, top, width, kToolbarHeight};
+    const core::Rect newSidebar{0.0, top + kToolbarHeight, kSidebarWidth, middleHeight};
+    const core::Rect newStatus{0.0, height - kStatusBarHeight, width, kStatusBarHeight};
+    tabStripFrame_ = newTabStrip;
+    toolbarFrame_ = newToolbar;
+    sidebarFrame_ = newSidebar;
+    statusBarFrame_ = newStatus;
+    tabStrip_->setFrame(newTabStrip);
+    toolbar_->setFrame(newToolbar);
+    sidebarContainer_->setFrame(newSidebar);
+    statusBar_->setFrame(newStatus);
     const core::Rect sidebarFrame{0.0, top + kToolbarHeight, kSidebarWidth, middleHeight};
     sidebarContainer_->setFrame(sidebarFrame);
     const double headerH = 34.0;
@@ -342,7 +372,6 @@ void ShellController::layoutShell() {
     } else {
         searchBar_->setFrame(core::Rect{-1.0, -1.0, 0.0, 0.0});
     }
-    statusBar_->setFrame(core::Rect{0.0, height - kStatusBarHeight, width, kStatusBarHeight});
     statusLabel_->setFrame(core::Rect{12.0, 0.0, std::max(0.0, width - 220.0), kStatusBarHeight});
 
     // Page indicator cluster, right-aligned: "Page [field] / N". The count
@@ -498,6 +527,20 @@ void ShellController::openDocument(const std::filesystem::path& path) {
     workspace_.openDocument(path);
 }
 
+void ShellController::setPresentationMode(bool enabled) {
+    if (presentationMode_ == enabled) return;
+    presentationMode_ = enabled;
+    // Chrome collapses to zero-size (hidden) or restores its layout slot;
+    // layoutShell() positions everything else.
+    toolbar_->setFrame(enabled ? core::Rect{-1.0, -1.0, 0.0, 0.0} : toolbarFrame_);
+    sidebarContainer_->setFrame(enabled ? core::Rect{-1.0, -1.0, 0.0, 0.0} : sidebarFrame_);
+    tabStrip_->setFrame(enabled ? core::Rect{-1.0, -1.0, 0.0, 0.0} : tabStripFrame_);
+    statusBar_->setFrame(enabled ? core::Rect{-1.0, -1.0, 0.0, 0.0} : statusBarFrame_);
+    viewport_->setPresentationMode(enabled);
+    if (enabled) setFocus(nullptr);
+    layoutShell();
+}
+
 void ShellController::setFocus(ui::Widget* widget) {
     if (focusedWidget_ == widget) return;
     if (focusedWidget_ != nullptr) focusedWidget_->setFocused(false);
@@ -509,10 +552,14 @@ bool ShellController::handleKeyEvent(const ui::KeyEvent& event) {
     // 1. The focused widget (a text field) consumes its keys first.
     if (focusedWidget_ != nullptr && focusedWidget_->onKey(event)) return true;
 
-    // Escape closes the search bar (its field consumes Escape while
-    // focused); otherwise it blurs the focused widget.
+    // Escape closes the search bar / exits presentation mode; otherwise it
+    // blurs the focused widget.
     if (event.key == ui::Key::Escape && searchVisible_) {
         setSearchVisible(false);
+        return true;
+    }
+    if (event.key == ui::Key::Escape && presentationMode_) {
+        setPresentationMode(false);
         return true;
     }
     if (event.key == ui::Key::Escape && focusedWidget_ != nullptr) {
@@ -557,6 +604,16 @@ bool ShellController::handleShortcut(const ui::KeyEvent& event) {
             }
             if (event.text == "c") {
                 copySelection();
+                return true;
+            }
+            if (event.text == "p" && !control) {
+                handlePrintRequest();
+                return true;
+            }
+            if (event.text == "p" && control && command) {
+                // Ctrl+Cmd+F is taken by macOS fullscreen; presentation uses
+                // Ctrl+Cmd+P (print stays Cmd+P).
+                setPresentationMode(!presentationMode_);
                 return true;
             }
             if (event.text == "{" || event.text == "[") {
@@ -1049,6 +1106,52 @@ void ShellController::navigateInternalDestination(std::size_t pageIndex,
     } else {
         viewport_->goToPage(pageIndex);
     }
+}
+
+// Printing: builds the request from the ACTIVE tab; page content comes from
+// the session's Rivet render path (whole pages at the platform's capped
+// density). The callback runs during the print operation on the main thread;
+// the global PDFium gate serializes it with any background rendering.
+void ShellController::handlePrintRequest() {
+    DocumentTab* tab = readyActiveTab();
+    if (tab == nullptr || tab->session() == nullptr) {
+        setStatus("Nothing to print — open a document first");
+        return;
+    }
+    if (services_.printService == nullptr) {
+        setStatus("No print service available on this platform backend");
+        return;
+    }
+    editor::DocumentSession* session = tab->session();
+
+    platform::PrintRequest request;
+    request.jobTitle = tab->title();
+    request.pageSizesPoints.reserve(session->pageCount());
+    for (std::size_t i = 0; i < session->pageCount(); ++i) {
+        request.pageSizesPoints.push_back(session->pageSizePoints(i));
+    }
+    // Render at the print density; the whole page in one bitmap (bounded by
+    // the platform's density cap). Runs on the main thread inside the print
+    // operation; the gate serializes with worker renders.
+    request.renderPage = [session](std::size_t pageIndex, double devicePixelsPerPoint)
+        -> core::Result<core::Bitmap> {
+        if (pageIndex >= session->pageCount()) {
+            return std::unexpected(core::Error{core::ErrorCode::InvalidArgument,
+                                               "page index out of range", "app"});
+        }
+        const core::Size size = session->pageSizePoints(pageIndex);
+        return session->document().renderPage(
+            pageIndex, core::Rect{core::Point{0.0, 0.0}, size}, devicePixelsPerPoint);
+    };
+
+    const core::Status printed = services_.printService->printDocument(request);
+    if (!printed.has_value()) {
+        if (printed.error().code != core::ErrorCode::Cancelled) {
+            setStatus("Print failed: " + core::describe(printed.error()));
+        }
+        return;
+    }
+    setStatus(std::format("Printed {} ", tab->title()));
 }
 
 // External URL policy: explicit user click (the viewport fires linkActivated

@@ -709,3 +709,36 @@ RIVET_TEST(clearDocumentCancelsPendingAndRepaintsEmptyState) {
     CHECK_EQ(f.source.requests.size(), requestsBefore); // no new requests
     CHECK_EQ(hasText(after, "Open a PDF to begin"), true);
 }
+
+RIVET_TEST(presentationModeFlipsPagesAndRefits) {
+    Fixture f;
+    f.viewport.setPresentationMode(true);
+
+    // Entering presentation centers the tracked page with a fit-page zoom:
+    // page 0 (612x792) in 800x600 -> zoom 600/792.
+    CHECK(f.viewport.presentationMode());
+    CHECK_NEAR(f.viewport.zoom().zoom(), 600.0 / 792.0, 1e-9);
+
+    // PageDown flips to page 1 (400x400 -> zoom min(800/400, 600/400) = 1.5)
+    // and top-aligns it.
+    rivet::ui::KeyEvent pageDown;
+    pageDown.key = Key::PageDown;
+    CHECK_EQ(f.viewport.onKey(pageDown), true);
+    CHECK_EQ(f.viewport.currentPageIndex(), std::size_t{1});
+    CHECK_NEAR(f.viewport.zoom().zoom(), 1.5, 1e-9);
+    CHECK_NEAR(f.viewport.scrollOffsetPoints().y, 832.0, 1e-9);
+
+    // Space on the LAST page is consumed but does nothing.
+    rivet::ui::KeyEvent space;
+    space.key = Key::Space;
+    CHECK_EQ(f.viewport.onKey(space), true);
+    CHECK_EQ(f.viewport.currentPageIndex(), std::size_t{1});
+    rivet::ui::KeyEvent up;
+    up.key = Key::Up;
+    CHECK_EQ(f.viewport.onKey(up), true);
+    CHECK_EQ(f.viewport.currentPageIndex(), std::size_t{0});
+
+    // Exiting restores fit mode None (manual zoom state preserved).
+    f.viewport.setPresentationMode(false);
+    CHECK(!f.viewport.presentationMode());
+}

@@ -6,7 +6,7 @@
 namespace rivet::editor {
 
 TextSearchController::TextSearchController(DocumentSession& session, TextService& text)
-    : session_(session), text_(text) {}
+    : session_(session), text_(text), walkExecutor_(session.scheduler()) {}
 
 TextSearchController::~TextSearchController() {
     // Invalidate the walk, then wait for the walker to observe it and exit:
@@ -39,8 +39,9 @@ void TextSearchController::start(std::string query, pdf::TextSearchOptions optio
                           std::memory_order_release);
     }
     const std::uint64_t generation = generation_.load(std::memory_order_acquire);
-    core::TaskScheduler& scheduler = session_.scheduler();
-    scheduler.post([this, generation, query = query_, options] { runWalk(generation, query, options); });
+    walkExecutor_.post([this, generation, query = query_, options] {
+        runWalk(generation, query, options);
+    });
     fireChanged();
 }
 

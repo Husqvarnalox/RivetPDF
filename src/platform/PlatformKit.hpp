@@ -4,6 +4,7 @@
 #include "core/async/IMainThreadDispatcher.hpp"
 #include "platform/Clipboard.hpp"
 #include "platform/ExternalUrlOpener.hpp"
+#include "platform/Print.hpp"
 
 #include <filesystem>
 
@@ -45,6 +46,9 @@ struct ShellServices {
 
     // System URL opener. May be null (external links then do nothing).
     IExternalUrlOpener* urlOpener = nullptr;
+
+    // Native print service. May be null (printing disabled).
+    IPrintService* printService = nullptr;
 
     // Sets the window title (UTF-8). May be null; the shell then never
     // touches the platform window title. Used for the active document name.

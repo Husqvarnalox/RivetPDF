@@ -208,6 +208,12 @@ void PdfViewport::scrollByContentPoints(const core::Point& delta) {
 
 void PdfViewport::goToPage(std::size_t index) {
     if (layout_ == nullptr || index >= layout_->pageCount()) return;
+    if (presentationMode_) {
+        // Refit the TARGET page, then top-align it (clamped by the bounds).
+        state_->zoom().setFitMode(render::ZoomState::FitMode::None);
+        state_->zoom().setZoom(state_->zoom().fitPageZoom(
+            frame().size.width, frame().size.height, layout_->pages()[index].sizePoints));
+    }
     setScrollOffsetPoints(core::Point{state_->scrollOffsetPoints().x,
                                       layout_->pageTopOffsetPoints(index)});
 }
@@ -247,6 +253,12 @@ void PdfViewport::onStateChanged() {
 }
 
 void PdfViewport::syncScrollbars() {
+    if (presentationMode_) {
+        // Hidden in presentation mode.
+        vScrollBar_->setExtents(0.0, 0.0);
+        hScrollBar_->setExtents(0.0, 0.0);
+        return;
+    }
     if (layout_ == nullptr) {
         vScrollBar_->setExtents(0.0, 0.0);
         hScrollBar_->setExtents(0.0, 0.0);
@@ -460,6 +472,27 @@ bool PdfViewport::onKey(const KeyEvent& event) {
 
     if (layout_ == nullptr) return false;
 
+    if (presentationMode_) {
+        // Presentation navigation: page flips, wrap-free.
+        switch (event.key) {
+        case Key::PageDown:
+        case Key::Down:
+        case Key::Right:
+        case Key::Space:
+            if (currentPage_ + 1 < layout_->pageCount()) goToPage(currentPage_ + 1);
+            event.accepted = true;
+            return true;
+        case Key::PageUp:
+        case Key::Up:
+        case Key::Left:
+            if (currentPage_ > 0) goToPage(currentPage_ - 1);
+            event.accepted = true;
+            return true;
+        default:
+            break; // fall through to the shared zoom/scroll handling below
+        }
+    }
+
     // PageUp/PageDown scroll one viewport height (in content points); arrows
     // scroll a fixed screen distance (converted to content points).
     const double pageHeightPoints = frame().size.height / state_->zoom().zoom();
@@ -496,6 +529,21 @@ bool PdfViewport::onKey(const KeyEvent& event) {
     }
     event.accepted = true;
     return true;
+}
+
+void PdfViewport::setPresentationMode(bool enabled) {
+    if (presentationMode_ == enabled) return;
+    presentationMode_ = enabled;
+    if (enabled && layout_ != nullptr && layout_->pageCount() > 0) {
+        // Center the tracked page: fit-page for the current page (the mode is
+        // one-shot here - page flips recompute it), then jump to its top.
+        state_->zoom().setFitMode(render::ZoomState::FitMode::Page);
+        layout();
+        goToPage(currentPage_);
+    } else if (!enabled) {
+        layout();
+    }
+    invalidate();
 }
 
 void PdfViewport::layout() {
@@ -555,7 +603,7 @@ void PdfViewport::resolveFitMode() {
 //   6. Scrollbar children paint on top via Widget::paint's child pass.
 void PdfViewport::paintSelf(PaintContext& context) const {
     context.pushClip(bounds());
-    context.fillRect(bounds(), kCanvasBackground);
+    context.fillRect(bounds(), presentationMode_ ? Color::black() : kCanvasBackground);
 
     if (layout_ == nullptr || source_ == nullptr) {
         context.drawText(kEmptyStateText, bounds(), kEmptyStateFont, kEmptyStateColor,

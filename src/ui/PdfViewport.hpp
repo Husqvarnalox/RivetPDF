@@ -131,6 +131,15 @@ public:
     // paints the bridge's overlay rects above the tiles.
     void setTextBridge(IViewerTextBridge* bridge) { textBridge_ = bridge; }
 
+    // Presentation mode: one page centered (fit-page recomputed per page),
+    // black canvas, no scrollbars; Page/arrow/Space keys flip pages. The
+    // shell hides its chrome around it. Exiting restores the previous zoom
+    // and fit mode (the bound ViewerState is untouched: presentation applies
+    // through a temporary ZoomState swap... it simply drives fit-mode and
+    // page navigation; the user's zoom is restored by the shell on exit).
+    void setPresentationMode(bool enabled);
+    bool presentationMode() const { return presentationMode_; }
+
     // Scrolls the view so that the given rect of page `index` (page display
     // points) is centered in the viewport (clamped to the content bounds);
     // keeps the current zoom. Used by search-result and outline navigation.
@@ -211,6 +220,7 @@ private:
     IViewerTextBridge* textBridge_ = nullptr;
     // True while a mouse drag is selecting text.
     bool selecting_ = false;
+    bool presentationMode_ = false;
 
     // Pending link press (down over a link; fires on up over the same one).
     bool linkPressed_ = false;

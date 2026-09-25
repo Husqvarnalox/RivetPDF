@@ -4,7 +4,7 @@ This document is the reference for Rivet's software architecture. It describes
 the system as designed; where code is still mid-implementation, the structure
 described here is the source of truth.
 
-Rivet is a native C++23 PDF editor. It is built from small, layered subsystems
+Rivet is a native C++23 PDF viewer/editor. It is built from small, layered subsystems
 with a strict dependency direction, a tile-based rendering pipeline, a
 serialized-per-document threading model, and a `std::expected`-based error
 model. Platform integration (AppKit on macOS) is confined to a dedicated
@@ -30,7 +30,7 @@ Rivet is organized as a set of statically linked CMake libraries plus one
 executable:
 
 - `rivet_core` - geometry, strong IDs, errors, logging, time, bitmaps, task scheduling.
-- `rivet_render` - coordinate transforms, page layout, zoom, tile cache, render contracts.
+- `rivet_render` - coordinate transforms, page layout, zoom, viewer state, tile cache, render contracts.
 - `rivet_pdf` - PDF engine interfaces (`PdfEngine`, `PdfDocument`, `PdfTypes`) and a null engine when PDFium is not compiled in.
 - `rivet_pdfium` - the PDFium adapter; only built with `RIVET_WITH_PDFIUM=ON`.
 - `rivet_editor` - commands/undo, document sessions, the render source that drives rasterization.
@@ -106,8 +106,9 @@ Foundation types shared by everything else.
 Everything needed to turn a document into pixels, independent of any UI toolkit and of any PDF engine.
 
 - `PageTransform` - the only place coordinate conversions live (section 4).
-- `PageLayout` - stacks pages vertically in content space; precomputed page frames, `visiblePageRange`, `pageIndexAt`.
-- `ZoomState` - clamped user zoom (0.10 .. 64.0), preset stops, fit-width/fit-page intent.
+- `PageLayout` - stacks pages vertically in content space; precomputed page frames, `visiblePageRange`, `pageIndexAt`, `currentPageIndex` (viewport-center rule, tie -> lower index).
+- `ZoomState` - clamped user zoom (0.10 .. 64.0), preset stops, fit-width/fit-page modes.
+- `ViewerState` - per-view state (zoom + scroll offset) owned by the application layer per tab and bound by PdfViewport; the viewport is the mutator, the state the single source of truth.
 - `RenderScaleKey` - zoom quantized UP to multiples of 1/64 (section 6).
 - `TileKey` - `(DocumentId, PageId, RenderScaleKey, tileX, tileY)` cache identity.
 - `RenderRequest` / `RasterParams` - cache identity plus pure raster parameters.
@@ -121,7 +122,7 @@ Engine-independent interfaces: `PdfEngine` (backend availability, `openDocument`
 
 ### `rivet_pdfium` (`src/pdf/pdfium/`)
 
-The PDFium adapter, built only when `RIVET_WITH_PDFIUM=ON`. Implements the `rivet_pdf` interfaces on top of PDFium and links the imported target `PDFium::PDFium` created by `cmake/FindPDFium.cmake`. All `FPDF_*` usage is confined to this directory. See [ADR-0003](adr/ADR-0003-pdfium-abstraction-boundary.md) and `docs/BUILDING_PDFIUM.md`.
+The PDFium adapter, built only when `RIVET_WITH_PDFIUM=ON`. Implements the `rivet_pdf` interfaces on top of PDFium and links the imported target `PDFium::PDFium` created by `cmake/FindPDFium.cmake`. All `FPDF_*` usage is confined to this directory. Beyond rendering it provides text extraction (`PdfTextPage` in displayed-page coordinates), document outline (depth/node/cycle-bounded), page labels, and per-page links (internal destinations and scheme-validated external URLs). See [ADR-0003](adr/ADR-0003-pdfium-abstraction-boundary.md) and `docs/BUILDING_PDFIUM.md`.
 
 ### `rivet_editor` (`src/editor/`)
 
@@ -131,15 +132,15 @@ The PDFium adapter, built only when `RIVET_WITH_PDFIUM=ON`. Implements the `rive
 
 ### `rivet_ui` (`src/ui/`)
 
-A small, Rivet-owned retained-mode widget system: `Widget`, `Container`, `Button`, `Toolbar`, `Sidebar`, `PdfViewport`. Painting goes through a `PaintContext` abstraction that hides CoreGraphics. Widgets and event handling are main-thread-only. See [ADR-0004](adr/ADR-0004-retained-mode-rivet-ui.md).
+A small, Rivet-owned retained-mode widget system: `Widget`, `Container`, `Button`, `Toolbar`, `ScrollBar`, `TextField` (UTF-8 caret/selection, echo masking), `TabStrip`, `PageThumbnailList` (lazy, virtualized thumbnails over the shared TileCache), `OutlinePanel`, `PdfViewport`. Painting goes through a `PaintContext` abstraction that hides CoreGraphics. Widgets and event handling are main-thread-only. `IViewerTextBridge` (implemented by the app layer) connects the viewport to text features without an editor dependency. See [ADR-0004](adr/ADR-0004-retained-mode-rivet-ui.md).
 
 ### `rivet_platform` / `rivet_platform_macos` (`src/platform/`)
 
-`rivet_platform` declares thin abstractions - file dialog, main-thread dispatch. `rivet_platform_macos` implements them with AppKit (`NSWindow`/`NSView` host, `NSOpenPanel`), provides the CoreGraphics `PaintContext` implementation and CoreText text services, and defines the `rivet` executable entry point. It is the only module that touches AppKit/CoreGraphics/CoreText directly.
+`rivet_platform` declares thin abstractions - file dialog, main-thread dispatch, clipboard, external URL opener, print service. `rivet_platform_macos` implements them with AppKit (`NSWindow`/`NSView` host, `NSOpenPanel`, `NSPasteboard`, `NSWorkspace` URL opening, `NSPrintOperation` printing), provides the CoreGraphics `PaintContext` implementation and CoreText text services, and defines the `rivet` executable entry point. It is the only module that touches AppKit/CoreGraphics/CoreText directly.
 
 ### `rivet_app` (`src/app/`)
 
-Application shell wiring: toolbar, sidebar, status bar, viewport, and `DocumentSession` management (open/close, one session per document). Composes `rivet_ui` widgets with `rivet_editor` sessions.
+Application shell wiring: `DocumentWorkspace`/`DocumentTab` (multi-tab workspace, asynchronous open with Loading/Ready/Error/NeedsPassword states, per-tab `ViewerState` + selection + search), the `ShellController` composition root (tab strip, toolbar, sidebar with Pages/Outline modes, viewport, search bar, password overlay, status bar), keyboard shortcuts, and the text-interaction bridge. Composes `rivet_ui` widgets with `rivet_editor` services.
 
 ---
 
@@ -373,5 +374,7 @@ architectural requirements:
   (next phase) requires a mutable page model with the mapping owned by the
   session and updated by commands.
 
-Features beyond this (annotations, forms, OCR, encryption, ...) are roadmap
-items in the README and are not yet part of the architecture described here.
+Features beyond this (annotations, forms, editing, ...) are roadmap items in
+the README and are not yet part of the architecture described here. Page
+labels, outline/bookmarks, links, text selection/search and the workspace
+model landed in Phase 2 (2026-09-25).

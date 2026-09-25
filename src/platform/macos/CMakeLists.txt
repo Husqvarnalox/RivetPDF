@@ -3,6 +3,7 @@ add_library(rivet_platform_macos STATIC
     MacosExternalUrlOpener.mm
     MacosFileDialog.mm
     MacosMainThreadDispatcher.mm
+    MacosPrintService.mm
     MacosPaintContext.mm
     RivetContentView.mm
 )

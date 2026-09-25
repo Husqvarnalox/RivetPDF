@@ -58,7 +58,11 @@ void LinkService::requestPageLinks(core::PageId pageId, LinksCallback onDone) {
 }
 
 void LinkService::scheduleLoad(core::PageId pageId) {
-    executor_.post([this, pageId] {
+    // Capture by value (see TextService::scheduleExtraction for the rationale).
+    pdf::PdfDocument& document = session_.document();
+    const std::size_t pageIndex = session_.pageIndexFor(pageId);
+    core::IMainThreadDispatcher* dispatcher = session_.mainDispatcher();
+    executor_.post([this, pageId, pageIndex, &document, dispatcher] {
         std::vector<LinksCallback> callbacks;
         {
             std::lock_guard<std::mutex> lock(mutex_);
@@ -69,16 +73,12 @@ void LinkService::scheduleLoad(core::PageId pageId) {
         }
 
         std::vector<pdf::PdfPageLink> links = cachedLinks(pageId);
-        if (links.empty()) {
-            const std::size_t pageIndex = session_.pageIndexFor(pageId);
-            if (pageIndex != DocumentSession::kInvalidPage) {
-                links = session_.document().pageLinks(pageIndex).value_or(std::vector<pdf::PdfPageLink>{});
-            }
+        if (links.empty() && pageIndex != DocumentSession::kInvalidPage) {
+            links = document.pageLinks(pageIndex).value_or(std::vector<pdf::PdfPageLink>{});
             put(pageId, links);
         }
 
         if (callbacks.empty()) return;
-        core::IMainThreadDispatcher* dispatcher = session_.mainDispatcher();
         if (dispatcher != nullptr) {
             dispatcher->post([callbacks = std::move(callbacks), links]() mutable {
                 for (auto& callback : callbacks) callback(links);

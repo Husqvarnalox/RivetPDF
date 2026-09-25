@@ -1,5 +1,6 @@
 #import "MacosClipboard.h"
 #import "MacosExternalUrlOpener.h"
+#import "MacosPrintService.h"
 #import "MacosFileDialog.h"
 #import "MacosMainThreadDispatcher.h"
 #import "RivetContentView.h"
@@ -88,6 +89,7 @@ int main(int argc, char** argv) {
         const auto fileDialog = std::make_unique<rivet::platform::MacosFileDialog>();
         const auto clipboard = std::make_unique<rivet::platform::MacosClipboard>();
         const auto urlOpener = std::make_unique<rivet::platform::MacosExternalUrlOpener>();
+        const auto printService = std::make_unique<rivet::platform::MacosPrintService>();
 
         rivet::platform::ShellServices services;
         services.redrawSink = [contentView redrawSink];
@@ -95,6 +97,7 @@ int main(int argc, char** argv) {
         services.fileDialog = fileDialog.get();
         services.clipboard = clipboard.get();
         services.urlOpener = urlOpener.get();
+        services.printService = printService.get();
         NSWindow* __weak weakWindow = window;
         services.setWindowTitle = [weakWindow](const std::string& title) {
             // May be called from the main thread only (shell is main-thread
