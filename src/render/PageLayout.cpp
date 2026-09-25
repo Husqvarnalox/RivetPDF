@@ -74,4 +74,36 @@ double PageLayout::pageTopOffsetPoints(std::size_t index) const {
     return frames_[index].origin.y;
 }
 
+std::optional<std::size_t> PageLayout::currentPageIndex(const core::Rect& contentRectPoints) const {
+    if (pages_.empty()) return std::nullopt;
+
+    // 1. Page containing the viewport center.
+    const std::optional<std::size_t> atCenter = pageIndexAt(contentRectPoints.center());
+    if (atCenter.has_value()) return atCenter;
+
+    // 2. Largest visible area among pages intersecting the rect (ties ->
+    //    lower index). Intersection of an intersecting page and the rect has
+    //    positive area by visiblePageRange's contract, so the maximum is a
+    //    real page, not a degenerate sliver.
+    const std::optional<std::pair<std::size_t, std::size_t>> range =
+        visiblePageRange(contentRectPoints);
+    if (range.has_value()) {
+        std::size_t best = range->first;
+        double bestArea = 0.0;
+        for (std::size_t i = range->first; i <= range->second; ++i) {
+            const double area = frames_[i].intersection(contentRectPoints).area();
+            if (area > bestArea) {
+                bestArea = area;
+                best = i;
+            }
+        }
+        return best;
+    }
+
+    // 3. Rect intersects no page: nearest end page (first when above the
+    //    column, last when below).
+    if (contentRectPoints.maxY() <= frames_.front().origin.y) return 0;
+    return frames_.size() - 1;
+}
+
 } // namespace rivet::render

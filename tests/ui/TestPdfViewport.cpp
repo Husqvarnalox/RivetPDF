@@ -11,6 +11,7 @@
 #include "render/RenderPriority.hpp"
 #include "render/RenderScaleKey.hpp"
 #include "render/TileKey.hpp"
+#include "render/ViewerState.hpp"
 #include "render/ZoomState.hpp"
 #include "ui/PdfViewport.hpp"
 #include "ui/UiTypes.hpp"
@@ -53,6 +54,7 @@ constexpr std::uint64_t kRevision = 7;
 struct Fixture {
     PageLayout layout;
     FakeRenderSource source;
+    rivet::render::ViewerState state;
     PdfViewport viewport;
 
     Fixture() {
@@ -64,7 +66,7 @@ struct Fixture {
         layout.setPageMarginPoints(24.0);
 
         viewport.setFrame(Rect{0.0, 0.0, 800.0, 600.0});
-        viewport.setDocument(DocumentId{1}, &layout, &source, [] { return kRevision; });
+        viewport.setDocument(DocumentId{1}, &layout, &source, [] { return kRevision; }, &state);
     }
 };
 
@@ -259,9 +261,10 @@ RIVET_TEST(largePageSmallViewportRequestsOnlyAHandfulOfTiles) {
     layout.setPages(pages);
 
     FakeRenderSource source;
+    rivet::render::ViewerState state;
     PdfViewport viewport;
     viewport.setFrame(Rect{0.0, 0.0, 700.0, 700.0});
-    viewport.setDocument(DocumentId{1}, &layout, &source, [] { return kRevision; });
+    viewport.setDocument(DocumentId{1}, &layout, &source, [] { return kRevision; }, &state);
     viewport.setScrollOffsetPoints(Point{124.0, 124.0}); // page-local {100, 100}
 
     FakePaintContext context;
@@ -332,7 +335,7 @@ RIVET_TEST(wheelScrollsWithoutModifiers) {
     CHECK(Point::nearlyEqual(f.viewport.scrollOffsetPoints(), Point{0.0, 120.0}, 1e-9));
 }
 
-RIVET_TEST(commandWheelZoomsAnchoredAtCenter) {
+RIVET_TEST(commandWheelZoomsAnchoredAtPointer) {
     Fixture f;
 
     int zoomCallbacks = 0;
@@ -343,22 +346,28 @@ RIVET_TEST(commandWheelZoomsAnchoredAtCenter) {
     });
 
     // deltaY < 0 with command: zoom in one step.
-    CHECK_EQ(f.viewport.onMouse(scrollEvent(Point{0.0, -1.0}, true, false)), true);
+    PointerEvent pinch = scrollEvent(Point{0.0, -1.0}, true, false);
+    pinch.position = Point{400.0, 300.0}; // viewport center, as on a real trackpad
+    CHECK_EQ(f.viewport.onMouse(pinch), true);
     CHECK_NEAR(f.viewport.zoom().zoom(), 1.25, 1e-12);
     CHECK_EQ(zoomCallbacks, 1);
     CHECK_NEAR(reportedZoom, 1.25, 1e-12);
 
-    // Anchor: the content point at the viewport center {400, 300} stays put
+    // Anchor: the content point under the pointer {400, 300} stays put
     // -> {400, 300} - {400, 300}/1.25 = {80, 60}; x clamps to 660 - 640 = 20.
     CHECK(Point::nearlyEqual(f.viewport.scrollOffsetPoints(), Point{20.0, 60.0}, 1e-9));
 
     // deltaY >= 0 with command: zoom back out, re-anchored.
-    CHECK_EQ(f.viewport.onMouse(scrollEvent(Point{0.0, 1.0}, true, false)), true);
+    PointerEvent pinchOut = scrollEvent(Point{0.0, 1.0}, true, false);
+    pinchOut.position = Point{400.0, 300.0};
+    CHECK_EQ(f.viewport.onMouse(pinchOut), true);
     CHECK_NEAR(f.viewport.zoom().zoom(), 1.0, 1e-12);
     CHECK_EQ(zoomCallbacks, 2);
 
     // Control behaves like command.
-    CHECK_EQ(f.viewport.onMouse(scrollEvent(Point{0.0, -1.0}, false, true)), true);
+    PointerEvent ctrlPinch = scrollEvent(Point{0.0, -1.0}, false, true);
+    ctrlPinch.position = Point{400.0, 300.0};
+    CHECK_EQ(f.viewport.onMouse(ctrlPinch), true);
     CHECK_NEAR(f.viewport.zoom().zoom(), 1.25, 1e-12);
     CHECK_EQ(zoomCallbacks, 3);
 }
@@ -514,7 +523,7 @@ RIVET_TEST(completedRenderInvalidatesTheView) {
     CHECK_EQ(sink.count, static_cast<int>(f.source.requests.size()));
 }
 
-RIVET_TEST(resizeReclampsScrollAndResolvesFitWidth) {
+RIVET_TEST(resizeReclampsScrollAndKeepsFitWidthSticky) {
     Fixture f;
     f.viewport.setScrollOffsetPoints(Point{0.0, 656.0});
 
@@ -522,14 +531,150 @@ RIVET_TEST(resizeReclampsScrollAndResolvesFitWidth) {
     f.viewport.setFrame(Rect{0.0, 0.0, 800.0, 700.0});
     CHECK_NEAR(f.viewport.scrollOffsetPoints().y, 556.0, 1e-9);
 
-    // Fit-width intent resolves once on the next layout pass: 612 / 612 = 1.0
-    // (zoom was user-set to 1.25, so this is a real change back to 1.0).
-    CHECK(f.viewport.zoom().setZoom(1.25));
-    f.viewport.zoom().setFitMode(ZoomState::FitMode::Width);
+    // Fit WIDTH is a MODE: the zoom recomputes on every layout pass and the
+    // mode stays active until manual zoom exits it (Phase 2 requirement).
+    CHECK(f.viewport.zoom().setZoom(1.25)); // manual zoom first
+    f.viewport.setFitMode(ZoomState::FitMode::Width);
     CHECK(f.viewport.zoom().fitMode() == ZoomState::FitMode::Width);
     f.viewport.setFrame(Rect{0.0, 0.0, 612.0, 700.0});
-    CHECK_NEAR(f.viewport.zoom().zoom(), 1.0, 1e-9);
-    CHECK(f.viewport.zoom().fitMode() == ZoomState::FitMode::None); // one-shot
+    CHECK_NEAR(f.viewport.zoom().zoom(), 1.0, 1e-9); // 612 / 612
+    CHECK(f.viewport.zoom().fitMode() == ZoomState::FitMode::Width);
+
+    // Still active on the next resize: narrower window -> smaller zoom
+    // (306 / 612 = 0.5), recomputed live.
+    f.viewport.setFrame(Rect{0.0, 0.0, 306.0, 700.0});
+    CHECK_NEAR(f.viewport.zoom().zoom(), 0.5, 1e-9);
+    CHECK(f.viewport.zoom().fitMode() == ZoomState::FitMode::Width);
+
+    // Manual zoom exits the mode.
+    CHECK(f.viewport.zoomInStep());
+    CHECK(f.viewport.zoom().fitMode() == ZoomState::FitMode::None);
+    CHECK_NEAR(f.viewport.zoom().zoom(), 0.67, 1e-9);
+}
+
+RIVET_TEST(fitPageFollowsTheCurrentPageAndStaysSticky) {
+    Fixture f;
+    // Viewport 800x600; the tracked page is 0 (612x792) -> fit page zoom =
+    // min(800/612, 600/792) = 600/792 = 0.757575...
+    f.viewport.setFitMode(ZoomState::FitMode::Page);
+    CHECK_NEAR(f.viewport.zoom().zoom(), 600.0 / 792.0, 1e-9);
+    CHECK(f.viewport.zoom().fitMode() == ZoomState::FitMode::Page);
+
+    // Scroll to page 1 (top at y=832): the tracked page changes and the next
+    // layout pass refits page 1 (400x400) -> min(800/400, 600/400) = 1.5.
+    f.viewport.goToPage(1);
+    CHECK_EQ(f.viewport.currentPageIndex(), std::size_t{1});
+    f.viewport.layout();
+    CHECK_NEAR(f.viewport.zoom().zoom(), 1.5, 1e-9);
+    CHECK(f.viewport.zoom().fitMode() == ZoomState::FitMode::Page);
+}
+
+RIVET_TEST(viewerStateCarriesZoomAndScrollAcrossRebind) {
+    // `other` is declared BEFORE the Fixture so it outlives the viewport that
+    // binds it (the documented ViewerState lifetime contract).
+    rivet::render::ViewerState other;
+    Fixture f;
+    f.viewport.zoom().setZoom(1.5);
+    f.viewport.setScrollOffsetPoints(Point{0.0, 200.0});
+
+    // Rebinding to the same state (as on tab switches) restores the state.
+    f.viewport.setDocument(DocumentId{1}, &f.layout, &f.source, [] { return kRevision; }, &f.state);
+    CHECK_NEAR(f.viewport.zoom().zoom(), 1.5, 1e-12);
+    CHECK(Point::nearlyEqual(f.viewport.scrollOffsetPoints(), Point{0.0, 200.0}, 1e-9));
+    CHECK_EQ(f.viewport.viewState(), &f.state);
+
+    // Rebinding to a fresh state (a different tab) starts at its values;
+    // its stored offset is re-clamped against the new document's bounds.
+    other.zoom().setZoom(2.0);
+    other.setScrollOffsetPoints(Point{0.0, 2000.0});
+    f.viewport.setDocument(DocumentId{1}, &f.layout, &f.source, [] { return kRevision; }, &other);
+    CHECK_NEAR(f.viewport.zoom().zoom(), 2.0, 1e-12);
+    // 2000 clamps to 1256 - 300 = 956 at zoom 2 (visible extent 600 / 2).
+    CHECK(Point::nearlyEqual(f.viewport.scrollOffsetPoints(), Point{0.0, 956.0}, 1e-9));
+}
+
+RIVET_TEST(currentPageTracksTheViewportCenter) {
+    Fixture f;
+
+    std::vector<std::size_t> reported;
+    f.viewport.setCurrentPageChangedCallback([&reported](std::size_t page) { reported.push_back(page); });
+    CHECK_EQ(f.viewport.currentPageIndex(), std::size_t{0});
+
+    // Page 1's frame is {130, 832, 400, 400}: scrolling past y = 832 + 200 -
+    // 300 = 732 puts the viewport center {400, 300} inside page 1.
+    f.viewport.setScrollOffsetPoints(Point{0.0, 740.0});
+    CHECK_EQ(f.viewport.currentPageIndex(), std::size_t{1});
+    CHECK(reported.size() == 1 && reported.back() == std::size_t{1});
+
+    // Back up: page 0 again.
+    f.viewport.setScrollOffsetPoints(Point{0.0, 100.0});
+    CHECK_EQ(f.viewport.currentPageIndex(), std::size_t{0});
+    CHECK_EQ(reported.size(), std::size_t{2});
+
+    // Same-page scrolls must not re-fire.
+    f.viewport.setScrollOffsetPoints(Point{0.0, 120.0});
+    CHECK_EQ(reported.size(), std::size_t{2});
+}
+
+RIVET_TEST(goToPageScrollsToThePageTop) {
+    Fixture f;
+    // Page 1's top edge is at content y = 832 (24 + 792 + 16); at zoom 1 the
+    // scrollable maximum is 1256 - 600 = 656, so the request clamps there and
+    // page 1 is fully visible.
+    f.viewport.goToPage(1);
+    CHECK_NEAR(f.viewport.scrollOffsetPoints().y, 656.0, 1e-9);
+    CHECK_EQ(f.viewport.currentPageIndex(), std::size_t{1});
+
+    // Out-of-range pages are rejected without touching the offset.
+    f.viewport.goToPage(7);
+    CHECK_NEAR(f.viewport.scrollOffsetPoints().y, 656.0, 1e-9);
+
+    // At zoom 2 the scrollable maximum (956) covers the page top exactly.
+    f.viewport.zoom().setZoom(2.0);
+    f.viewport.goToPage(1);
+    CHECK_NEAR(f.viewport.scrollOffsetPoints().y, 832.0, 1e-9);
+}
+
+RIVET_TEST(arrowKeysScrollByAFixedScreenDistance) {
+    Fixture f;
+    f.viewport.zoom().setZoom(2.0);
+
+    rivet::ui::KeyEvent down;
+    down.key = Key::Down;
+    CHECK_EQ(f.viewport.onKey(down), true);
+    // 40 logical points / zoom 2 = 20 content points.
+    CHECK_NEAR(f.viewport.scrollOffsetPoints().y, 20.0, 1e-9);
+
+    rivet::ui::KeyEvent up;
+    up.key = Key::Up;
+    CHECK_EQ(f.viewport.onKey(up), true);
+    CHECK_NEAR(f.viewport.scrollOffsetPoints().y, 0.0, 1e-9);
+
+    rivet::ui::KeyEvent right;
+    right.key = Key::Right;
+    CHECK_EQ(f.viewport.onKey(right), true);
+    CHECK_NEAR(f.viewport.scrollOffsetPoints().x, 20.0, 1e-9);
+
+    rivet::ui::KeyEvent left;
+    left.key = Key::Left;
+    CHECK_EQ(f.viewport.onKey(left), true);
+    CHECK_NEAR(f.viewport.scrollOffsetPoints().x, 0.0, 1e-9);
+}
+
+RIVET_TEST(emptyStateZoomAndNavigationAreSafe) {
+    PdfViewport viewport;
+    viewport.setFrame(Rect{0.0, 0.0, 800.0, 600.0});
+
+    CHECK_EQ(viewport.zoomInStep(), false);
+    CHECK_EQ(viewport.zoomOutStep(), false);
+    CHECK_EQ(viewport.setManualZoom(2.0), false);
+    viewport.zoomActualSize();          // must not crash
+    viewport.setFitMode(ZoomState::FitMode::Width); // must not crash
+    viewport.goToPage(0);               // must not crash
+
+    rivet::ui::KeyEvent down;
+    down.key = Key::Down;
+    CHECK_EQ(viewport.onKey(down), false); // nothing to scroll
 }
 
 RIVET_TEST(clearDocumentCancelsPendingAndRepaintsEmptyState) {

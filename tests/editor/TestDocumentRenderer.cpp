@@ -23,6 +23,8 @@
 #include <cstdint>
 #include <cstring>
 #include <future>
+#include <mutex>
+#include <thread>
 #include <memory>
 #include <unordered_map>
 #include <utility>
@@ -392,4 +394,60 @@ RIVET_TEST(cacheHitDeliversTheCacheSharedBitmap) {
     CHECK(hit.has_value());
     CHECK_EQ((*hit).get(), delivered.get());
     CHECK_EQ(fake.renderCalls.load(), 1);
+}
+
+// Priority lanes: the drain loop must claim queued entries highest-priority
+// first (Visible > Impending > Prefetch), FIFO within a lane, so a burst of
+// Prefetch thumbnails can never delay visible viewport tiles.
+RIVET_TEST(priorityOrderingRunsVisibleBeforeImpendingBeforePrefetch) {
+    RendererHarness h;
+    FakePdfDocument& fake = h.document();
+
+    // Hold the first (Prefetch) job inside renderPage so later requests queue
+    // while the drain loop is blocked mid-job.
+    fake.blockNextRender = true;
+
+    std::mutex orderMutex;
+    std::vector<std::pair<std::size_t, std::uint32_t>> order; // (pageIndex, tileX)
+    const auto record = [&orderMutex, &order](std::size_t pageIndex, std::uint32_t tileX) {
+        std::lock_guard<std::mutex> lock(orderMutex);
+        order.emplace_back(pageIndex, tileX);
+    };
+    const auto requestWithPriority = [&](std::size_t pageIndex, std::uint32_t tileX,
+                                         RenderPriority priority) {
+        h.renderer().requestRender(makeRequest(h, pageIndex, tileX, 0), priority,
+                                   [record, pageIndex, tileX](RenderResult) {
+                                       record(pageIndex, tileX);
+                                   });
+    };
+
+    requestWithPriority(0, 0, RenderPriority::Prefetch);
+    CHECK(fake.renderEntered().wait_for(std::chrono::seconds(5)) == std::future_status::ready);
+
+    // Queue while the drain loop is blocked: one per lane.
+    requestWithPriority(1, 0, RenderPriority::Prefetch);
+    requestWithPriority(2, 0, RenderPriority::Impending);
+    requestWithPriority(0, 1, RenderPriority::Visible);
+
+    fake.releaseRender();
+
+    // Bounded wait until all four complete.
+    for (int i = 0; i < 500 && [&] {
+             std::lock_guard<std::mutex> lock(orderMutex);
+             return order.size() < 4;
+         }();
+         ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+
+    std::lock_guard<std::mutex> lock(orderMutex);
+    CHECK_EQ(order.size(), std::size_t{4});
+    if (order.size() == 4) {
+        // First: the InFlight Prefetch job that was blocked (delivers on
+        // release). Then the queued lanes: Visible, Impending, Prefetch.
+        CHECK_EQ(order[0].second, std::uint32_t{0});
+        CHECK_EQ(order[1].second, std::uint32_t{1}); // Visible (page 0 tile 1)
+        CHECK_EQ(order[2].first, std::size_t{2});    // Impending (page 2)
+        CHECK_EQ(order[3].first, std::size_t{1});    // Prefetch (page 1)
+    }
 }

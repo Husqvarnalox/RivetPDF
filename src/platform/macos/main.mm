@@ -89,6 +89,15 @@ int main(int argc, char** argv) {
         services.redrawSink = [contentView redrawSink];
         services.mainDispatcher = dispatcher.get();
         services.fileDialog = fileDialog.get();
+        NSWindow* __weak weakWindow = window;
+        services.setWindowTitle = [weakWindow](const std::string& title) {
+            // May be called from the main thread only (shell is main-thread
+            // only); the weak window survives shell teardown ordering.
+            NSString* nsTitle = [NSString stringWithUTF8String:title.c_str()];
+            dispatch_async(dispatch_get_main_queue(), ^{
+                weakWindow.title = nsTitle;
+            });
+        };
 
         // The shell owns the widget tree; the view only borrows the root.
         auto shell = rivet::app::createShell(services);

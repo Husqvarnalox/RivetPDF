@@ -37,6 +37,10 @@ struct ShellServices {
 
     // Native open-file dialog. May be null (dialog unavailable).
     IFileDialog* fileDialog = nullptr;
+
+    // Sets the window title (UTF-8). May be null; the shell then never
+    // touches the platform window title. Used for the active document name.
+    std::function<void(const std::string&)> setWindowTitle;
 };
 
 } // namespace rivet::platform

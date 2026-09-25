@@ -2,6 +2,7 @@ add_library(rivet_render STATIC
     PageLayout.cpp
     PageTransform.cpp
     TileCache.cpp
+    ViewerState.cpp
     ZoomState.cpp
 )
 

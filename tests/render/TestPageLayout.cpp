@@ -150,3 +150,54 @@ RIVET_TEST(pageLayoutEmpty) {
     CHECK_EQ(layout.pageCount(), std::size_t{0});
     CHECK_EQ(layout.contentSizePoints(), zeroContent);
 }
+
+RIVET_TEST(currentPageIndexFollowsTheViewportCenter) {
+    // Pages {200x300}, {300x200}, {100x100}, margin 24, gap 16:
+    //   page 0 = {24, 24, 200, 300}   (y 24..324)
+    //   page 1 = {59, 340, 300, 200}  (y 340..540)
+    //   page 2 = {137, 556, 100, 100} (y 556..656)
+    PageLayout layout;
+    layout.setPages({page(1, 200, 300), page(2, 300, 200), page(3, 100, 100)});
+    layout.setPageGapPoints(16.0);
+    layout.setPageMarginPoints(24.0);
+
+    // Center inside page 0.
+    CHECK_EQ(layout.currentPageIndex(Rect{0.0, 0.0, 348.0, 300.0}), std::optional<std::size_t>(0));
+
+    // Center in the gap (y 333 in [324, 340]): largest visible area wins,
+    // which is page 1 (33 > 31 points of overlap).
+    CHECK_EQ(layout.currentPageIndex(Rect{0.0, 293.0, 348.0, 80.0}), std::optional<std::size_t>(1));
+
+    // Center inside page 1.
+    CHECK_EQ(layout.currentPageIndex(Rect{0.0, 290.0, 348.0, 300.0}), std::optional<std::size_t>(1));
+
+    // Center inside page 2.
+    CHECK_EQ(layout.currentPageIndex(Rect{0.0, 500.0, 348.0, 200.0}), std::optional<std::size_t>(2));
+}
+
+RIVET_TEST(currentPageIndexTieBreaksToTheLowerPage) {
+    PageLayout layout;
+    layout.setPages({page(1, 200, 300), page(2, 200, 300)});
+    layout.setPageGapPoints(16.0);
+    layout.setPageMarginPoints(24.0);
+    // page 0 = {24, 24, 200, 300}; page 1 = {24, 340, 200, 300}. The rect
+    // {24, 320, 200, 24} overlaps both pages by exactly 4 points of height;
+    // the tie must resolve to the lower index (stable at the boundary).
+    CHECK_EQ(layout.currentPageIndex(Rect{24.0, 320.0, 200.0, 24.0}), std::optional<std::size_t>(0));
+}
+
+RIVET_TEST(currentPageIndexOutsideTheColumnClampsToAnEndPage) {
+    PageLayout layout;
+    layout.setPages({page(1, 200, 300), page(2, 200, 300)});
+    layout.setPageGapPoints(16.0);
+    layout.setPageMarginPoints(24.0);
+
+    // Rect entirely above the page column (page 0 starts at y 24).
+    CHECK_EQ(layout.currentPageIndex(Rect{0.0, 0.0, 248.0, 10.0}), std::optional<std::size_t>(0));
+    // Rect entirely below the page column (content height = 664).
+    CHECK_EQ(layout.currentPageIndex(Rect{0.0, 670.0, 248.0, 40.0}), std::optional<std::size_t>(1));
+
+    // Empty layout has no current page.
+    PageLayout empty;
+    CHECK_EQ(empty.currentPageIndex(Rect{0.0, 0.0, 100.0, 100.0}), std::nullopt);
+}

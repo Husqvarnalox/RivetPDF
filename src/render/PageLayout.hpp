@@ -59,6 +59,16 @@ public:
     // positioning). Asserts index < pageCount.
     double pageTopOffsetPoints(std::size_t index) const;
 
+    // Index of the "current" page for a viewport showing contentRect:
+    // the page containing the rect's center point; when the center falls in
+    // a gap or margin, the page with the largest visible area (ties resolve
+    // to the LOWER index, so the result cannot oscillate across a boundary).
+    // When the rect intersects no page at all (viewport parked in the margin
+    // beyond the page column), the nearest end page wins: first page when
+    // the rect is above the column, last page when below. nullopt only for
+    // an empty layout. Pure function of the rect: deterministic, testable.
+    std::optional<std::size_t> currentPageIndex(const core::Rect& contentRectPoints) const;
+
 private:
     void rebuild();
 

@@ -37,7 +37,7 @@ DocumentRenderer::~DocumentRenderer() {
 }
 
 void DocumentRenderer::requestRender(const render::RenderRequest& request,
-                                     render::RenderPriority /*priority*/,
+                                     render::RenderPriority priority,
                                      Callback onDone) {
     if (!onDone) {
         return;
@@ -107,12 +107,15 @@ void DocumentRenderer::requestRender(const render::RenderRequest& request,
         } else {
             PendingEntry entry;
             entry.callbacks.push_back(std::move(onDone));
+            entry.params = request.params;
+            entry.priority = priority;
+            entry.sequence = nextSequence_++;
             pending_.emplace(pendingKey, std::move(entry));
             schedule = true;
         }
     }
     if (schedule) {
-        postJob(request.key, request.params, revision);
+        scheduleDrain();
     }
 }
 
@@ -172,75 +175,123 @@ void DocumentRenderer::retryFailedTiles() {
     }
 }
 
-void DocumentRenderer::postJob(const render::TileKey& key, const render::RasterParams& params,
-                               std::uint64_t revision) {
-    executor_.post([this, key, params, revision] {
-        // Claim the entry, or bail out if the request was cancelled before the
-        // job started (its callbacks already received Cancelled).
+// Priority drain: one executor task claims and runs queued entries until the
+// pending map holds nothing queued. Claim order: lowest priority value first
+// (Visible before Impending before Prefetch), FIFO by sequence within a lane.
+// A SerialExecutor runs exactly one task at a time, so at most one drain loop
+// exists at any moment and claims cannot interleave. cancelAll() erases the
+// Queued entries a running loop would claim next, so it exits promptly; the
+// InFlight entry it already claimed completes normally.
+void DocumentRenderer::scheduleDrain() {
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (drainScheduled_) return;
+        drainScheduled_ = true;
+    }
+    executor_.post([this] { drainLoop(); });
+}
+
+// The queued entry to claim next: lowest priority value, FIFO by sequence
+// within a lane. pending_ is tiny (visible tiles plus a screenful of
+// thumbnails), so a linear scan per claim beats maintaining a separate queue.
+// Called with mutex_ held.
+std::unordered_map<DocumentRenderer::PendingKey, DocumentRenderer::PendingEntry,
+                   DocumentRenderer::PendingKeyHash>::iterator
+DocumentRenderer::pickNextQueued() {
+    auto best = pending_.end();
+    for (auto it = pending_.begin(); it != pending_.end(); ++it) {
+        if (it->second.state != PendingEntry::State::Queued) continue;
+        if (best == pending_.end() || it->second.priority < best->second.priority ||
+            (it->second.priority == best->second.priority &&
+             it->second.sequence < best->second.sequence)) {
+            best = it;
+        }
+    }
+    return best;
+}
+
+void DocumentRenderer::drainLoop() {
+    {
+        // Consume the scheduling slot: requestRender() arriving from now on
+        // must post a fresh drain task (this loop may exit while entries
+        // remain in the map after a cancelAll raced with new requests).
+        std::lock_guard<std::mutex> lock(mutex_);
+        drainScheduled_ = false;
+    }
+
+    for (;;) {
+        PendingKey claimKey;
+        render::RasterParams claimParams;
+        std::uint64_t claimRevision = 0;
         {
             std::lock_guard<std::mutex> lock(mutex_);
-            const auto it = pending_.find(PendingKey{key, revision});
-            if (it == pending_.end()) {
-                return;
-            }
+            const auto it = pickNextQueued();
+            if (it == pending_.end()) return;
             it->second.state = PendingEntry::State::InFlight;
+            claimKey = it->first;
+            claimParams = it->second.params;
+            claimRevision = it->first.revision;
         }
+        runJob(claimKey.key, claimParams, claimRevision);
+    }
+}
 
-        // Another path may have produced the tile after this entry was created
-        // (e.g. a request that raced a completing job); deliver from the cache
-        // instead of rasterizing twice.
-        if (auto cached = cache_.get(key, revision)) {
-            completePending(PendingKey{key, revision}, std::move(cached), core::Error{});
-            return;
-        }
+void DocumentRenderer::runJob(const render::TileKey& key, const render::RasterParams& params,
+                              std::uint64_t revision) {
+    // Another path may have produced the tile after this entry was created
+    // (e.g. a request that raced a completing job); deliver from the cache
+    // instead of rasterizing twice.
+    if (auto cached = cache_.get(key, revision)) {
+        completePending(PendingKey{key, revision}, std::move(cached), core::Error{});
+        return;
+    }
 
-        const std::size_t pageIndex = pageIndexForId_(key.pageId);
-        if (pageIndex == kInvalidPageIndex) {
-            completePending(PendingKey{key, revision}, nullptr,
-                            core::Error{core::ErrorCode::NotFound,
-                                        "no PDF page matches the requested page id", "editor"});
-            return;
-        }
+    const std::size_t pageIndex = pageIndexForId_(key.pageId);
+    if (pageIndex == kInvalidPageIndex) {
+        completePending(PendingKey{key, revision}, nullptr,
+                        core::Error{core::ErrorCode::NotFound,
+                                    "no PDF page matches the requested page id", "editor"});
+        return;
+    }
 
-        // pdf::PdfDocument is only ever touched here, on the executor stream.
-        core::Result<core::Bitmap> rendered = std::unexpected(
-            core::Error{core::ErrorCode::Internal, "render job did not produce a result", "editor"});
+    // pdf::PdfDocument is only ever touched here, on the executor stream.
+    core::Result<core::Bitmap> rendered = std::unexpected(
+        core::Error{core::ErrorCode::Internal, "render job did not produce a result", "editor"});
+    try {
+        rendered = document_.renderPage(pageIndex, params.pageRectPoints, params.devicePixelsPerPoint);
+    } catch (const std::exception& exception) {
+        rendered = std::unexpected(
+            core::Error{core::ErrorCode::Internal, exception.what(), "editor"});
+    } catch (...) {
+        rendered = std::unexpected(
+            core::Error{core::ErrorCode::Internal, "unknown rasterization failure", "editor"});
+    }
+
+    std::shared_ptr<const core::Bitmap> stored;
+    if (rendered.has_value()) {
         try {
-            rendered = document_.renderPage(pageIndex, params.pageRectPoints, params.devicePixelsPerPoint);
+            auto owned = std::make_shared<core::Bitmap>(std::move(*rendered));
+            // May refuse (invalid or oversize bitmap); delivery proceeds
+            // regardless - the caller still gets its tile.
+            cache_.put(key, revision, owned);
+            stored = std::move(owned);
         } catch (const std::exception& exception) {
             rendered = std::unexpected(
-                core::Error{core::ErrorCode::Internal, exception.what(), "editor"});
+                core::Error{core::ErrorCode::OutOfMemory, exception.what(), "editor"});
         } catch (...) {
             rendered = std::unexpected(
-                core::Error{core::ErrorCode::Internal, "unknown rasterization failure", "editor"});
+                core::Error{core::ErrorCode::OutOfMemory, "failed to retain the rendered tile", "editor"});
         }
+    }
 
-        std::shared_ptr<const core::Bitmap> stored;
-        if (rendered.has_value()) {
-            try {
-                auto owned = std::make_shared<core::Bitmap>(std::move(*rendered));
-                // May refuse (invalid or oversize bitmap); delivery proceeds
-                // regardless - the caller still gets its tile.
-                cache_.put(key, revision, owned);
-                stored = std::move(owned);
-            } catch (const std::exception& exception) {
-                rendered = std::unexpected(
-                    core::Error{core::ErrorCode::OutOfMemory, exception.what(), "editor"});
-            } catch (...) {
-                rendered = std::unexpected(
-                    core::Error{core::ErrorCode::OutOfMemory, "failed to retain the rendered tile", "editor"});
-            }
-        }
-
-        if (stored) {
-            completePending(PendingKey{key, revision}, std::move(stored), core::Error{});
-        } else {
-            const core::Error error = rendered.has_value()
-                ? core::Error{core::ErrorCode::OutOfMemory, "failed to retain the rendered tile", "editor"}
-                : rendered.error();
-            completePending(PendingKey{key, revision}, nullptr, error);
-        }
-    });
+    if (stored) {
+        completePending(PendingKey{key, revision}, std::move(stored), core::Error{});
+    } else {
+        const core::Error error = rendered.has_value()
+            ? core::Error{core::ErrorCode::OutOfMemory, "failed to retain the rendered tile", "editor"}
+            : rendered.error();
+        completePending(PendingKey{key, revision}, nullptr, error);
+    }
 }
 
 void DocumentRenderer::completePending(const PendingKey& pendingKey,

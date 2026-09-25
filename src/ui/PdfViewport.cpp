@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MPL-2.0
 #include "ui/PdfViewport.hpp"
 
 #include "core/Error.hpp"
@@ -25,6 +26,9 @@ constexpr Color kPageBorder = Color::gray(0.7);
 constexpr Color kTilePlaceholder = Color::gray(0.92);
 constexpr Font kEmptyStateFont{15.0, Font::Weight::Regular};
 constexpr const char* kEmptyStateText = "Open a PDF to begin";
+
+// Arrow-key scroll distance in logical screen points per press.
+constexpr double kArrowScrollPoints = 40.0;
 
 // Number of kTileSize cells needed to cover a device-pixel extent.
 std::uint32_t tileCount(double deviceExtent) {
@@ -58,19 +62,31 @@ std::pair<std::uint32_t, std::uint32_t> visibleTileRange(double minPoints, doubl
 } // namespace
 
 PdfViewport::PdfViewport()
-    : aliveFlag_(std::make_shared<std::atomic<bool>>(true)) {
-    // Single funnel for zoom changes: repaint + dropping stale queued renders
-    // + status-bar notification.
-    zoom_.setCallback([this](double value) {
-        invalidate();
-        // Queued renders were requested at the previous scale; drop them so
-        // the next paint re-requests tiles at the new scale instead of
-        // delivering stale ones. cancelAll fires Cancelled callbacks, which
-        // only invalidate - no re-entry into zoom logic. The in-flight job,
-        // if any, finishes into the cache under its own key. source_ is
-        // non-null only between setDocument() and clearDocument().
-        if (source_ != nullptr) source_->cancelAll();
-        if (onZoomChanged_) onZoomChanged_(value);
+    : state_(&emptyStateState_),
+      aliveFlag_(std::make_shared<std::atomic<bool>>(true)) {
+    // Scrollbar children overlay the content near the edges; frames are
+    // managed by layout().
+    auto vBar = std::make_unique<ScrollBar>(ScrollOrientation::Vertical);
+    auto hBar = std::make_unique<ScrollBar>(ScrollOrientation::Horizontal);
+    vScrollBar_ = vBar.get();
+    hScrollBar_ = hBar.get();
+    addChild(std::move(vBar));
+    addChild(std::move(hBar));
+
+    vScrollBar_->setOnScroll([this](double offset) {
+        setScrollOffsetPoints(core::Point{scrollOffsetPoints().x, offset});
+    });
+    hScrollBar_->setOnScroll([this](double offset) {
+        setScrollOffsetPoints(core::Point{offset, scrollOffsetPoints().y});
+    });
+
+    // Single funnel for zoom and scroll changes: repaint + dropping queued
+    // renders on zoom change + scrollbar sync + current-page tracking +
+    // status notification. The alive flag turns stale callbacks from a
+    // previously bound state into no-ops after destruction.
+    const std::shared_ptr<std::atomic<bool>> alive = aliveFlag_;
+    emptyStateState_.setCallback([this, alive] {
+        if (alive->load(std::memory_order_acquire)) onStateChanged();
     });
 }
 
@@ -78,49 +94,93 @@ PdfViewport::~PdfViewport() {
     // In-flight render callbacks may outlive the widget; the shared flag
     // turns them into no-ops (see the threading contract in the header).
     aliveFlag_->store(false, std::memory_order_release);
+    // Disconnect any state still pointing at this viewport.
+    if (state_ != nullptr) state_->setCallback({});
+    state_ = nullptr;
 }
 
 void PdfViewport::setDocument(core::DocumentId documentId, const render::PageLayout* layout,
                               render::IRenderSource* source,
-                              std::function<std::uint64_t()> revisionProvider) {
+                              std::function<std::uint64_t()> revisionProvider,
+                              render::ViewerState* viewState) {
     if (source_ != nullptr && source_ != source) source_->cancelAll();
+
+    // Disconnect the previously bound state so late changes from it no longer
+    // drive this viewport.
+    if (state_ != nullptr && state_ != &emptyStateState_) state_->setCallback({});
+
     documentId_ = documentId;
     layout_ = layout;
     source_ = source;
     revisionProvider_ = std::move(revisionProvider);
-    scrollOffsetPoints_ = core::Point{};
+
+    if (viewState != nullptr) {
+        state_ = viewState;
+        const std::shared_ptr<std::atomic<bool>> alive = aliveFlag_;
+        state_->setCallback([this, alive] {
+            if (alive->load(std::memory_order_acquire)) onStateChanged();
+        });
+    } else {
+        state_ = &emptyStateState_;
+    }
+
+    // Restored offsets may exceed the new document's bounds.
+    setScrollOffsetPoints(state_->scrollOffsetPoints());
+    currentPage_ = 0;
+    syncScrollbars();
+    updateCurrentPage();
     invalidate();
 }
 
 void PdfViewport::clearDocument() {
     if (source_ != nullptr) source_->cancelAll();
+    if (state_ != nullptr && state_ != &emptyStateState_) state_->setCallback({});
     documentId_ = core::DocumentId{};
     layout_ = nullptr;
     source_ = nullptr;
     revisionProvider_ = nullptr;
-    scrollOffsetPoints_ = core::Point{};
+    state_ = &emptyStateState_;
+    emptyStateState_.setScrollOffsetPoints(core::Point{});
+    currentPage_ = 0;
+    syncScrollbars();
+    updateCurrentPage();
     invalidate();
 }
 
-void PdfViewport::setScrollOffsetPoints(const core::Point& offset) {
-    const core::Point clamped = clampedScrollOffset(offset);
-    if (core::Point::nearlyEqual(clamped, scrollOffsetPoints_)) return;
-    scrollOffsetPoints_ = clamped;
-    invalidate();
+bool PdfViewport::zoomInStep() {
+    if (layout_ == nullptr) return false;
+    state_->zoom().setFitMode(render::ZoomState::FitMode::None);
+    return state_->zoom().zoomIn();
 }
 
-void PdfViewport::scrollByContentPoints(const core::Point& delta) {
-    setScrollOffsetPoints(scrollOffsetPoints_ + delta);
+bool PdfViewport::zoomOutStep() {
+    if (layout_ == nullptr) return false;
+    state_->zoom().setFitMode(render::ZoomState::FitMode::None);
+    return state_->zoom().zoomOut();
 }
 
-void PdfViewport::setZoomChangedCallback(std::function<void(double)> onZoomChanged) {
-    onZoomChanged_ = std::move(onZoomChanged);
+void PdfViewport::zoomActualSize() {
+    if (layout_ == nullptr) return;
+    state_->zoom().setFitMode(render::ZoomState::FitMode::None);
+    state_->zoom().actualSize();
+}
+
+bool PdfViewport::setManualZoom(double zoom) {
+    if (layout_ == nullptr) return false;
+    state_->zoom().setFitMode(render::ZoomState::FitMode::None);
+    return state_->zoom().setZoom(zoom);
+}
+
+void PdfViewport::setFitMode(render::ZoomState::FitMode mode) {
+    if (layout_ == nullptr) return;
+    state_->zoom().setFitMode(mode);
+    layout();
 }
 
 core::Point PdfViewport::clampedScrollOffset(const core::Point& offset) const {
     if (layout_ == nullptr) return core::Point{};
     const core::Size content = layout_->contentSizePoints();
-    const core::Size visibleExtent = frame().size / zoom_.zoom();
+    const core::Size visibleExtent = frame().size / zoom().zoom();
     const auto clampAxis = [](double value, double contentExtent, double visibleExtentPoints) {
         const double maxOffset = std::max(0.0, contentExtent - visibleExtentPoints);
         return std::clamp(value, 0.0, maxOffset);
@@ -129,28 +189,131 @@ core::Point PdfViewport::clampedScrollOffset(const core::Point& offset) const {
                        clampAxis(offset.y, content.height, visibleExtent.height)};
 }
 
-bool PdfViewport::onMouse(const PointerEvent& event) {
-    if (event.type != PointerEventType::Scroll) return false;
+core::Rect PdfViewport::visibleContentRectPoints() const {
+    if (layout_ == nullptr) return core::Rect{};
+    return core::Rect{state_->scrollOffsetPoints(), frame().size / state_->zoom().zoom()};
+}
 
-    if (event.modifiers.command || event.modifiers.control) {
-        // Pinch gesture: stepped zoom anchored at the viewport center.
-        const double oldZoom = zoom_.zoom();
-        const bool changed = event.scrollDelta.y < 0.0 ? zoom_.zoomIn() : zoom_.zoomOut();
-        if (changed) {
-            const double newZoom = zoom_.zoom();
-            const core::Point center{frame().size.width / 2.0, frame().size.height / 2.0};
-            const core::Point anchored = scrollOffsetPoints_ + center / oldZoom;
-            setScrollOffsetPoints(anchored - center / newZoom);
+void PdfViewport::setScrollOffsetPoints(const core::Point& offset) {
+    const core::Point clamped = clampedScrollOffset(offset);
+    state_->setScrollOffsetPoints(clamped);
+    // The state's callback already invalidated via onStateChanged when the
+    // value changed; sync here too so the scrollbars always mirror the state.
+    syncScrollbars();
+}
+
+void PdfViewport::scrollByContentPoints(const core::Point& delta) {
+    setScrollOffsetPoints(state_->scrollOffsetPoints() + delta);
+}
+
+void PdfViewport::goToPage(std::size_t index) {
+    if (layout_ == nullptr || index >= layout_->pageCount()) return;
+    setScrollOffsetPoints(core::Point{state_->scrollOffsetPoints().x,
+                                      layout_->pageTopOffsetPoints(index)});
+}
+
+void PdfViewport::setZoomChangedCallback(std::function<void(double)> onZoomChanged) {
+    onZoomChanged_ = std::move(onZoomChanged);
+    // Sync the baseline so the first state change reports only real zoom
+    // changes (and does not spuriously cancel queued renders). No immediate
+    // fire: the shell also reads zoom() directly when binding a tab.
+    lastReportedZoom_ = state_->zoom().zoom();
+}
+
+void PdfViewport::setCurrentPageChangedCallback(std::function<void(std::size_t)> onPageChanged) {
+    onPageChanged_ = std::move(onPageChanged);
+}
+
+void PdfViewport::setOnFocusRequested(std::function<void()> onFocusRequested) {
+    onFocusRequested_ = std::move(onFocusRequested);
+}
+
+void PdfViewport::onStateChanged() {
+    const double zoomValue = state_->zoom().zoom();
+    if (zoomValue != lastReportedZoom_) {
+        // Queued renders were requested at the previous scale; drop them so
+        // the next paint re-requests tiles at the new scale instead of
+        // delivering stale ones. cancelAll fires Cancelled callbacks, which
+        // only invalidate - no re-entry into zoom logic. The in-flight job,
+        // if any, finishes into the cache under its own key. source_ is
+        // non-null only between setDocument() and clearDocument().
+        if (source_ != nullptr) source_->cancelAll();
+        lastReportedZoom_ = zoomValue;
+        if (onZoomChanged_) onZoomChanged_(zoomValue);
+    }
+    syncScrollbars();
+    updateCurrentPage();
+    invalidate();
+}
+
+void PdfViewport::syncScrollbars() {
+    if (layout_ == nullptr) {
+        vScrollBar_->setExtents(0.0, 0.0);
+        hScrollBar_->setExtents(0.0, 0.0);
+        vScrollBar_->setOffset(0.0);
+        hScrollBar_->setOffset(0.0);
+        return;
+    }
+    const core::Size content = layout_->contentSizePoints();
+    const core::Size visible = frame().size / state_->zoom().zoom();
+    vScrollBar_->setExtents(visible.height, content.height);
+    vScrollBar_->setOffset(state_->scrollOffsetPoints().y);
+    hScrollBar_->setExtents(visible.width, content.width);
+    hScrollBar_->setOffset(state_->scrollOffsetPoints().x);
+}
+
+void PdfViewport::updateCurrentPage() {
+    if (layout_ == nullptr || layout_->pageCount() == 0) {
+        if (currentPage_ != 0) {
+            currentPage_ = 0;
+            if (onPageChanged_) onPageChanged_(0);
         }
+        return;
+    }
+    const std::optional<std::size_t> current =
+        layout_->currentPageIndex(visibleContentRectPoints());
+    const std::size_t page = current.value_or(0);
+    if (page != currentPage_) {
+        currentPage_ = page;
+        if (onPageChanged_) onPageChanged_(page);
+    }
+}
+
+bool PdfViewport::onMouse(const PointerEvent& event) {
+    if (event.type == PointerEventType::Scroll) {
+        if (layout_ == nullptr) return false;
+
+        if (event.modifiers.command || event.modifiers.control) {
+            // Pinch gesture: stepped zoom anchored at the pointer so the
+            // content underneath stays approximately stationary. Manual zoom
+            // exits an active fit mode.
+            const double oldZoom = state_->zoom().zoom();
+            state_->zoom().setFitMode(render::ZoomState::FitMode::None);
+            const bool changed = event.scrollDelta.y < 0.0 ? state_->zoom().zoomIn()
+                                                           : state_->zoom().zoomOut();
+            if (changed) {
+                const double newZoom = state_->zoom().zoom();
+                const core::Point contentAnchor =
+                    state_->scrollOffsetPoints() + event.position / oldZoom;
+                setScrollOffsetPoints(contentAnchor - event.position / newZoom);
+            }
+            event.accepted = true;
+            return true;
+        }
+
+        // Plain scroll: wheel delta is in logical pixels; convert to content
+        // points (positive delta = content moves up/left = offset grows).
+        scrollByContentPoints(event.scrollDelta / state_->zoom().zoom());
         event.accepted = true;
         return true;
     }
 
-    // Plain scroll: wheel delta is in logical pixels; convert to content
-    // points (positive delta = content moves up/left = offset grows).
-    scrollByContentPoints(event.scrollDelta / zoom_.zoom());
-    event.accepted = true;
-    return true;
+    // Scrollbars (and later overlays) live in the children; route to them in
+    // topmost-first order. A press that falls through to the content asks the
+    // host for keyboard focus.
+    if (Widget::onMouse(event)) return true;
+    if (event.type == PointerEventType::Down && onFocusRequested_) onFocusRequested_();
+    return false;
 }
 
 bool PdfViewport::onKey(const KeyEvent& event) {
@@ -158,18 +321,22 @@ bool PdfViewport::onKey(const KeyEvent& event) {
                            (event.key == Key::Character && event.text == "=");
     const bool zoomOutKey = event.key == Key::Minus ||
                             (event.key == Key::Character && event.text == "-");
-    if (zoomInKey || zoomOutKey) {
+    if (layout_ != nullptr && (zoomInKey || zoomOutKey)) {
         if (zoomInKey) {
-            zoom_.zoomIn();
+            zoomInStep();
         } else {
-            zoom_.zoomOut();
+            zoomOutStep();
         }
         event.accepted = true;
         return true;
     }
 
-    // PageUp/PageDown scroll one viewport height (in content points).
-    const double pageHeightPoints = frame().size.height / zoom_.zoom();
+    if (layout_ == nullptr) return false;
+
+    // PageUp/PageDown scroll one viewport height (in content points); arrows
+    // scroll a fixed screen distance (converted to content points).
+    const double pageHeightPoints = frame().size.height / state_->zoom().zoom();
+    const double arrowContentPoints = kArrowScrollPoints / state_->zoom().zoom();
     switch (event.key) {
     case Key::PageDown:
         scrollByContentPoints(core::Point{0.0, pageHeightPoints});
@@ -177,13 +344,25 @@ bool PdfViewport::onKey(const KeyEvent& event) {
     case Key::PageUp:
         scrollByContentPoints(core::Point{0.0, -pageHeightPoints});
         break;
+    case Key::Down:
+        scrollByContentPoints(core::Point{0.0, arrowContentPoints});
+        break;
+    case Key::Up:
+        scrollByContentPoints(core::Point{0.0, -arrowContentPoints});
+        break;
+    case Key::Right:
+        scrollByContentPoints(core::Point{arrowContentPoints, 0.0});
+        break;
+    case Key::Left:
+        scrollByContentPoints(core::Point{-arrowContentPoints, 0.0});
+        break;
     case Key::Home:
-        setScrollOffsetPoints(core::Point{scrollOffsetPoints_.x, 0.0});
+        setScrollOffsetPoints(core::Point{state_->scrollOffsetPoints().x, 0.0});
         break;
     case Key::End:
         // Out-of-range values clamp to the content bounds.
         setScrollOffsetPoints(
-            core::Point{scrollOffsetPoints_.x, std::numeric_limits<double>::max()});
+            core::Point{state_->scrollOffsetPoints().x, std::numeric_limits<double>::max()});
         break;
     default:
         return false;
@@ -195,14 +374,30 @@ bool PdfViewport::onKey(const KeyEvent& event) {
 void PdfViewport::layout() {
     resolveFitMode();
     // Re-clamp after a resize (no-op while the offset stays valid).
-    setScrollOffsetPoints(scrollOffsetPoints_);
+    setScrollOffsetPoints(state_->scrollOffsetPoints());
+    positionScrollbars();
+    syncScrollbars();
+    updateCurrentPage();
+}
+
+void PdfViewport::positionScrollbars() {
+    const core::Rect area = bounds();
+    const double thickness = ScrollBar::kThickness;
+    // Vertical bar hugs the right edge, horizontal the bottom edge; when
+    // both are usable they meet in the corner.
+    const bool vUsable = vScrollBar_->isUsable();
+    const bool hUsable = hScrollBar_->isUsable();
+    const double vLength = std::max(0.0, area.size.height - (hUsable ? thickness + 2.0 : 4.0));
+    const double hLength = std::max(0.0, area.size.width - (vUsable ? thickness + 2.0 : 4.0));
+    vScrollBar_->setFrame(core::Rect{area.maxX() - thickness - 2.0, 2.0, thickness, vLength});
+    hScrollBar_->setFrame(core::Rect{2.0, area.maxY() - thickness - 2.0, hLength, thickness});
 }
 
 void PdfViewport::resolveFitMode() {
-    const render::ZoomState::FitMode mode = zoom_.fitMode();
+    const render::ZoomState::FitMode mode = state_->zoom().fitMode();
     if (mode == render::ZoomState::FitMode::None) return;
     if (layout_ == nullptr || layout_->pageCount() == 0) {
-        zoom_.setFitMode(render::ZoomState::FitMode::None);
+        state_->zoom().setFitMode(render::ZoomState::FitMode::None);
         return;
     }
     if (mode == render::ZoomState::FitMode::Width) {
@@ -210,25 +405,27 @@ void PdfViewport::resolveFitMode() {
         for (const render::PageLayout::PageInfo& page : layout_->pages()) {
             widest = std::max(widest, page.sizePoints.width);
         }
-        zoom_.setZoom(zoom_.fitWidthZoom(frame().size.width, widest));
-    } else { // FitMode::Page: fit the first page within the viewport
-        zoom_.setZoom(zoom_.fitPageZoom(frame().size.width, frame().size.height,
-                                        layout_->pages().front().sizePoints));
+        state_->zoom().setZoom(state_->zoom().fitWidthZoom(frame().size.width, widest));
+    } else { // FitMode::Page: fit the current page within the viewport
+        const std::size_t index = std::min(currentPage_, layout_->pageCount() - 1);
+        state_->zoom().setZoom(state_->zoom().fitPageZoom(
+            frame().size.width, frame().size.height, layout_->pages()[index].sizePoints));
     }
-    // Fit intent is one-shot: consumed by this layout pass.
-    zoom_.setFitMode(render::ZoomState::FitMode::None);
+    // Fit modes are modes: the intent survives this layout pass and keeps
+    // recomputing on resize until manual zoom exits the mode.
 }
 
 // Paint algorithm:
 //   1. Fill the canvas background.
 //   2. Empty state (no layout/source): centered hint text; done.
-//   3. contentRect = {scrollOffsetPoints, frame.size / zoom} in content
+//   3. contentRect = {scrollOffset, frame.size / zoom} in content
 //      points; layout->visiblePageRange(contentRect) selects what to draw.
 //   4. Each visible page: map its content-space frame into local viewport
 //      coordinates ((frame.origin - scrollOffset) * zoom, size * zoom),
 //      fill it white and stroke a border.
 //   5. Tile pass per page (paintPageTiles): overlay the cached tiles and
 //      request the missing ones, painting placeholders meanwhile.
+//   6. Scrollbar children paint on top via Widget::paint's child pass.
 void PdfViewport::paintSelf(PaintContext& context) const {
     context.pushClip(bounds());
     context.fillRect(bounds(), kCanvasBackground);
@@ -240,15 +437,15 @@ void PdfViewport::paintSelf(PaintContext& context) const {
         return;
     }
 
-    const double zoomFactor = zoom_.zoom();
-    const core::Rect contentRect{scrollOffsetPoints_, frame().size / zoomFactor};
+    const double zoomFactor = state_->zoom().zoom();
+    const core::Rect contentRect{state_->scrollOffsetPoints(), frame().size / zoomFactor};
     const std::optional<std::pair<std::size_t, std::size_t>> visible =
         layout_->visiblePageRange(contentRect);
     if (visible.has_value()) {
         const std::uint64_t revision = revisionProvider_ ? revisionProvider_() : 0;
         for (std::size_t i = visible->first; i <= visible->second; ++i) {
             const core::Rect pageFrame = layout_->pageFramePoints(i);
-            const core::Rect pageInViewport{(pageFrame.origin - scrollOffsetPoints_) * zoomFactor,
+            const core::Rect pageInViewport{(pageFrame.origin - state_->scrollOffsetPoints()) * zoomFactor,
                                             pageFrame.size * zoomFactor};
             context.fillRect(pageInViewport, kPageBackground);
             context.strokeRect(pageInViewport, kPageBorder, 1.0);
@@ -289,7 +486,7 @@ void PdfViewport::paintPageTiles(std::size_t pageIndex, const core::Rect& pageFr
                                  const core::Rect& pageInViewport, const core::Rect& contentRect,
                                  std::uint64_t revision, PaintContext& context) const {
     const render::PageLayout::PageInfo& info = layout_->pages()[pageIndex];
-    const render::RenderScaleKey zoomKey = render::RenderScaleKey::fromZoom(zoom_.zoom());
+    const render::RenderScaleKey zoomKey = render::RenderScaleKey::fromZoom(state_->zoom().zoom());
     // Physical cache identity: quantized zoom x display backing scale. The
     // raster density below is DERIVED from this key (never the raw product),
     // so requests rasterizing at different pixel dimensions never share a
@@ -323,8 +520,8 @@ void PdfViewport::paintPageTiles(std::size_t pageIndex, const core::Rect& pageFr
             if (clipped.isEmpty()) continue;
 
             const render::TileKey key{documentId_, info.id, physicalKey, tx, ty};
-            const core::Rect dest{pageInViewport.origin + clipped.origin * zoom_.zoom(),
-                                  clipped.size * zoom_.zoom()};
+            const core::Rect dest{pageInViewport.origin + clipped.origin * state_->zoom().zoom(),
+                                  clipped.size * state_->zoom().zoom()};
             if (const std::shared_ptr<const core::Bitmap> tile = source_->cachedTile(key, revision)) {
                 context.drawBitmap(*tile, dest);
             } else {

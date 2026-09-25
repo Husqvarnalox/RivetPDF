@@ -148,15 +148,32 @@ private:
 
     struct PendingEntry {
         std::vector<Callback> callbacks;
+        render::RasterParams params;
+        render::RenderPriority priority = render::RenderPriority::Prefetch;
+        std::uint64_t sequence = 0; // FIFO tie-break within one priority lane
 
         enum class State : std::uint8_t { Queued, InFlight };
         State state = State::Queued;
     };
 
-    // Schedules the rasterization job for one pending entry. pdf::PdfDocument
-    // is touched ONLY here, inside the SerialExecutor job - never on the
-    // caller's thread.
-    void postJob(const render::TileKey& key, const render::RasterParams& params, std::uint64_t revision);
+    // Iterator to the queued entry to claim next: lowest priority value,
+    // FIFO by sequence within a lane. Returns pending_.end() when nothing is
+    // queued. Called with mutex_ held.
+    std::unordered_map<PendingKey, PendingEntry, PendingKeyHash>::iterator pickNextQueued();
+
+    // Posts exactly one drain task to the executor when none is scheduled or
+    // running. The drain task claims queued entries highest-priority-first
+    // (FIFO within a lane) and rasterizes them one at a time, so Visible
+    // requests are never stuck behind a burst of Prefetch thumbnails.
+    void scheduleDrain();
+
+    // Executor task: claims and runs queued entries until none are left.
+    void drainLoop();
+
+    // Rasterizes one claimed entry (worker side). pdf::PdfDocument is touched
+    // ONLY here - never on the caller's thread.
+    void runJob(const render::TileKey& key, const render::RasterParams& params,
+                std::uint64_t revision);
 
     // Worker-side completion: takes the pending entry's callbacks (erasing the
     // entry), records `error` in failed_ when the outcome is a failure (see
@@ -184,13 +201,21 @@ private:
     core::SerialExecutor& executor_;
     core::IMainThreadDispatcher* mainDispatcher_;
 
-    // Guards pending_, failed_ and currentRevision_.
+    // Guards pending_, failed_, currentRevision_, nextSequence_ and
+    // drainScheduled_.
     mutable std::mutex mutex_;
     std::unordered_map<PendingKey, PendingEntry, PendingKeyHash> pending_;
     // Recorded job failures per (TileKey, revision): see the failed-tile
     // contract in the class comment.
     std::unordered_map<PendingKey, core::Error, PendingKeyHash> failed_;
     std::uint64_t currentRevision_ = 1;
+    // Monotonic request sequence for FIFO tie-breaks within a priority lane.
+    std::uint64_t nextSequence_ = 0;
+    // True while a drain task is scheduled on (or running on) the executor
+    // and has not yet consumed its scheduling slot. Prevents stacking drain
+    // tasks; the executor serializes them anyway, the flag only avoids
+    // redundant tasks.
+    bool drainScheduled_ = false;
 };
 
 } // namespace rivet::editor

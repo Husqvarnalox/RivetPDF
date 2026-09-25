@@ -1,4 +1,5 @@
 add_library(rivet_app STATIC
+    DocumentWorkspace.cpp
     ShellController.cpp
     TextLabel.cpp
 )
