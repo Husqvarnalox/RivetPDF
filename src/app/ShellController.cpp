@@ -173,6 +173,49 @@ void ShellController::buildWidgets() {
     searchVisible_ = false;
     searchBar_->setFrame(core::Rect{-1.0, -1.0, 0.0, 0.0});
 
+    // Password overlay for protected documents (hidden by default).
+    auto passwordPanel = std::make_unique<ui::Container>();
+    passwordPanel_ = passwordPanel.get();
+    passwordPanel_->setBackgroundColor(ui::Color::rgba(0.97, 0.97, 0.97, 1.0));
+    root_->addChild(std::move(passwordPanel));
+
+    auto passwordMessage = std::make_unique<TextLabel>(
+        "This document is password protected", ui::Font{13.0, ui::Font::Weight::Semibold},
+        ui::Color::gray(0.2), ui::TextAlign::Left);
+    passwordMessage->setFrame(core::Rect{12.0, 10.0, 320.0, 20.0});
+    passwordMessage_ = passwordMessage.get();
+    passwordPanel_->addChild(std::move(passwordMessage));
+
+    auto passwordField = std::make_unique<ui::TextField>("Password");
+    passwordField_ = passwordField.get();
+    passwordField_->setFrame(core::Rect{12.0, 36.0, 220.0, 24.0});
+    passwordField_->setEchoCharacter(U'\u2022');
+    passwordField_->setOnFocusRequested([this] { setFocus(passwordField_); });
+    passwordField_->setOnEnter([this] {
+        if (DocumentTab* tab = workspace_.activeTab();
+            tab != nullptr && tab->state() == DocumentTab::State::NeedsPassword) {
+            const std::string password = passwordField_->text();
+            passwordField_->setText("");
+            workspace_.retryWithPassword(workspace_.activeIndex(), password);
+        }
+        setFocus(nullptr);
+    });
+    passwordField_->setOnEscape([this] { setFocus(nullptr); });
+    passwordPanel_->addChild(std::move(passwordField));
+
+    auto unlockButton = std::make_unique<ui::Button>("Unlock");
+    unlockButton->setFrame(core::Rect{244.0, 36.0, 76.0, 24.0});
+    unlockButton->setOnClick([this] {
+        if (DocumentTab* tab = workspace_.activeTab();
+            tab != nullptr && tab->state() == DocumentTab::State::NeedsPassword) {
+            const std::string password = passwordField_->text();
+            passwordField_->setText("");
+            workspace_.retryWithPassword(workspace_.activeIndex(), password);
+        }
+    });
+    passwordPanel_->addChild(std::move(unlockButton));
+    passwordPanel_->setFrame(core::Rect{-1.0, -1.0, 0.0, 0.0});
+
     auto statusBar = std::make_unique<ui::Container>();
     statusBar_ = statusBar.get();
     statusBar_->setBackgroundColor(ui::Color::rgba(0.93, 0.93, 0.93, 1.0));
@@ -336,6 +379,7 @@ void ShellController::bindActiveTab() {
         viewport_->clearDocument();
         sidebar_->clearDocument();
         outlinePanel_->setRows({});
+        passwordPanel_->setFrame(core::Rect{-1.0, -1.0, 0.0, 0.0});
         setStatus("No document open");
         updatePageIndicator();
         setZoomDisplay(viewport_->zoom().zoom());
@@ -349,6 +393,7 @@ void ShellController::bindActiveTab() {
         viewport_->clearDocument();
         sidebar_->clearDocument();
         outlinePanel_->setRows({});
+        passwordPanel_->setFrame(core::Rect{-1.0, -1.0, 0.0, 0.0});
         overlayLabel_->setText(std::format("Loading {}…", tab->title()));
         setStatus(std::format("Loading {}…", tab->title()));
         updatePageIndicator();
@@ -361,11 +406,34 @@ void ShellController::bindActiveTab() {
         outlinePanel_->setRows({});
         overlayLabel_->setText(std::format("Could not open {} — {}", tab->title(), tab->errorText()));
         setStatus(std::format("Failed to open {}: {}", tab->title(), tab->errorText()));
+        passwordPanel_->setFrame(core::Rect{-1.0, -1.0, 0.0, 0.0});
         updatePageIndicator();
         updateWindowTitle();
         return;
     }
 
+    if (tab->state() == DocumentTab::State::NeedsPassword) {
+        viewport_->clearDocument();
+        sidebar_->clearDocument();
+        outlinePanel_->setRows({});
+        overlayLabel_->setText(std::format("{} is password protected", tab->title()));
+        setStatus(std::format("{} requires a password", tab->title()));
+        // Center the prompt in the viewport area; focus the field.
+        const core::Rect vp = viewport_->frame();
+        const double pw = 340.0;
+        const double ph = 74.0;
+        passwordPanel_->setFrame(core::Rect{std::max(vp.origin.x, vp.center().x - pw / 2.0),
+                                            std::max(vp.origin.y, vp.center().y - ph / 2.0),
+                                            pw, ph});
+        passwordMessage_->setText(std::format("{} is password protected — enter the password:",
+                                              tab->title()));
+        setFocus(passwordField_);
+        updatePageIndicator();
+        updateWindowTitle();
+        return;
+    }
+
+    passwordPanel_->setFrame(core::Rect{-1.0, -1.0, 0.0, 0.0});
     editor::DocumentSession* session = tab->session();
     viewport_->setDocument(session->id(), &session->layout(), &session->renderSource(),
                            [session] { return session->revision(); }, &tab->viewState());

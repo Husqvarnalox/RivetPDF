@@ -146,17 +146,30 @@ RIVET_TEST(missingTilesAreRequestedAtVisiblePriority) {
     // Page 1's top edge is at y=832, below the 600 px viewport: only page 0
     // paints. Its visible slice {0, 0, 612, 600} touches exactly the 2x2 tile
     // block at the page origin, all missing.
-    CHECK_EQ(f.source.requests.size(), std::size_t{4});
     const auto tiles = requestedTiles(f.source, PageId{11});
     const std::set<std::pair<std::uint32_t, std::uint32_t>> expected{
         {0, 0}, {1, 0}, {0, 1}, {1, 1}};
     CHECK(tiles == expected);
-    CHECK(requestedTiles(f.source, PageId{22}).empty());
+    // Visible work is always Visible priority.
+    for (const auto& record : f.source.requests) {
+        if (record.request.key.pageId == PageId{11}) {
+            CHECK(record.priority == RenderPriority::Visible);
+        }
+    }
+
+    // The next page's top band is prefetched at Impending priority.
+    bool sawPrefetch = false;
+    for (const auto& record : f.source.requests) {
+        if (record.request.key.pageId != PageId{22}) continue;
+        CHECK(record.priority == RenderPriority::Impending);
+        sawPrefetch = true;
+    }
+    CHECK(sawPrefetch);
 
     for (const auto& record : f.source.requests) {
+        if (record.request.key.pageId != PageId{11}) continue;
         CHECK(record.priority == RenderPriority::Visible);
         CHECK_EQ(record.request.key.documentId, DocumentId{1});
-        CHECK_EQ(record.request.key.pageId, PageId{11});
         CHECK_EQ(record.request.key.scale, physicalKeyFor(1.0, 1.0));
         // Raster density derives from the key, exactly.
         CHECK_EQ(record.request.params.devicePixelsPerPoint, record.request.key.scale.scale());
@@ -166,6 +179,7 @@ RIVET_TEST(missingTilesAreRequestedAtVisiblePriority) {
     // Tile (1, 0) is clipped to the page's 612pt width: 100 points wide.
     bool sawRightTile = false;
     for (const auto& record : f.source.requests) {
+        if (record.request.key.pageId != PageId{11}) continue;
         if (record.request.key.tileX == 1 && record.request.key.tileY == 0) {
             sawRightTile = true;
             CHECK(Rect::nearlyEqual(record.request.params.pageRectPoints,
@@ -193,15 +207,20 @@ RIVET_TEST(partiallyVisiblePageRequestsOnlyCornerTiles) {
     FakePaintContext context;
     f.viewport.paint(context);
 
-    CHECK_EQ(f.source.requests.size(), std::size_t{1});
     const auto tiles = requestedTiles(f.source, PageId{11});
     const std::set<std::pair<std::uint32_t, std::uint32_t>> expected{{1, 1}};
     CHECK(tiles == expected);
-    CHECK(requestedTiles(f.source, PageId{22}).empty());
+    // The viewport center {610, 750} is inside page 0.
+    CHECK(f.viewport.currentPageIndex() == std::size_t{0});
 
     // Tile (1, 1) clipped to the 612x792 page: {512, 512, 100, 280} points.
-    CHECK(Rect::nearlyEqual(f.source.requests[0].request.params.pageRectPoints,
-                            Rect{512.0, 512.0, 100.0, 280.0}, 1e-9));
+    for (const auto& record : f.source.requests) {
+        if (record.request.key.pageId == PageId{11} && record.request.key.tileX == 1 &&
+            record.request.key.tileY == 1) {
+            CHECK(Rect::nearlyEqual(record.request.params.pageRectPoints,
+                                    Rect{512.0, 512.0, 100.0, 280.0}, 1e-9));
+        }
+    }
 }
 
 RIVET_TEST(viewportInsidePageRequestsOnlyCoveringTiles) {
@@ -220,7 +239,6 @@ RIVET_TEST(viewportInsidePageRequestsOnlyCoveringTiles) {
     const std::set<std::pair<std::uint32_t, std::uint32_t>> expected{
         {1, 1}, {2, 1}, {1, 2}, {2, 2}};
     CHECK(tiles == expected);
-    CHECK_EQ(f.source.requests.size(), std::size_t{4});
 }
 
 RIVET_TEST(tinyViewportAtHighZoomRequestsExactlyTheVisibleTiles) {
@@ -236,7 +254,6 @@ RIVET_TEST(tinyViewportAtHighZoomRequestsExactlyTheVisibleTiles) {
     FakePaintContext context;
     f.viewport.paint(context);
 
-    CHECK_EQ(f.source.requests.size(), std::size_t{1});
     const auto tiles = requestedTiles(f.source, PageId{11});
     const std::set<std::pair<std::uint32_t, std::uint32_t>> expected{{0, 0}};
     CHECK(tiles == expected);
@@ -248,7 +265,6 @@ RIVET_TEST(tinyViewportAtHighZoomRequestsExactlyTheVisibleTiles) {
     FakePaintContext context2;
     f.viewport.paint(context2);
 
-    CHECK_EQ(f.source.requests.size(), std::size_t{1});
     const auto tilesBottomRight = requestedTiles(f.source, PageId{11});
     const std::set<std::pair<std::uint32_t, std::uint32_t>> expectedBottomRight{{75, 97}};
     CHECK(tilesBottomRight == expectedBottomRight);
@@ -276,7 +292,6 @@ RIVET_TEST(largePageSmallViewportRequestsOnlyAHandfulOfTiles) {
     const std::set<std::pair<std::uint32_t, std::uint32_t>> expected{
         {0, 0}, {1, 0}, {0, 1}, {1, 1}};
     CHECK(tiles == expected);
-    CHECK_EQ(source.requests.size(), std::size_t{4});
 }
 
 RIVET_TEST(tileBoundaryAtVisibleEdgeDoesNotSpawnTheNextTile) {
@@ -293,7 +308,6 @@ RIVET_TEST(tileBoundaryAtVisibleEdgeDoesNotSpawnTheNextTile) {
     const auto tiles = requestedTiles(f.source, PageId{11});
     const std::set<std::pair<std::uint32_t, std::uint32_t>> expected{{0, 0}, {1, 0}};
     CHECK(tiles == expected);
-    CHECK_EQ(f.source.requests.size(), std::size_t{2});
 
     // One more point of height makes row 1 partially visible: it is requested.
     f.source.requests.clear();
@@ -305,7 +319,6 @@ RIVET_TEST(tileBoundaryAtVisibleEdgeDoesNotSpawnTheNextTile) {
     const std::set<std::pair<std::uint32_t, std::uint32_t>> expectedWithRow{
         {0, 0}, {1, 0}, {0, 1}, {1, 1}};
     CHECK(tilesWithOneMorePoint == expectedWithRow);
-    CHECK_EQ(f.source.requests.size(), std::size_t{4});
 }
 
 RIVET_TEST(scrollIsClampedToContentBounds) {
@@ -382,10 +395,10 @@ RIVET_TEST(zoomChangesQuantizeTileRequests) {
     // Visible content rect at zoom 2: {0, 0, 400, 300} -> page 0 only. Tile
     // extent is 512/2 = 256 points; the 376x276 visible slice of the page
     // touches a 2x2 tile block.
-    CHECK_EQ(f.source.requests.size(), std::size_t{4});
     const PhysicalRenderScaleKey quantized = physicalKeyFor(2.0, 1.0);
     CHECK_EQ(quantized.value, std::uint32_t{128}); // ceil(2.0 * 64) / 64 == 2.0
     for (const auto& record : f.source.requests) {
+        if (record.request.key.pageId != PageId{11}) continue;
         CHECK_EQ(record.request.key.scale, quantized);
         // Exact: both sides are the same quantized value over the denominator.
         CHECK_EQ(record.request.params.devicePixelsPerPoint, record.request.key.scale.scale());
@@ -416,15 +429,18 @@ RIVET_TEST(backingScaleDistinguishesCacheIdentity) {
     // is a 3x4 grid at density 2, and the 800x600 viewport (covering
     // {0, 0, 612, 600} page points = {0, 0, 1224, 1200} device px) sees the
     // 3x3 block at the grid origin.
-    CHECK_EQ(f.source.requests.size(), std::size_t{9});
     const PhysicalRenderScaleKey retina = physicalKeyFor(1.0, 2.0);
     CHECK_EQ(retina.value, std::uint32_t{128});
+    std::size_t visibleRequests = 0;
     for (const auto& record : f.source.requests) {
+        if (record.request.key.pageId != PageId{11}) continue;
+        ++visibleRequests;
         CHECK_EQ(record.request.key.scale, retina);
         CHECK_EQ(record.request.params.devicePixelsPerPoint, 2.0);
         // Tile extent in points halves on the 2x display.
         CHECK(record.request.params.pageRectPoints.size.width <= 256.0 + 1e-9);
     }
+    CHECK_EQ(visibleRequests, std::size_t{9});
 
     // The 1x identity is a different cache key.
     CHECK(!(retina == physicalKeyFor(1.0, 1.0)));
@@ -434,7 +450,7 @@ RIVET_TEST(zoomChangeCancelsQueuedRenders) {
     Fixture f;
     FakePaintContext context;
     f.viewport.paint(context);
-    CHECK_EQ(f.source.requests.size(), std::size_t{4});
+    CHECK_GE(f.source.requests.size(), std::size_t{4});
 
     // Any zoom change drops queued-not-started renders requested at the old
     // scale; the next paint re-requests current-scale tiles.
@@ -681,7 +697,8 @@ RIVET_TEST(clearDocumentCancelsPendingAndRepaintsEmptyState) {
     Fixture f;
     FakePaintContext before;
     f.viewport.paint(before);
-    CHECK_EQ(f.source.requests.size(), std::size_t{4});
+    const std::size_t requestsBefore = f.source.requests.size();
+    CHECK_GE(requestsBefore, std::size_t{4});
 
     f.viewport.clearDocument();
     CHECK_EQ(f.source.cancelAllCount, 1);
@@ -689,6 +706,6 @@ RIVET_TEST(clearDocumentCancelsPendingAndRepaintsEmptyState) {
     FakePaintContext after;
     f.viewport.paint(after);
     CHECK(after.bitmaps.empty());
-    CHECK_EQ(f.source.requests.size(), std::size_t{4}); // no new requests
+    CHECK_EQ(f.source.requests.size(), requestsBefore); // no new requests
     CHECK_EQ(hasText(after, "Open a PDF to begin"), true);
 }

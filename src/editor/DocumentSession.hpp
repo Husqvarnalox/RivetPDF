@@ -47,7 +47,8 @@ public:
         pdf::PdfEngine& engine,
         core::TaskScheduler& scheduler,
         core::IMainThreadDispatcher* mainDispatcher,
-        const std::filesystem::path& path);
+        const std::filesystem::path& path,
+        std::string_view password = {});
 
     // Cancels pending render work (renderer first) and then tears the rest down.
     ~DocumentSession();

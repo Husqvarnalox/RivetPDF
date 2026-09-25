@@ -204,3 +204,36 @@ RIVET_TEST(pdfiumPageLinksOutOfRangeIsInvalidArgument) {
     CHECK(!links.has_value());
     if (!links.has_value()) CHECK_EQ(links.error().code, core::ErrorCode::InvalidArgument);
 }
+
+RIVET_TEST(pdfiumPasswordProtectedFixture) {
+    auto engine = rivet::pdf::createEngine();
+    CHECK(engine != nullptr);
+    if (!engine || !engine->isAvailable()) {
+        CHECK_EQ(engine->backendName(), "none");
+        return;
+    }
+    const fs::path path = fs::path(RIVET_PDF_TEXT_FIXTURE_DIR) / "password.pdf";
+
+    // Empty and wrong passwords: PasswordRequired (never InvalidDocument).
+    auto rejected = engine->openDocument(path);
+    CHECK(!rejected.has_value());
+    if (!rejected.has_value()) {
+        CHECK_EQ(rejected.error().code, core::ErrorCode::PasswordRequired);
+    }
+    auto wrong = engine->openDocument(path, "wrongpw");
+    CHECK(!wrong.has_value());
+    if (!wrong.has_value()) {
+        CHECK_EQ(wrong.error().code, core::ErrorCode::PasswordRequired);
+    }
+
+    // The correct password opens the 4-page document. The password is not
+    // stored anywhere after open (PdfiumDocument records only isEncrypted).
+    auto opened = engine->openDocument(path, "rivet");
+    CHECK(opened.has_value());
+    if (opened.has_value()) {
+        CHECK_EQ((*opened)->info().pageCount, std::size_t{4});
+        CHECK((*opened)->info().isEncrypted);
+        auto page = (*opened)->pageInfo(0);
+        CHECK(page.has_value());
+    }
+}

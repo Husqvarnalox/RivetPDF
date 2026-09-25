@@ -178,6 +178,12 @@ private:
     TextLabel* searchCountLabel_ = nullptr;
     bool searchVisible_ = false;
 
+    // Password prompt overlay (shown for NeedsPassword tabs). The field is
+    // echo-masked; the password is never stored beyond the retry call.
+    ui::Container* passwordPanel_ = nullptr;
+    TextLabel* passwordMessage_ = nullptr;
+    ui::TextField* passwordField_ = nullptr;
+
     // Sidebar modes: Pages (thumbnails) | Outline. modeButtons_ are the two
     // header buttons; sidebarContainer_ holds the mode header + the active
     // panel. Outline rows are rebuilt per tab (flattened from the document

@@ -34,7 +34,7 @@ std::filesystem::path dedupKeyForPath(const std::filesystem::path& path);
 // survive tab switches. Main-thread only.
 class DocumentTab {
 public:
-    enum class State : std::uint8_t { Loading, Ready, Error };
+    enum class State : std::uint8_t { Loading, Ready, Error, NeedsPassword };
 
     DocumentTab(std::filesystem::path path, std::string title);
 
@@ -68,6 +68,14 @@ public:
     // Called by the workspace on the main thread when the open completes.
     void attachSession(std::unique_ptr<editor::DocumentSession> session);
     void setError(std::string text);
+    // Password-required outcome: the tab stays open and asks for a password.
+    void markNeedsPassword(std::string message) {
+        session_.reset();
+        state_ = State::NeedsPassword;
+        errorText_ = std::move(message);
+    }
+    // Begin the password retry (state -> Loading). Workspace only.
+    void beginPasswordRetry() { state_ = State::Loading; }
 
 private:
     std::filesystem::path path_;
@@ -125,6 +133,11 @@ public:
     // this returns; the session arrives via a later main-thread completion.
     void openDocument(const std::filesystem::path& path);
 
+    // Retries the open of a NeedsPassword tab with a password. The password
+    // is forwarded to the background open and NOT stored anywhere: the tab
+    // drops it as soon as the completion runs. Never log it.
+    void retryWithPassword(std::size_t tabIndex, std::string password);
+
     // Closes the tab (cancelling a pending open for it). Closing the active
     // tab activates the nearest remaining tab; closing the last tab leaves
     // the empty state.
@@ -160,9 +173,11 @@ private:
         std::shared_ptr<std::atomic<bool>> workspaceAlive;
         DocumentTab* tab = nullptr; // raw; re-verified against tabs_ on delivery
         core::Result<std::unique_ptr<editor::DocumentSession>> session;
+        bool isRetry = false; // retry failures re-enter NeedsPassword
     };
 
     void handleOpenCompleted(std::shared_ptr<OpenContinuation> continuation);
+    void startOpen(std::size_t tabIndex, DocumentTab* tab, std::string password, bool isRetry);
     void activate(std::size_t index);
     void fireTabsChanged();
 

@@ -71,32 +71,51 @@ void DocumentWorkspace::openDocument(const std::filesystem::path& path) {
     DocumentTab* tabPtr = tab.get();
     tabs_.push_back(std::move(tab));
     activate(tabs_.size() - 1);
+    startOpen(tabs_.size() - 1, tabPtr, {}, false);
+    fireTabsChanged();
+}
 
+void DocumentWorkspace::retryWithPassword(std::size_t tabIndex, std::string password) {
+    DocumentTab* retryTab = tab(tabIndex);
+    if (retryTab == nullptr || retryTab->state() != DocumentTab::State::NeedsPassword) return;
+    retryTab->beginPasswordRetry(); // -> Loading
+    startOpen(tabIndex, retryTab, std::move(password), /*isRetry=*/true);
+    fireTabsChanged();
+}
+
+void DocumentWorkspace::startOpen(std::size_t tabIndex, DocumentTab* tab, std::string password,
+                                  bool isRetry) {
+    (void)tabIndex;
     // Background open. The continuation carries the outcome across the
     // thread boundary; the main-thread completion re-validates everything
     // (workspace alive, tab still open) before touching it. The engine and
     // scheduler references are shell-owned and outlive this task (the shell
     // destroys the workspace before the engine and scheduler). The
     // completion is dispatched by the WORKER after create() finishes, so a
-    // completion never runs ahead of its result.
+    // completion never runs ahead of its result. The password lives only in
+    // this task and the continuation - never stored, never logged.
     auto continuation = std::make_shared<OpenContinuation>();
     continuation->workspaceAlive = workspaceAlive_;
-    continuation->tab = tabPtr;
+    continuation->tab = tab;
+    continuation->isRetry = isRetry;
     pdf::PdfEngine& engine = engine_;
     core::TaskScheduler& scheduler = scheduler_;
     core::IMainThreadDispatcher* dispatcher = mainDispatcher_;
-    const std::filesystem::path openPath = tabPtr->path();
+    const std::filesystem::path openPath = tab->path();
     DocumentWorkspace* self = this;
-    scheduler.post([&engine, &scheduler, dispatcher, openPath, continuation, self] {
+    scheduler.post([&engine, &scheduler, dispatcher, openPath, continuation, self,
+                    password = std::move(password)]() mutable {
         continuation->session =
-            editor::DocumentSession::create(engine, scheduler, dispatcher, openPath);
+            editor::DocumentSession::create(engine, scheduler, dispatcher, openPath, password);
+        // Drop the password before the completion lambda captures anything.
+        password.clear();
+        password.shrink_to_fit();
+        std::string().swap(password);
         dispatcher->post([self, continuation] {
             if (!continuation->workspaceAlive->load(std::memory_order_acquire)) return;
             self->handleOpenCompleted(continuation);
         });
     });
-
-    fireTabsChanged();
 }
 
 void DocumentWorkspace::handleOpenCompleted(std::shared_ptr<OpenContinuation> continuation) {
@@ -113,6 +132,12 @@ void DocumentWorkspace::handleOpenCompleted(std::shared_ptr<OpenContinuation> co
         tab->attachSession(std::move(*continuation->session));
         core::log::info(std::string("document opened: ") + std::to_string(tab->session()->pageCount()) +
                         " pages");
+    } else if (continuation->session.error().code == core::ErrorCode::PasswordRequired) {
+        // Prompt instead of failing. A retry that fails again re-enters this
+        // state (the UI keeps the field focused). No password is stored or
+        // logged.
+        core::log::warning("document open requires a password");
+        tab->markNeedsPassword(continuation->session.error().message);
     } else {
         core::log::warning("document open failed: " + core::describe(continuation->session.error()));
         // Never include document contents in user text; describe() is a

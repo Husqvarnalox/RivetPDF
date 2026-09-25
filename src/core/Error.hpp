@@ -21,6 +21,10 @@ enum class ErrorCode : std::uint8_t {
     OutOfMemory,
     Cancelled,
     Internal,
+    // An encrypted document needs a password (or the provided one was
+    // rejected). Distinct from InvalidDocument so the open flow can prompt
+    // instead of failing.
+    PasswordRequired,
 };
 
 struct Error {

@@ -74,13 +74,14 @@ core::Result<std::unique_ptr<DocumentSession>> DocumentSession::create(
     pdf::PdfEngine& engine,
     core::TaskScheduler& scheduler,
     core::IMainThreadDispatcher* mainDispatcher,
-    const std::filesystem::path& path) {
+    const std::filesystem::path& path,
+    std::string_view password) {
     if (!engine.isAvailable()) {
         return std::unexpected(
             core::Error{core::ErrorCode::NotAvailable, "no PDF backend is available", "editor"});
     }
 
-    auto opened = engine.openDocument(path);
+    auto opened = engine.openDocument(path, password);
     if (!opened.has_value()) {
         return std::unexpected(std::move(opened).error());
     }

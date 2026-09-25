@@ -14,6 +14,7 @@ std::string_view toString(ErrorCode code) {
         case ErrorCode::OutOfMemory: return "OutOfMemory";
         case ErrorCode::Cancelled: return "Cancelled";
         case ErrorCode::Internal: return "Internal";
+        case ErrorCode::PasswordRequired: return "PasswordRequired";
     }
     return "Unknown";
 }

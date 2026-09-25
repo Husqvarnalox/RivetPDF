@@ -579,8 +579,85 @@ void PdfViewport::paintSelf(PaintContext& context) const {
             paintPageTiles(i, pageFrame, pageInViewport, contentRect, revision, context);
             paintPageOverlays(i, pageFrame, context);
         }
+        // Limited nearby prefetch: one viewport-height band of the pages
+        // adjacent to the visible range, scheduled behind visible tiles.
+        prefetchNeighborPages(*visible, contentRect, revision, context);
     }
     context.popClip();
+}
+
+void PdfViewport::prefetchNeighborPages(const std::pair<std::size_t, std::size_t>& visibleRange,
+                                        const core::Rect& contentRect, std::uint64_t revision,
+                                        PaintContext& context) const {
+    const double bandHeight = std::min(frame().size.height / state_->zoom().zoom(),
+                                       std::numeric_limits<double>::max());
+    if (visibleRange.second + 1 < layout_->pageCount()) {
+        const core::Rect nextFrame = layout_->pageFramePoints(visibleRange.second + 1);
+        const double height = std::min(bandHeight, nextFrame.size.height);
+        requestBandTiles(visibleRange.second + 1,
+                         core::Rect{nextFrame.origin.x, nextFrame.origin.y, contentRect.size.width,
+                                    height},
+                         revision, context);
+    }
+    if (visibleRange.first > 0) {
+        const core::Rect prevFrame = layout_->pageFramePoints(visibleRange.first - 1);
+        const double height = std::min(bandHeight, prevFrame.size.height);
+        requestBandTiles(visibleRange.first - 1,
+                         core::Rect{prevFrame.origin.x, prevFrame.maxY() - height,
+                                    contentRect.size.width, height},
+                         revision, context);
+    }
+}
+
+// Tile enumeration mirrors paintPageTiles' request path (same cache identity
+// math), minus the painting: misses are requested at Impending priority so
+// the DocumentRenderer's lane ordering drains them only after Visible work.
+void PdfViewport::requestBandTiles(std::size_t pageIndex, const core::Rect& bandContentRect,
+                                   std::uint64_t revision, PaintContext& context) const {
+    const render::PageLayout::PageInfo& info = layout_->pages()[pageIndex];
+    const core::Rect pageFrame = layout_->pageFramePoints(pageIndex);
+    const render::RenderScaleKey zoomKey = render::RenderScaleKey::fromZoom(state_->zoom().zoom());
+    const render::PhysicalRenderScaleKey physicalKey =
+        render::PhysicalRenderScaleKey::fromDensities(zoomKey.scale(), context.backingScale());
+    const double devicePixelsPerPoint = physicalKey.scale();
+    const double tileExtentPoints = static_cast<double>(kTileSize) / devicePixelsPerPoint;
+    const std::uint32_t tilesX = tileCount(pageFrame.size.width * devicePixelsPerPoint);
+    const std::uint32_t tilesY = tileCount(pageFrame.size.height * devicePixelsPerPoint);
+    if (tilesX == 0 || tilesY == 0) return;
+
+    const core::Rect pageBounds{core::Point{}, pageFrame.size};
+    const core::Rect bandLocal = bandContentRect.intersection(pageFrame).translated(-pageFrame.origin);
+    if (bandLocal.isEmpty()) return;
+
+    const auto [txMin, txMax] =
+        visibleTileRange(bandLocal.minX(), bandLocal.maxX(), tileExtentPoints, tilesX);
+    const auto [tyMin, tyMax] =
+        visibleTileRange(bandLocal.minY(), bandLocal.maxY(), tileExtentPoints, tilesY);
+    for (std::uint32_t ty = tyMin; ty <= tyMax; ++ty) {
+        for (std::uint32_t tx = txMin; tx <= txMax; ++tx) {
+            const core::Rect tileRect{static_cast<double>(tx) * tileExtentPoints,
+                                      static_cast<double>(ty) * tileExtentPoints,
+                                      tileExtentPoints, tileExtentPoints};
+            const core::Rect clipped = tileRect.intersection(pageBounds);
+            if (clipped.isEmpty()) continue;
+            const render::TileKey key{documentId_, info.id, physicalKey, tx, ty};
+            if (source_->cachedTile(key, revision) == nullptr) {
+                requestTileWithPriority(key, render::RasterParams{clipped, devicePixelsPerPoint},
+                                        render::RenderPriority::Impending);
+            }
+        }
+    }
+}
+
+void PdfViewport::requestTileWithPriority(const render::TileKey& key,
+                                          const render::RasterParams& params,
+                                          render::RenderPriority priority) const {
+    const render::RenderRequest request{key, params};
+    const std::shared_ptr<std::atomic<bool>> alive = aliveFlag_;
+    source_->requestRender(request, priority,
+                           [this, alive](render::RenderResult) {
+                               if (alive->load(std::memory_order_acquire)) invalidate();
+                           });
 }
 
 // Overlay pass (selection highlights, search matches): rects arrive in page
@@ -689,16 +766,7 @@ void PdfViewport::paintPageTiles(std::size_t pageIndex, const core::Rect& pageFr
 }
 
 void PdfViewport::requestTile(const render::TileKey& key, const render::RasterParams& params) const {
-    const render::RenderRequest request{key, params};
-    // Shared alive flag: a callback delivered after destruction (or from a
-    // misbehaving thread) sees false and does nothing. Capture `alive` by
-    // value so the flag outlives this stack frame. The payload is ignored:
-    // the cache is re-read on the next paint.
-    const std::shared_ptr<std::atomic<bool>> alive = aliveFlag_;
-    source_->requestRender(request, render::RenderPriority::Visible,
-                           [this, alive](render::RenderResult /*result*/) {
-                               if (alive->load(std::memory_order_acquire)) invalidate();
-                           });
+    requestTileWithPriority(key, params, render::RenderPriority::Visible);
 }
 
 } // namespace rivet::ui

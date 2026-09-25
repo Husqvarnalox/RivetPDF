@@ -73,7 +73,7 @@ public:
     std::string_view backendName() const override { return "fake"; }
 
     Result<std::unique_ptr<PdfDocument>> openDocument(const std::filesystem::path& path,
-                                                      std::string_view) override {
+                                                      std::string_view password) override {
         std::error_code ec;
         // Like a real backend: a missing file is an I/O error.
         if (!std::filesystem::exists(path, ec)) {
@@ -82,10 +82,14 @@ public:
         if (failOpens) {
             return std::unexpected(Error{ErrorCode::InvalidDocument, "broken pdf", "test"});
         }
+        if (passwordRequired && password.empty()) {
+            return std::unexpected(Error{ErrorCode::PasswordRequired, "password protected", "test"});
+        }
         return std::unique_ptr<PdfDocument>(std::make_unique<FakePdfDocument>());
     }
 
     bool failOpens = false;
+    bool passwordRequired = false;
 };
 
 // Main-thread dispatcher: ALWAYS defers into a queue that the test thread
@@ -315,4 +319,30 @@ RIVET_TEST(workspaceEmptyStateTransitionsAndOutsideOpenFailure) {
     CHECK(f.workspace.activeTab()->state() == DocumentTab::State::Error);
     // The view state is still there for the error view.
     (void)f.workspace.activeTab()->viewState();
+}
+
+RIVET_TEST(workspacePasswordFlowPromptsAndRetries) {
+    Fixture f;
+    f.engine.passwordRequired = true;
+    const std::filesystem::path path = tempPdf("locked");
+    f.workspace.openDocument(path);
+
+    // Wait for the open to complete (fake engine fails with PasswordRequired).
+    for (int i = 0; i < 500 && f.workspace.activeTab()->state() == DocumentTab::State::Loading; ++i) {
+        f.dispatcher.pump();
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    f.dispatcher.pump();
+    CHECK(f.workspace.activeTab()->state() == DocumentTab::State::NeedsPassword);
+    CHECK_EQ(f.workspace.activeTab()->session(), nullptr);
+
+    // Retry with a password: the fake engine then opens the document.
+    f.workspace.retryWithPassword(f.workspace.activeIndex(), "secret");
+    for (int i = 0; i < 500 && f.workspace.activeTab()->state() == DocumentTab::State::Loading; ++i) {
+        f.dispatcher.pump();
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    f.dispatcher.pump();
+    CHECK(f.workspace.activeTab()->state() == DocumentTab::State::Ready);
+    CHECK(f.workspace.activeTab()->session() != nullptr);
 }

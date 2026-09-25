@@ -28,6 +28,24 @@ bool isContinuationByte(char byte) {
     return (static_cast<unsigned char>(byte) & 0xC0) == 0x80;
 }
 
+void appendCodePointUtf8(std::string& out, char32_t codePoint) {
+    if (codePoint <= 0x7Fu) {
+        out.push_back(static_cast<char>(codePoint));
+    } else if (codePoint <= 0x7FFu) {
+        out.push_back(static_cast<char>(0xC0u | (codePoint >> 6)));
+        out.push_back(static_cast<char>(0x80u | (codePoint & 0x3Fu)));
+    } else if (codePoint <= 0xFFFFu) {
+        out.push_back(static_cast<char>(0xE0u | (codePoint >> 12)));
+        out.push_back(static_cast<char>(0x80u | ((codePoint >> 6) & 0x3Fu)));
+        out.push_back(static_cast<char>(0x80u | (codePoint & 0x3Fu)));
+    } else {
+        out.push_back(static_cast<char>(0xF0u | (codePoint >> 18)));
+        out.push_back(static_cast<char>(0x80u | ((codePoint >> 12) & 0x3Fu)));
+        out.push_back(static_cast<char>(0x80u | ((codePoint >> 6) & 0x3Fu)));
+        out.push_back(static_cast<char>(0x80u | (codePoint & 0x3Fu)));
+    }
+}
+
 } // namespace
 
 TextField::TextField(std::string placeholder) : placeholder_(std::move(placeholder)) {}
@@ -313,6 +331,19 @@ void TextField::paintSelf(PaintContext& context) const {
     rebuildPrefixWidths(context);
     updateHorizontalScroll(rect);
 
+    // Displayed text: the real text, or the echo character repeated per code
+    // point for password fields. Caret/selection math stays in REAL text
+    // coordinates (prefixWidths_ is built from text_).
+    std::string displayText = text_;
+    if (echoCharacter_ != 0 && !text_.empty()) {
+        displayText.clear();
+        std::size_t at = 0;
+        while (at < text_.size()) {
+            appendCodePointUtf8(displayText, echoCharacter_);
+            at = nextBoundary(text_, at);
+        }
+    }
+
     const bool focused = isFocused();
     context.fillRoundedRect(rect, focused ? kFocusedBackground : kUnfocusedBackground, kCornerRadius);
     context.strokeRect(rect.inset(core::Insets::uniform(0.5)),
@@ -332,7 +363,7 @@ void TextField::paintSelf(PaintContext& context) const {
         }
         const core::Rect textRect{core::Point{textOriginX, rect.minY()},
                                   core::Size{rect.size.width, rect.size.height}};
-        context.drawText(text_, textRect, kTextFont, kTextColor, TextAlign::Left);
+        context.drawText(displayText, textRect, kTextFont, kTextColor, TextAlign::Left);
     } else if (!focused && !placeholder_.empty()) {
         const core::Rect textRect{core::Point{textOriginX, rect.minY()},
                                   core::Size{rect.size.width, rect.size.height}};

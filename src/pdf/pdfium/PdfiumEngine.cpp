@@ -57,9 +57,11 @@ core::Result<std::unique_ptr<PdfDocument>> PdfiumEngine::openDocument(const std:
     if (document == nullptr) {
         switch (lastError) {
             case FPDF_ERR_PASSWORD:
+                // Distinct code: the app open flow prompts for a password
+                // instead of failing. Never include the password itself.
                 return std::unexpected(core::makeError(
-                    core::ErrorCode::InvalidDocument,
-                    std::string("PDFium could not open the document: password required or incorrect") +
+                    core::ErrorCode::PasswordRequired,
+                    std::string("the document is password protected") +
                         (passwordString.empty() ? " (no password was provided)"
                                                 : " (the provided password was rejected)"),
                     "pdf"));

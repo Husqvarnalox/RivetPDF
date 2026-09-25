@@ -50,6 +50,12 @@ public:
     Selection selection() const;
     const std::string& placeholder() const { return placeholder_; }
 
+    // Echo character for password fields (e.g. U+2022 "•"): paint replaces
+    // every typed code point with it; text()/caret()/selection() keep the
+    // REAL characters. 0 = no masking.
+    void setEchoCharacter(char32_t echoCharacter) { echoCharacter_ = echoCharacter; }
+    char32_t echoCharacter() const { return echoCharacter_; }
+
     void setOnTextChanged(std::function<void(const std::string&)> onTextChanged);
     void setOnEnter(std::function<void()> onEnter);
     void setOnEscape(std::function<void()> onEscape);
@@ -104,6 +110,7 @@ private:
     // non-boundary byte offsets are unused. Rebuilt during paint, dropped on
     // any text change.
     mutable std::vector<double> prefixWidths_;
+    char32_t echoCharacter_ = 0;
     std::function<void(const std::string&)> onTextChanged_;
     std::function<void()> onEnter_;
     std::function<void()> onEscape_;

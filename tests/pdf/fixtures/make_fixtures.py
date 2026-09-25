@@ -86,7 +86,9 @@ The committed .pdf files ARE the fixtures; tests never run this script. It
 exists only so the bytes can be regenerated and audited.
 """
 
+import hashlib
 import pathlib
+import struct
 
 HERE = pathlib.Path(__file__).resolve().parent
 
@@ -267,6 +269,114 @@ def text_line(font_size: float, x: float, y: float, text: bytes) -> bytes:
     )
 
 
+# ---------------- encrypted fixture (password.pdf) ----------------
+#
+# Deterministic PDF standard-security-handler R3 (RC4-128) encryption,
+# implemented with hashlib's MD5 and a small RC4 - no timestamps, no
+# randomness (the /ID is a fixed value). The user password is "rivet"; an
+# owner password "owner-secret" also decrypts. PDFium must reject an empty or
+# wrong password with FPDF_ERR_PASSWORD and accept "rivet".
+
+PAD = (b"\x28\xBF\x4E\x5E\x4E\x75\x8A\x41\x64\x00\x4E\x56\xFF\xFA\x01\x08"
+       b"\x2E\x2E\x00\xB6\xD0\x68\x3E\x80\x2F\x0C\xA9\xFE\x64\x53\x69\x7A")
+
+
+def rc4(key: bytes, data: bytes) -> bytes:
+    s = list(range(256))
+    j = 0
+    for i in range(256):
+        j = (j + s[i] + key[i % len(key)]) & 0xFF
+        s[i], s[j] = s[j], s[i]
+    out = bytearray()
+    i = j = 0
+    for byte in data:
+        i = (i + 1) & 0xFF
+        j = (j + s[i]) & 0xFF
+        s[i], s[j] = s[j], s[i]
+        out.append(byte ^ s[(s[i] + s[j]) & 0xFF])
+    return bytes(out)
+
+
+def padded(password: bytes) -> bytes:
+    return (password + PAD)[:32]
+
+
+def r3_owner_hash(owner_password: bytes, user_password: bytes) -> bytes:
+    digest = hashlib.md5(padded(owner_password)).digest()
+    for _ in range(50):
+        digest = hashlib.md5(digest[:16]).digest()
+    key = digest[:16]
+    result = rc4(key, padded(user_password))
+    for i in range(1, 20):
+        result = rc4(bytes(b ^ i for b in key), result)
+    return result
+
+
+def r3_encryption_key(user_password: bytes, o_value: bytes, p: int, doc_id: bytes) -> bytes:
+    digest = hashlib.md5(padded(user_password) + o_value +
+                         struct.pack("<i", p) + doc_id).digest()
+    for _ in range(50):
+        digest = hashlib.md5(digest[:16]).digest()
+    return digest[:16]
+
+
+def r3_user_value(key: bytes, doc_id: bytes) -> bytes:
+    import hashlib as _h
+    value = rc4(key, _h.md5(PAD + doc_id).digest())
+    for i in range(1, 20):
+        value = rc4(bytes(b ^ i for b in key), value)
+    return value + b"\x00" * 16  # 16 arbitrary bytes per the R3 algorithm
+
+
+def object_key(key: bytes, obj_num: int, gen_num: int) -> bytes:
+    return hashlib.md5(key + struct.pack("<i", obj_num)[:3] +
+                       struct.pack("<i", gen_num)[:2]).digest()[:16]
+
+
+def build_encrypted_pdf(objects: list[bytes], encrypt_obj_num: int,
+                        encrypt_dict: bytes, doc_id: bytes, key: bytes) -> bytes:
+    """build_pdf variant: RC4-encrypts every stream/byte-string with the
+    per-object key and appends the /Encrypt dict + /ID to the trailer. The
+    Encrypt dict itself and the trailer ID stay unencrypted (spec exemption)."""
+    import re as _re
+    header = b"%PDF-1.4\n%\xe2\xe3\xcf\xd3\n"
+    body = b""
+    offsets = []
+    for number, obj in enumerate(objects, start=1):
+        offsets.append(len(header) + len(body))
+        if number == encrypt_obj_num:
+            payload = obj
+        else:
+            payload = _encrypt_strings_and_streams(obj, key, number)
+        body += b"%d 0 obj\n" % number + payload + b"\nendobj\n"
+    xref_pos = len(header) + len(body)
+    count = len(objects) + 1
+    xref = b"xref\n0 %d\n0000000000 65535 f \n" % count
+    xref += b"".join(b"%010d 00000 n \n" % offset for offset in offsets)
+    id_hex = doc_id.hex().encode()
+    trailer = (b"trailer\n<< /Size %d /Root 1 0 R /Encrypt %d 0 R /ID [<%s> <%s>] >>\n"
+               b"startxref\n%d\n%%%%EOF\n" % (count, encrypt_obj_num, id_hex, id_hex, xref_pos))
+    return header + body + xref + trailer
+
+
+def _encrypt_strings_and_streams(obj: bytes, key: bytes, obj_num: int) -> bytes:
+    """Encrypts the stream payload of one object and any literal/hex strings
+    OUTSIDE the dictionary part. For our fixtures the only strings live in the
+    dictionaries we deliberately keep string-free, so encrypting the stream
+    suffices; strings inside dicts would need real PDF parsing."""
+    import re as _re
+    match = _re.search(rb"stream\r?\n", obj)
+    if match is None:
+        return obj
+    head, tail = obj[:match.end()], obj[match.end():]
+    end = tail.rfind(b"endstream")
+    payload, rest = tail[:end], tail[end:]
+    encrypted = rc4(object_key(key, obj_num, 0), payload)
+    # The /Length must now describe the SAME length (RC4 keeps length).
+    head = _re.sub(rb"/Length \d+", b"/Length %d" % len(encrypted), head)
+    return head + encrypted + rest
+
+
 def main() -> None:
     # corners.pdf / rot90 / rot180 / rot270: one content stream, varying /Rotate
     # on the (inherited) Pages node.
@@ -381,6 +491,43 @@ def main() -> None:
     objects.append(HELVETICA_FONT)
     objects = [o.replace(b"/F1 2 0 R", b"/F1 %d 0 R" % font_obj) for o in objects]
     write("page-labels.pdf", build_pdf(objects))
+
+    # password.pdf: 4 pages, standard security handler R3 (RC4-128), user
+    # password "rivet", owner password "owner-secret". Deterministic /ID.
+    page_count = 4
+    objects = []
+    kids = []
+    for i in range(page_count):
+        page_num = 3 + 2 * i
+        kids.append(b"%d 0 R" % page_num)
+        content = b"BT /F1 24 Tf 72 720 Td (Page %d of %d) Tj ET\n" % (i + 1, page_count)
+        objects.append(None)  # placeholder for the page dict (built below)
+    # Rebuild with real dicts; objects: 1 catalog, 2 pages, then per page
+    # (page dict, content), then font, then Encrypt dict last.
+    objects = [b"<< /Type /Catalog /Pages 2 0 R >>",
+               b"<< /Type /Pages /Kids [" + b" ".join(kids) + b"] /Count %d >>" % page_count]
+    for i in range(page_count):
+        content = b"BT /F1 24 Tf 72 720 Td (Page %d of %d) Tj ET\n" % (i + 1, page_count)
+        font_ref = 3 + 2 * page_count
+        objects.append(b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources "
+                       b"<< /Font << /F1 %d 0 R >> >> /Contents %d 0 R >>"
+                       % (font_ref, 3 + 2 * i + 1))
+        objects.append(b"<< /Length %d >>\nstream\n" % len(content) + content + b"endstream")
+    objects.append(b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding "
+                   b"/WinAnsiEncoding >>")
+    encrypt_num = len(objects) + 1
+
+    doc_id = b"rivet-password-fixture-id"
+    user_pw = b"rivet"
+    owner_pw = b"owner-secret"
+    p_value = -3904
+    o_value = r3_owner_hash(owner_pw, user_pw)
+    key = r3_encryption_key(user_pw, o_value, p_value, doc_id)
+    u_value = r3_user_value(key, doc_id)
+    encrypt_dict = (b"<< /Filter /Standard /V 2 /R 3 /Length 128 /P %d /O <%s> /U <%s> >>"
+                    % (p_value, o_value.hex().encode(), u_value.hex().encode()))
+    objects.append(encrypt_dict)  # stored unencrypted (spec exemption)
+    write("password.pdf", build_encrypted_pdf(objects, encrypt_num, encrypt_dict, doc_id, key))
 
 
 if __name__ == "__main__":

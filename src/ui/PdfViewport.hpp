@@ -5,6 +5,7 @@
 #include "core/geometry/Point.hpp"
 #include "core/geometry/Rect.hpp"
 #include "core/geometry/Size.hpp"
+#include "render/RenderPriority.hpp"
 #include "render/ViewerState.hpp"
 #include "ui/ScrollBar.hpp"
 #include "ui/ViewerTextBridge.hpp"
@@ -160,7 +161,19 @@ private:
                         std::uint64_t revision, PaintContext& context) const;
     void paintPageOverlays(std::size_t pageIndex, const core::Rect& pageFramePoints,
                            PaintContext& context) const;
+    // Prefetches a limited band of the adjacent pages (top band of the next
+    // page, bottom band of the previous one) at Impending priority so the
+    // lane ordering keeps them behind visible tiles.
+    void prefetchNeighborPages(const std::pair<std::size_t, std::size_t>& visibleRange,
+                               const core::Rect& contentRect, std::uint64_t revision,
+                               PaintContext& context) const;
+    // Requests (without painting) the tiles of one page overlapping a
+    // content-space band.
+    void requestBandTiles(std::size_t pageIndex, const core::Rect& bandContentRect,
+                          std::uint64_t revision, PaintContext& context) const;
     void requestTile(const render::TileKey& key, const render::RasterParams& params) const;
+    void requestTileWithPriority(const render::TileKey& key, const render::RasterParams& params,
+                                 render::RenderPriority priority) const;
     core::Point clampedScrollOffset(const core::Point& offset) const;
     void resolveFitMode();
     // Frames the scrollbar children within the current bounds.
