@@ -6,116 +6,154 @@
 namespace rivet::editor {
 
 TextSearchController::TextSearchController(DocumentSession& session, TextService& text)
-    : session_(session), text_(text), walkExecutor_(session.scheduler()) {}
+    : session_(session),
+      text_(text),
+      dispatcher_(session.mainDispatcher()),
+      alive_(std::make_shared<std::atomic<bool>>(true)),
+      walkExecutor_(session.scheduler()) {}
 
 TextSearchController::~TextSearchController() {
-    // Invalidate the walk, then wait for the walker to observe it and exit:
-    // the walker dereferences session_ and text_ between per-page checks, so
-    // destroying them first would be use-after-free. The wait is bounded by
-    // one page's extraction work.
+    // Posted notifications become no-ops from here on (they run on the main
+    // thread, like this destructor, so the flag is race-free).
+    alive_->store(false, std::memory_order_release);
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        generation_.store(0, std::memory_order_release);
+        activeRequest_.store(++lastRequest_, std::memory_order_release);
     }
-    std::unique_lock<std::mutex> lock(mutex_);
-    walkerDone_.wait(lock, [this] { return !walkerActive_.load(std::memory_order_acquire); });
+    // Drop walkers that have not started and wait for the in-flight one to
+    // observe the invalidated token (bounded by one page's work). Waiting on
+    // the EXECUTOR - not on a "walker running" flag - is what guarantees no
+    // queued walker can start after this point and touch a dead object.
+    walkExecutor_.cancelPending();
+    walkExecutor_.waitUntilIdle();
+}
+
+std::uint64_t TextSearchController::mintRequest() {
+    // Main thread only; the store happens under mutex_ so publication checks
+    // inside the walker (also under mutex_) see a consistent token.
+    const std::uint64_t request = ++lastRequest_;
+    activeRequest_.store(request, std::memory_order_release);
+    return request;
 }
 
 void TextSearchController::start(std::string query, pdf::TextSearchOptions options) {
-    std::vector<Match> cleared;
+    query_ = std::move(query);
+    options_ = options;
+    std::uint64_t request = 0;
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        query_ = std::move(query);
-        options_ = options;
-        matches_.swap(cleared);
+        request = mintRequest();
+        matches_.clear();
         currentIndex_.reset();
-        if (query_.empty()) {
-            // Empty query: cancel + clear, no walk.
-            generation_.store(0, std::memory_order_release);
-            fireChanged();
-            return;
-        }
-        generation_.store(generation_.load(std::memory_order_relaxed) + 1,
-                          std::memory_order_release);
+        searching_ = !query_.empty();
     }
-    const std::uint64_t generation = generation_.load(std::memory_order_acquire);
-    walkExecutor_.post([this, generation, query = query_, options] {
-        runWalk(generation, query, options);
-    });
-    fireChanged();
+    // Queued walkers of earlier requests are obsolete: drop them instead of
+    // letting each one start just to notice its token is stale.
+    walkExecutor_.cancelPending();
+    if (!query_.empty()) {
+        walkExecutor_.post([this, request, order = session_.pageOrder(), query = query_,
+                            options]() mutable {
+            runWalk(request, std::move(order), std::move(query), options);
+        });
+    }
+    notifyNow();
 }
 
 void TextSearchController::cancel() {
-    std::lock_guard<std::mutex> lock(mutex_);
-    generation_.store(0, std::memory_order_release);
+    bool changed = false;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        mintRequest();
+        changed = searching_;
+        searching_ = false;
+    }
+    walkExecutor_.cancelPending();
+    if (changed) notifyNow();
 }
 
-void TextSearchController::runWalk(std::uint64_t generation, std::string query,
-                                   pdf::TextSearchOptions options) {
-    walkerActive_.store(true, std::memory_order_release);
-    // All exits funnel through the end of this scope (see the walkerExit
-    // lambda) so the destructor's wait cannot miss the heartbeat.
-    auto walkerExit = [&] {
-        walkerActive_.store(false, std::memory_order_release);
-        walkerDone_.notify_all();
-    };
-    const std::size_t pageCount = session_.pageCount();
-    std::vector<Match> fresh;
-    for (std::size_t index = 0; index < pageCount; ++index) {
-        // Cheap per-page cancellation check (also covers destruction, which
-        // resets the generation to 0 while the walker is between pages).
-        if (generation_.load(std::memory_order_acquire) != generation) {
-            walkerExit();
-            return;
-        }
+void TextSearchController::reset() {
+    query_.clear();
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        mintRequest();
+        searching_ = false;
+        matches_.clear();
+        currentIndex_.reset();
+    }
+    walkExecutor_.cancelPending();
+    notifyNow();
+}
 
-        const core::PageId pageId = session_.pageId(index);
+bool TextSearchController::searching() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return searching_;
+}
+
+void TextSearchController::runWalk(std::uint64_t request, std::vector<core::PageId> order,
+                                   std::string query, pdf::TextSearchOptions options) {
+    const auto stale = [&] { return activeRequest_.load(std::memory_order_acquire) != request; };
+    std::vector<Match> fresh;
+    for (const core::PageId pageId : order) {
+        // Cheap per-page cancellation check (also covers destruction, which
+        // invalidates the token before draining the executor).
+        if (stale()) return;
+
+        // A page removed from the document meanwhile yields null: skipped.
         const std::shared_ptr<const pdf::PdfTextPage> page = text_.textPageNow(pageId);
-        if (generation_.load(std::memory_order_acquire) != generation) {
-            walkerExit();
-            return;
-        }
+        if (stale()) return;
         if (page == nullptr) continue; // extraction failed: skip, not fatal
 
-        const std::vector<pdf::TextSearchResult> found =
-            pdf::searchTextPage(*page, query, options);
-        if (generation_.load(std::memory_order_acquire) != generation) {
-            walkerExit();
-            return;
-        }
-
+        const std::vector<pdf::TextSearchResult> found = pdf::searchTextPage(*page, query, options);
         for (const pdf::TextSearchResult& result : found) {
             fresh.push_back(Match{pageId, result.startIndex, result.count});
         }
+        if (fresh.empty()) continue;
 
-        // Publish incrementally. The callback is copied under the mutex and
-        // fired outside it: after a generation check passes under the mutex,
-        // the destructor cannot proceed until the walker releases it, so the
-        // copy is safe to call.
-        std::function<void()> notify;
+        // Publish incrementally, re-checking the token under the mutex so a
+        // start()/cancel() that raced this page can never see stale matches.
         {
             std::lock_guard<std::mutex> lock(mutex_);
-            if (generation_.load(std::memory_order_acquire) != generation) {
-                walkerExit();
-                return;
-            }
+            if (stale()) return;
             matches_.insert(matches_.end(), fresh.begin(), fresh.end());
-            fresh.clear();
-            notify = onResultsChanged_;
         }
-        if (notify) notify();
+        fresh.clear();
+        requestNotify();
     }
-    // Walk finished.
-    std::function<void()> notify;
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        if (generation_.load(std::memory_order_acquire) == generation) {
-            generation_.store(0, std::memory_order_release);
-            notify = onResultsChanged_;
-        }
+        if (stale()) return;
+        searching_ = false;
     }
-    walkerExit();
-    if (notify) notify();
+    requestNotify();
+}
+
+void TextSearchController::requestNotify() {
+    if (dispatcher_ == nullptr) return; // tests without a main thread: poll
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (notifyQueued_) return; // coalesced into the pending notification
+        notifyQueued_ = true;
+    }
+    // The posted task holds the liveness flag, never the object: after
+    // destruction it is a no-op. It runs on the main thread, where the
+    // destructor also runs, so the check cannot race the teardown.
+    dispatcher_->post([this, alive = alive_] {
+        if (!alive->load(std::memory_order_acquire)) return;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            notifyQueued_ = false;
+        }
+        notifyNow();
+    });
+}
+
+void TextSearchController::notifyNow() {
+    std::function<void()> callback;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        callback = onResultsChanged_;
+    }
+    if (callback) callback(); // outside the lock: re-entrancy is allowed
 }
 
 std::vector<TextSearchController::Match> TextSearchController::matches() const {
@@ -123,25 +161,37 @@ std::vector<TextSearchController::Match> TextSearchController::matches() const {
     return matches_;
 }
 
+std::size_t TextSearchController::matchCount() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return matches_.size();
+}
+
+std::optional<std::size_t> TextSearchController::currentIndex() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return currentIndex_;
+}
+
 void TextSearchController::next() { stepActive(+1); }
 void TextSearchController::previous() { stepActive(-1); }
 
 void TextSearchController::stepActive(int delta) {
-    std::lock_guard<std::mutex> lock(mutex_);
-    if (matches_.empty()) {
-        currentIndex_.reset();
-        return;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (matches_.empty()) {
+            currentIndex_.reset();
+        } else {
+            const std::size_t count = matches_.size();
+            if (!currentIndex_.has_value() || *currentIndex_ >= count) {
+                currentIndex_ = delta > 0 ? std::size_t{0} : count - 1;
+            } else {
+                const long long next = (static_cast<long long>(*currentIndex_) + delta +
+                                        static_cast<long long>(count)) %
+                                       static_cast<long long>(count);
+                currentIndex_ = static_cast<std::size_t>(next);
+            }
+        }
     }
-    const std::size_t count = matches_.size();
-    if (!currentIndex_.has_value()) {
-        currentIndex_ = delta > 0 ? std::optional<std::size_t>{0} : std::optional<std::size_t>{count - 1};
-    } else {
-        const long long next =
-            (static_cast<long long>(*currentIndex_) + delta + static_cast<long long>(count)) %
-            static_cast<long long>(count);
-        currentIndex_ = static_cast<std::size_t>(next);
-    }
-    if (onResultsChanged_) onResultsChanged_();
+    notifyNow();
 }
 
 void TextSearchController::setCurrentIndex(std::optional<std::size_t> index) {
@@ -153,11 +203,7 @@ void TextSearchController::setCurrentIndex(std::optional<std::size_t> index) {
             currentIndex_.reset();
         }
     }
-    if (onResultsChanged_) onResultsChanged_();
-}
-
-void TextSearchController::fireChanged() {
-    if (onResultsChanged_) onResultsChanged_();
+    notifyNow();
 }
 
 void TextSearchController::setOnResultsChanged(std::function<void()> onResultsChanged) {

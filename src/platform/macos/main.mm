@@ -11,6 +11,7 @@
 
 #import <AppKit/AppKit.h>
 
+#include <functional>
 #include <memory>
 #include <utility>
 
@@ -31,13 +32,30 @@
 }
 @end
 
-@interface RivetAppDelegate : NSObject <NSApplicationDelegate>
+@interface RivetAppDelegate : NSObject <NSApplicationDelegate> {
+@public
+    // Destroys the shell. -[NSApplication terminate:] never returns: after
+    // applicationWillTerminate: it calls exit(), which runs static
+    // destructors (including PDFium's library teardown) WITHOUT unwinding
+    // main()'s stack. The shell - and with it every document session, the
+    // worker pool and in-flight backend work - must therefore be torn down
+    // here, deterministically, before exit() starts.
+    std::function<void()> teardown;
+}
 @property(nonatomic, strong) NSWindow* window; // keeps the window alive
 @end
 
 @implementation RivetAppDelegate
 - (BOOL)applicationShouldTerminateAfterLastWindowClosed:(NSApplication*)application {
     return YES;
+}
+
+- (void)applicationWillTerminate:(NSNotification*)notification {
+    if (teardown) {
+        auto run = std::move(teardown);
+        teardown = nullptr;
+        run();
+    }
 }
 @end
 
@@ -115,6 +133,15 @@ int main(int argc, char** argv) {
             return shellPtr->handleKeyEvent(event);
         }];
         bridge->shell = shell.get();
+        appDelegate->teardown = [&shell, bridge, contentView] {
+            // Detach every borrower of the widget tree first, then destroy
+            // the shell (workspace shutdown waits for background opens, the
+            // sessions drain their worker streams, the scheduler joins).
+            bridge->shell = nullptr;
+            [contentView setKeyHandler:nullptr];
+            [contentView setRootWidget:nullptr];
+            shell.reset();
+        };
 
         [window makeKeyAndOrderFront:nil];
 
@@ -134,10 +161,13 @@ int main(int argc, char** argv) {
         }
         [NSApp run];
 
-        // The shell must outlive the view/run loop; tear it down only after
-        // -run returns (the window may already be gone, so nothing touches
-        // the widget tree afterwards).
-        shell.reset();
+        // Reached only if the run loop is stopped without terminate: (e.g.
+        // -[NSApp stop:]). Same teardown as applicationWillTerminate:.
+        if (appDelegate->teardown) {
+            auto run = std::move(appDelegate->teardown);
+            appDelegate->teardown = nullptr;
+            run();
+        }
     }
     return 0;
 }

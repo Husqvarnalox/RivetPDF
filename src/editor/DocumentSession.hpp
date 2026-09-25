@@ -71,6 +71,9 @@ public:
     // Asserts index < pageCount.
     core::PageId pageId(std::size_t index) const;
 
+    // The PageIds in reading order (a copy: safe to hand to worker tasks).
+    std::vector<core::PageId> pageOrder() const;
+
     // Display size (post-rotation) of the page. Asserts index < pageCount.
     core::Size pageSizePoints(std::size_t index) const;
 

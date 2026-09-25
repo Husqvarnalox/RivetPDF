@@ -117,9 +117,7 @@ private:
 
     // Text interaction (implemented over the active Ready tab).
     DocumentTab* readyActiveTab();
-    // Selection as UTF-8 text (line breaks preserved; empty when nothing is
-    // selected or the text pages are not loaded).
-    std::string selectedText() const;
+    // Asynchronous, complete copy of the active tab's selection.
     void copySelection();
     // Search bar lifecycle + UI updates.
     void setSearchVisible(bool visible);

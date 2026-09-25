@@ -2,6 +2,8 @@ add_executable(rivet_editor_tests
     TestSelectionModel.cpp
     TestTextPageCache.cpp
     TestTextPipeline.cpp
+    TestSearchConcurrency.cpp
+    TestSelectionText.cpp
     TestCommandStack.cpp
     TestDocumentRenderer.cpp
     TestDocumentSession.cpp

@@ -8,11 +8,12 @@
 namespace rivet::editor {
 
 LinkService::LinkService(DocumentSession& session)
-    : session_(session), executor_(session.scheduler()) {}
+    : session_(session), dispatcher_(session.mainDispatcher()), executor_(session.scheduler()) {}
 
 LinkService::~LinkService() {
+    alive_->store(false, std::memory_order_release);
     executor_.cancelPending();
-    // executor_ destruction waits for the in-flight job.
+    executor_.waitUntilIdle();
 }
 
 std::vector<pdf::PdfPageLink> LinkService::cachedLinks(core::PageId pageId) const {
@@ -61,8 +62,7 @@ void LinkService::scheduleLoad(core::PageId pageId) {
     // Capture by value (see TextService::scheduleExtraction for the rationale).
     pdf::PdfDocument& document = session_.document();
     const std::size_t pageIndex = session_.pageIndexFor(pageId);
-    core::IMainThreadDispatcher* dispatcher = session_.mainDispatcher();
-    executor_.post([this, pageId, pageIndex, &document, dispatcher] {
+    executor_.post([this, pageId, pageIndex, &document] {
         std::vector<LinksCallback> callbacks;
         {
             std::lock_guard<std::mutex> lock(mutex_);
@@ -79,8 +79,9 @@ void LinkService::scheduleLoad(core::PageId pageId) {
         }
 
         if (callbacks.empty()) return;
-        if (dispatcher != nullptr) {
-            dispatcher->post([callbacks = std::move(callbacks), links]() mutable {
+        if (dispatcher_ != nullptr) {
+            dispatcher_->post([alive = alive_, callbacks = std::move(callbacks), links]() mutable {
+                if (!alive->load(std::memory_order_acquire)) return;
                 for (auto& callback : callbacks) callback(links);
             });
         } else {
@@ -96,6 +97,33 @@ std::vector<pdf::PdfPageLink> LinkService::linksNow(core::PageId pageId) {
     auto links = session_.document().pageLinks(pageIndex).value_or(std::vector<pdf::PdfPageLink>{});
     put(pageId, links);
     return links;
+}
+
+LinkService::Outline LinkService::cachedOutline() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return outline_;
+}
+
+void LinkService::requestOutline(std::function<void(Outline)> onDone) {
+    if (!onDone) return;
+    pdf::PdfDocument& document = session_.document();
+    executor_.post([this, &document, onDone = std::move(onDone)]() mutable {
+        Outline outline = cachedOutline();
+        if (outline == nullptr) {
+            auto loaded = document.outline();
+            outline = std::make_shared<const std::optional<pdf::PdfOutlineNode>>(
+                loaded.has_value() ? std::move(*loaded) : std::nullopt);
+            std::lock_guard<std::mutex> lock(mutex_);
+            outline_ = outline;
+        }
+        if (dispatcher_ == nullptr) {
+            onDone(std::move(outline));
+            return;
+        }
+        dispatcher_->post([alive = alive_, onDone = std::move(onDone), outline]() mutable {
+            if (alive->load(std::memory_order_acquire)) onDone(std::move(outline));
+        });
+    });
 }
 
 } // namespace rivet::editor

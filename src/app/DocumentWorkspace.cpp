@@ -4,6 +4,8 @@
 #include "core/Log.hpp"
 
 #include <algorithm>
+#include <optional>
+#include <string>
 #include <utility>
 
 namespace rivet::app {
@@ -16,12 +18,22 @@ std::filesystem::path dedupKeyForPath(const std::filesystem::path& path) {
     return (ec ? path : absolute).lexically_normal();
 }
 
-DocumentTab::DocumentTab(std::filesystem::path path, std::string title)
-    : path_(std::move(path)), title_(std::move(title)) {
+DocumentTab::DocumentTab(TabId id, std::filesystem::path path, std::string title)
+    : id_(id), path_(std::move(path)), title_(std::move(title)) {
     dedupKey_ = dedupKeyForPath(path_);
 }
 
+DocumentTab::~DocumentTab() { releaseSession(); }
+
+void DocumentTab::releaseSession() {
+    // The search controller references the session (and its text service),
+    // so it dies first; its destructor drains its walker stream.
+    search_.reset();
+    session_.reset();
+}
+
 void DocumentTab::attachSession(std::unique_ptr<editor::DocumentSession> session) {
+    releaseSession();
     session_ = std::move(session);
     search_ = std::make_unique<editor::TextSearchController>(*session_, session_->textService());
     state_ = State::Ready;
@@ -29,11 +41,15 @@ void DocumentTab::attachSession(std::unique_ptr<editor::DocumentSession> session
 }
 
 void DocumentTab::setError(std::string text) {
-    // The search controller references the session, so it dies first.
-    search_.reset();
-    session_.reset();
+    releaseSession();
     state_ = State::Error;
     errorText_ = std::move(text);
+}
+
+void DocumentTab::markNeedsPassword(std::string message) {
+    releaseSession();
+    state_ = State::NeedsPassword;
+    errorText_ = std::move(message);
 }
 
 DocumentWorkspace::DocumentWorkspace(pdf::PdfEngine& engine, core::TaskScheduler& scheduler,
@@ -44,11 +60,24 @@ DocumentWorkspace::DocumentWorkspace(pdf::PdfEngine& engine, core::TaskScheduler
       workspaceAlive_(std::make_shared<std::atomic<bool>>(true)) {}
 
 DocumentWorkspace::~DocumentWorkspace() {
-    // Completions dispatched after this point see the flag and drop their
-    // session instead of touching the dead workspace. The sessions themselves
-    // die with the tabs below (destroying a session waits for its executor
-    // stream, which is fine: the shared scheduler is still alive here).
+    shutdown();
+    // Tabs (and their sessions) die with tabs_ below; destroying a session
+    // waits for its executor streams while the shared scheduler is alive.
+}
+
+void DocumentWorkspace::shutdown() {
+    // 1. Deliveries still queued on the dispatcher become no-ops.
     workspaceAlive_->store(false, std::memory_order_release);
+    // 2. No new opens; wait until every open task left the engine. A task
+    //    that completes after this point destroys its session on the worker
+    //    before releasing its token (engine and scheduler still alive).
+    openScope_.closeAndWait();
+    // 3. Results that were produced but not yet delivered: destroy their
+    //    sessions now, deterministically, while everything they reference is
+    //    alive (the worker wrote them before releasing its token, which the
+    //    wait above synchronizes with).
+    for (const std::shared_ptr<OpenOperation>& operation : inFlight_) operation->result.reset();
+    inFlight_.clear();
 }
 
 std::size_t DocumentWorkspace::indexOfPath(const std::filesystem::path& path) const {
@@ -67,11 +96,11 @@ void DocumentWorkspace::openDocument(const std::filesystem::path& path) {
         return;
     }
 
-    auto tab = std::make_unique<DocumentTab>(path, path.filename().string());
-    DocumentTab* tabPtr = tab.get();
+    auto tab = std::make_unique<DocumentTab>(tabIds_.next(), path, path.filename().string());
+    DocumentTab& tabRef = *tab;
     tabs_.push_back(std::move(tab));
     activate(tabs_.size() - 1);
-    startOpen(tabs_.size() - 1, tabPtr, {}, false);
+    startOpen(tabRef, {}, false);
     fireTabsChanged();
 }
 
@@ -79,77 +108,93 @@ void DocumentWorkspace::retryWithPassword(std::size_t tabIndex, std::string pass
     DocumentTab* retryTab = tab(tabIndex);
     if (retryTab == nullptr || retryTab->state() != DocumentTab::State::NeedsPassword) return;
     retryTab->beginPasswordRetry(); // -> Loading
-    startOpen(tabIndex, retryTab, std::move(password), /*isRetry=*/true);
+    startOpen(*retryTab, std::move(password), /*isRetry=*/true);
     fireTabsChanged();
 }
 
-void DocumentWorkspace::startOpen(std::size_t tabIndex, DocumentTab* tab, std::string password,
-                                  bool isRetry) {
-    (void)tabIndex;
-    // Background open. The continuation carries the outcome across the
-    // thread boundary; the main-thread completion re-validates everything
-    // (workspace alive, tab still open) before touching it. The engine and
-    // scheduler references are shell-owned and outlive this task (the shell
-    // destroys the workspace before the engine and scheduler). The
-    // completion is dispatched by the WORKER after create() finishes, so a
-    // completion never runs ahead of its result. The password lives only in
-    // this task and the continuation - never stored, never logged.
-    auto continuation = std::make_shared<OpenContinuation>();
-    continuation->workspaceAlive = workspaceAlive_;
-    continuation->tab = tab;
-    continuation->isRetry = isRetry;
-    pdf::PdfEngine& engine = engine_;
-    core::TaskScheduler& scheduler = scheduler_;
-    core::IMainThreadDispatcher* dispatcher = mainDispatcher_;
-    const std::filesystem::path openPath = tab->path();
-    DocumentWorkspace* self = this;
-    scheduler.post([&engine, &scheduler, dispatcher, openPath, continuation, self,
-                    password = std::move(password)]() mutable {
-        continuation->session =
-            editor::DocumentSession::create(engine, scheduler, dispatcher, openPath, password);
-        // Drop the password before the completion lambda captures anything.
-        password.clear();
-        password.shrink_to_fit();
+void DocumentWorkspace::startOpen(DocumentTab& tab, std::string password, bool isRetry) {
+    auto operation = std::make_shared<OpenOperation>();
+    operation->tab = tab.id();
+    operation->request = tab.beginOpenRequest();
+    operation->isRetry = isRetry;
+
+    std::optional<core::AsyncScope::Token> entered = openScope_.enter();
+    if (!entered.has_value() || mainDispatcher_ == nullptr) {
+        // Shut down (or misconfigured: completions need the main thread).
+        tab.setError(mainDispatcher_ == nullptr ? "no main-thread dispatcher configured"
+                                                : "the workspace is shutting down");
+        return;
+    }
+    // std::function needs a copyable callable: share the move-only token.
+    auto token = std::make_shared<core::AsyncScope::Token>(std::move(*entered));
+    inFlight_.push_back(operation);
+
+    // The task borrows engine_/scheduler_ by reference: safe because the
+    // workspace's shutdown() waits for this task's token before the shell
+    // destroys them. The password lives only in this task (never stored,
+    // never logged) and is wiped before delivery.
+    scheduler_.post([this, operation, token, openPath = tab.path(), alive = workspaceAlive_,
+                     dispatcher = mainDispatcher_, password = std::move(password)]() mutable {
+        if (!token->cancelled()) {
+            auto created = editor::DocumentSession::create(engine_, scheduler_, dispatcher,
+                                                           openPath, password);
+            if (token->cancelled()) {
+                // Nobody will take the session: destroy it here, while the
+                // engine and scheduler are guaranteed alive (token held).
+                created = std::unexpected(core::Error{core::ErrorCode::Cancelled,
+                                                      "open cancelled", "app"});
+            }
+            operation->result = std::move(created);
+        }
+        std::fill(password.begin(), password.end(), '\0');
         std::string().swap(password);
-        dispatcher->post([self, continuation] {
-            if (!continuation->workspaceAlive->load(std::memory_order_acquire)) return;
-            self->handleOpenCompleted(continuation);
+        // Posted delivery holds the operation and a liveness flag only; the
+        // workspace itself is touched after the flag check on the main
+        // thread, where shutdown() also runs.
+        dispatcher->post([this, operation, alive] {
+            if (!alive->load(std::memory_order_acquire)) return;
+            handleOpenCompleted(operation);
         });
+        token.reset(); // leave the scope last: everything above is done
     });
 }
 
-void DocumentWorkspace::handleOpenCompleted(std::shared_ptr<OpenContinuation> continuation) {
-    DocumentTab* tab = continuation->tab;
-    const bool stillOpen =
-        std::any_of(tabs_.begin(), tabs_.end(), [tab](const auto& owned) { return owned.get() == tab; });
-    if (!stillOpen) {
-        // Tab was closed while loading: drop the session (its destructor
-        // waits for the executor stream; safe on the main thread).
+void DocumentWorkspace::handleOpenCompleted(const std::shared_ptr<OpenOperation>& operation) {
+    // Take ownership of the result out of the in-flight list first; whatever
+    // happens next, this operation is finished.
+    std::erase(inFlight_, operation);
+    if (!operation->result.has_value()) return; // cancelled before running
+
+    DocumentTab* tab = tabById(operation->tab);
+    if (tab == nullptr || tab->openRequest() != operation->request ||
+        tab->state() != DocumentTab::State::Loading) {
+        // The tab was closed, or a newer request superseded this one: drop
+        // the result (the session dies here, on the main thread).
         return;
     }
 
-    if (continuation->session.has_value()) {
-        tab->attachSession(std::move(*continuation->session));
+    core::Result<std::unique_ptr<editor::DocumentSession>>& session = *operation->result;
+    if (session.has_value()) {
+        tab->attachSession(std::move(*session));
         core::log::info(std::string("document opened: ") + std::to_string(tab->session()->pageCount()) +
                         " pages");
-    } else if (continuation->session.error().code == core::ErrorCode::PasswordRequired) {
+    } else if (session.error().code == core::ErrorCode::PasswordRequired) {
         // Prompt instead of failing. A retry that fails again re-enters this
         // state (the UI keeps the field focused). No password is stored or
         // logged.
         core::log::warning("document open requires a password");
-        tab->markNeedsPassword(continuation->session.error().message);
+        tab->markNeedsPassword(session.error().message);
     } else {
-        core::log::warning("document open failed: " + core::describe(continuation->session.error()));
+        core::log::warning("document open failed: " + core::describe(session.error()));
         // Never include document contents in user text; describe() is a
         // sanitized error string.
-        tab->setError(core::describe(continuation->session.error()));
+        tab->setError(core::describe(session.error()));
     }
     // The shell must rebind its viewer widgets when the active tab's content
     // changed (Loading -> Ready/Error), not just on tab switches.
-    const std::size_t activeNow =
-        (activeIndex_ != kNoTab && tabs_[activeIndex_].get() == tab) ? activeIndex_ : kNoTab;
+    const bool isActive = activeIndex_ != kNoTab && tabs_[activeIndex_]->id() == operation->tab;
     fireTabsChanged();
-    if (activeNow != kNoTab && onActiveTabChanged_) onActiveTabChanged_();
+    if (isActive && onActiveTabChanged_) onActiveTabChanged_();
 }
 
 void DocumentWorkspace::closeTab(std::size_t index) {
@@ -197,6 +242,18 @@ DocumentTab* DocumentWorkspace::tab(std::size_t index) {
 }
 
 DocumentTab* DocumentWorkspace::activeTab() { return tab(activeIndex_); }
+
+DocumentTab* DocumentWorkspace::tabById(TabId id) {
+    const std::size_t index = indexOfTab(id);
+    return index == kNoTab ? nullptr : tabs_[index].get();
+}
+
+std::size_t DocumentWorkspace::indexOfTab(TabId id) const {
+    for (std::size_t i = 0; i < tabs_.size(); ++i) {
+        if (tabs_[i]->id() == id) return i;
+    }
+    return kNoTab;
+}
 
 void DocumentWorkspace::setOnTabsChanged(std::function<void()> onTabsChanged) {
     onTabsChanged_ = std::move(onTabsChanged);

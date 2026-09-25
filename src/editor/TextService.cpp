@@ -3,19 +3,32 @@
 
 #include "editor/DocumentSession.hpp"
 
+#include <string>
 #include <utility>
 
 namespace rivet::editor {
 
 TextService::TextService(DocumentSession& session)
-    : session_(session), executor_(session.scheduler()) {}
+    : session_(session), dispatcher_(session.mainDispatcher()), executor_(session.scheduler()) {}
 
 TextService::~TextService() {
-    // Queued extraction jobs are cancelled (their callbacks dropped without
-    // firing); the in-flight job runs to completion against the document,
-    // which is still alive in the session's destruction order.
+    // Deliveries already posted become no-ops; a running range job notices
+    // the flag between pages. Queued jobs are cancelled (their callbacks
+    // dropped without firing); the in-flight job finishes against the
+    // document, which is still alive in the session's destruction order.
+    alive_->store(false, std::memory_order_release);
     executor_.cancelPending();
-    // executor_ (member) destruction waits for the in-flight job.
+    executor_.waitUntilIdle();
+}
+
+void TextService::deliver(std::function<void()> task) {
+    if (dispatcher_ == nullptr) {
+        task();
+        return;
+    }
+    dispatcher_->post([alive = alive_, task = std::move(task)] {
+        if (alive->load(std::memory_order_acquire)) task();
+    });
 }
 
 std::shared_ptr<const pdf::PdfTextPage> TextService::cachedTextPage(core::PageId pageId) const {
@@ -55,8 +68,7 @@ void TextService::scheduleExtraction(core::PageId pageId) {
     pdf::PdfDocument& document = session_.document();
     const std::size_t pageIndex = session_.pageIndexFor(pageId);
     const std::uint64_t revision = session_.revision();
-    core::IMainThreadDispatcher* dispatcher = session_.mainDispatcher();
-    executor_.post([this, pageId, pageIndex, revision, &document, dispatcher] {
+    executor_.post([this, pageId, pageIndex, revision, &document] {
         std::vector<TextCallback> callbacks;
         {
             std::lock_guard<std::mutex> lock(mutex_);
@@ -76,13 +88,59 @@ void TextService::scheduleExtraction(core::PageId pageId) {
         }
 
         if (callbacks.empty()) return;
-        if (dispatcher != nullptr) {
-            dispatcher->post([callbacks = std::move(callbacks), page]() mutable {
-                for (auto& callback : callbacks) callback(page);
-            });
-        } else {
+        deliver([callbacks = std::move(callbacks), page]() mutable {
             for (auto& callback : callbacks) callback(page);
+        });
+    });
+}
+
+void TextService::requestRangesText(std::vector<TextRange> ranges, RangesTextCallback onDone) {
+    if (!onDone) return;
+    // Resolve everything the job needs on the calling (main) thread; the job
+    // never reads session state.
+    struct Resolved {
+        TextRange range;
+        std::size_t pageIndex = 0;
+        std::size_t readingPosition = 0;
+    };
+    std::vector<Resolved> resolved;
+    resolved.reserve(ranges.size());
+    for (const TextRange& range : ranges) {
+        const std::size_t index = session_.pageIndexFor(range.page);
+        resolved.push_back(Resolved{range, index, index});
+    }
+    pdf::PdfDocument& document = session_.document();
+    const std::uint64_t revision = session_.revision();
+    executor_.post([this, resolved = std::move(resolved), &document, revision,
+                    onDone = std::move(onDone), alive = alive_]() mutable {
+        std::string out;
+        core::Result<std::string> result = std::string{};
+        for (std::size_t i = 0; i < resolved.size(); ++i) {
+            if (!alive->load(std::memory_order_acquire)) return; // owner is going away
+            const Resolved& item = resolved[i];
+            std::shared_ptr<const pdf::PdfTextPage> page = cache_.get(item.range.page, revision);
+            if (page == nullptr && item.pageIndex != DocumentSession::kInvalidPage) {
+                auto extracted = document.textPage(item.pageIndex);
+                if (extracted.has_value() && *extracted != nullptr) {
+                    page = std::move(*extracted);
+                    cache_.put(item.range.page, revision, page);
+                }
+            }
+            if (page == nullptr) {
+                const std::string where = item.readingPosition == DocumentSession::kInvalidPage
+                                              ? std::string("a page that is no longer in the document")
+                                              : "page " + std::to_string(item.readingPosition + 1);
+                result = std::unexpected(core::Error{core::ErrorCode::InvalidDocument,
+                                                     "could not read the text of " + where, "editor"});
+                break;
+            }
+            appendRangeText(*page, item.range.begin, item.range.end, out);
+            if (i + 1 < resolved.size()) out.push_back('\n'); // page break
         }
+        if (result.has_value()) result = std::move(out);
+        deliver([onDone = std::move(onDone), result = std::move(result)]() mutable {
+            onDone(std::move(result));
+        });
     });
 }
 

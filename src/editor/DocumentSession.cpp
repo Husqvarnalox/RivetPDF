@@ -120,6 +120,13 @@ core::PageId DocumentSession::pageId(std::size_t index) const {
     return pages_[index].id;
 }
 
+std::vector<core::PageId> DocumentSession::pageOrder() const {
+    std::vector<core::PageId> order;
+    order.reserve(pages_.size());
+    for (const PageMeta& page : pages_) order.push_back(page.id);
+    return order;
+}
+
 core::Size DocumentSession::pageSizePoints(std::size_t index) const {
     assert(index < pages_.size());
     return pages_[index].sizePoints;

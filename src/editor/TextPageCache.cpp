@@ -25,9 +25,9 @@ bool TextPageCache::put(core::PageId pageId, std::uint64_t revision,
                         std::shared_ptr<const pdf::PdfTextPage> page) {
     if (page == nullptr) return false;
     const std::size_t bytes = page->memoryBytes();
-    if (bytes > maxBytes_) return false;
 
     std::lock_guard<std::mutex> lock(mutex_);
+    if (bytes > maxBytes_) return false;
     const auto it = index_.find(pageId);
     if (it != index_.end()) {
         sizeBytes_ -= it->second->second.page->memoryBytes();

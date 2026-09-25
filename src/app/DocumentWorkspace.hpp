@@ -2,6 +2,8 @@
 #pragma once
 
 #include "core/Error.hpp"
+#include "core/StrongId.hpp"
+#include "core/async/AsyncScope.hpp"
 #include "core/async/IMainThreadDispatcher.hpp"
 #include "core/async/TaskScheduler.hpp"
 #include "editor/DocumentSession.hpp"
@@ -12,9 +14,11 @@
 
 #include <atomic>
 #include <cstddef>
+#include <cstdint>
 #include <filesystem>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -24,6 +28,13 @@ namespace rivet::app {
 // lexically-normalized. Symlinks are deliberately NOT resolved so
 // user-visible path semantics stay untouched.
 std::filesystem::path dedupKeyForPath(const std::filesystem::path& path);
+
+// Stable identity of one tab for its whole life. Minted by the workspace
+// from a monotonic counter and never reused, so asynchronous completions
+// can address "their" tab without relying on object addresses (a freed
+// tab's address may be reused by a later tab).
+struct TabIdTag;
+using TabId = core::StrongId<TabIdTag>;
 
 // One open document tab. A tab exists in Loading state while its document
 // opens on a background task, then becomes Ready (session attached) or Error
@@ -36,8 +47,13 @@ class DocumentTab {
 public:
     enum class State : std::uint8_t { Loading, Ready, Error, NeedsPassword };
 
-    DocumentTab(std::filesystem::path path, std::string title);
+    DocumentTab(TabId id, std::filesystem::path path, std::string title);
+    ~DocumentTab();
 
+    DocumentTab(const DocumentTab&) = delete;
+    DocumentTab& operator=(const DocumentTab&) = delete;
+
+    TabId id() const { return id_; }
     const std::filesystem::path& path() const { return path_; }
     // Normalized identity used for duplicate detection (never displayed).
     const std::filesystem::path& dedupKey() const { return dedupKey_; }
@@ -69,15 +85,22 @@ public:
     void attachSession(std::unique_ptr<editor::DocumentSession> session);
     void setError(std::string text);
     // Password-required outcome: the tab stays open and asks for a password.
-    void markNeedsPassword(std::string message) {
-        session_.reset();
-        state_ = State::NeedsPassword;
-        errorText_ = std::move(message);
-    }
+    void markNeedsPassword(std::string message);
     // Begin the password retry (state -> Loading). Workspace only.
     void beginPasswordRetry() { state_ = State::Loading; }
 
+    // Identity of the latest open request issued for this tab. A completion
+    // is applied only when it carries the tab's CURRENT request (a retry
+    // supersedes an earlier attempt). Workspace only.
+    std::uint64_t openRequest() const { return openRequest_; }
+    std::uint64_t beginOpenRequest() { return ++openRequest_; }
+
 private:
+    // Drops the session-dependent state in dependency order (search first).
+    void releaseSession();
+
+    TabId id_;
+    std::uint64_t openRequest_ = 0;
     std::filesystem::path path_;
     std::filesystem::path dedupKey_;
     std::string title_;
@@ -103,18 +126,25 @@ private:
 // symlinks are deliberately NOT resolved so user-visible path semantics stay
 // untouched.
 //
-// Cancellation and lifetime: closing a Loading tab removes it; the in-flight
-// background task cannot be interrupted (the open runs to completion inside
-// the PDF backend), but its completion handler re-checks tab existence on
-// the main thread and drops the result when the tab is gone. Completions
-// arriving after the workspace itself died are dropped via a shared alive
-// flag (the app-level open flow must never resurrect or leak a session into
-// a dead workspace).
+// Async identity: every open is addressed by (TabId, request token). TabIds
+// are never reused and each open/retry mints a new request token, so a stale
+// completion (tab closed meanwhile, or superseded by a password retry) can
+// never land in a different or newer tab - no address-based identity.
+//
+// Lifetime: background opens borrow the engine and the scheduler. They run
+// inside an AsyncScope; the destructor (and shutdown()) closes the scope and
+// WAITS until no open task is inside the engine anymore, so the borrowed
+// engine/scheduler (declared before the workspace by the shell) are
+// guaranteed to outlive every use. A task that finishes after cancellation
+// destroys its freshly created session on the worker, before releasing its
+// token. Results still queued on the dispatcher are owned by the workspace's
+// in-flight list and destroyed deterministically at shutdown; the posted
+// delivery itself only holds a liveness flag.
 //
 // Threading: everything is main-thread-only except the background open task,
-// which touches only shell-owned references (engine, scheduler, dispatcher)
-// and produces the session. DocumentSession::create performs its PDFium work
-// on the calling (worker) thread under the adapter's global call gate.
+// which touches only the borrowed engine/scheduler/dispatcher and produces
+// the session. DocumentSession::create performs its PDFium work on the
+// calling (worker) thread under the adapter's global call gate.
 class DocumentWorkspace {
 public:
     static constexpr std::size_t kNoTab = static_cast<std::size_t>(-1);
@@ -127,6 +157,12 @@ public:
 
     DocumentWorkspace(const DocumentWorkspace&) = delete;
     DocumentWorkspace& operator=(const DocumentWorkspace&) = delete;
+
+    // Refuses new opens, waits for in-flight open tasks to leave the engine
+    // and drops undelivered results. Idempotent; the destructor calls it.
+    // The owner calls it explicitly when the borrowed engine/scheduler are
+    // about to go away.
+    void shutdown();
 
     // Opens `path` in a new tab (or activates the existing tab for the same
     // file) and makes it active. Asynchronous: the Loading tab exists before
@@ -149,6 +185,9 @@ public:
     std::size_t tabCount() const { return tabs_.size(); }
     DocumentTab* tab(std::size_t index);
     DocumentTab* activeTab();
+    // Tab by stable identity (nullptr when closed) and its current index.
+    DocumentTab* tabById(TabId id);
+    std::size_t indexOfTab(TabId id) const;
     // Const reads for text assembly/highlight painting (shallow const: the
     // tabs are owned through unique_ptrs, the pointees stay mutable).
     DocumentTab* tab(std::size_t index) const { return const_cast<DocumentWorkspace*>(this)->tab(index); }
@@ -167,17 +206,17 @@ public:
     void setOnActiveTabChanged(std::function<void()> onActiveTabChanged);
 
 private:
-    // Shared between the background task and the main-thread completion so a
-    // completed open can be dropped safely after workspace death.
-    struct OpenContinuation {
-        std::shared_ptr<std::atomic<bool>> workspaceAlive;
-        DocumentTab* tab = nullptr; // raw; re-verified against tabs_ on delivery
-        core::Result<std::unique_ptr<editor::DocumentSession>> session;
+    // One background open. Filled by the worker, consumed on the main
+    // thread. Owned by inFlight_ until delivered or shut down.
+    struct OpenOperation {
+        TabId tab;
+        std::uint64_t request = 0;
         bool isRetry = false; // retry failures re-enter NeedsPassword
+        std::optional<core::Result<std::unique_ptr<editor::DocumentSession>>> result;
     };
 
-    void handleOpenCompleted(std::shared_ptr<OpenContinuation> continuation);
-    void startOpen(std::size_t tabIndex, DocumentTab* tab, std::string password, bool isRetry);
+    void handleOpenCompleted(const std::shared_ptr<OpenOperation>& operation);
+    void startOpen(DocumentTab& tab, std::string password, bool isRetry);
     void activate(std::size_t index);
     void fireTabsChanged();
 
@@ -187,11 +226,16 @@ private:
 
     std::vector<std::unique_ptr<DocumentTab>> tabs_;
     std::size_t activeIndex_ = kNoTab;
+    core::IdGenerator<TabIdTag> tabIds_;
     std::function<void()> onTabsChanged_;
     std::function<void()> onActiveTabChanged_;
-    // Set false by the destructor; completions arriving afterwards drop their
-    // session instead of touching the dead workspace.
+
+    // Opens whose result has not been applied yet (main thread).
+    std::vector<std::shared_ptr<OpenOperation>> inFlight_;
+    // Set false by shutdown(); posted deliveries check it on the main thread.
     std::shared_ptr<std::atomic<bool>> workspaceAlive_;
+    // Fence for the worker side of every open (see class comment).
+    core::AsyncScope openScope_;
 };
 
 } // namespace rivet::app
