@@ -25,6 +25,13 @@ enum class ErrorCode : std::uint8_t {
     // rejected). Distinct from InvalidDocument so the open flow can prompt
     // instead of failing.
     PasswordRequired,
+    // The operating system refused access: missing permission, a read-only
+    // destination file or a read-only volume. The message says which.
+    PermissionDenied,
+    // No space left on the volume (or the user's quota is exhausted).
+    DiskFull,
+    // The target already exists and the caller asked not to replace it.
+    AlreadyExists,
 };
 
 struct Error {

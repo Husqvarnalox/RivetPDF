@@ -3,6 +3,7 @@ add_library(rivet_core STATIC
     Error.cpp
     Log.cpp
     Time.cpp
+    io/AtomicFileWriter.cpp
 )
 
 add_subdirectory(async)

@@ -15,6 +15,9 @@ std::string_view toString(ErrorCode code) {
         case ErrorCode::Cancelled: return "Cancelled";
         case ErrorCode::Internal: return "Internal";
         case ErrorCode::PasswordRequired: return "PasswordRequired";
+        case ErrorCode::PermissionDenied: return "PermissionDenied";
+        case ErrorCode::DiskFull: return "DiskFull";
+        case ErrorCode::AlreadyExists: return "AlreadyExists";
     }
     return "Unknown";
 }

@@ -1,4 +1,5 @@
 add_executable(rivet_core_tests
+    TestAtomicFileWriter.cpp
     TestBitmap.cpp
     TestCheckedArithmetic.cpp
     TestError.cpp
