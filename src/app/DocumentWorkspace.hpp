@@ -176,7 +176,8 @@ public:
 
     // Closes the tab (cancelling a pending open for it). Closing the active
     // tab activates the nearest remaining tab; closing the last tab leaves
-    // the empty state.
+    // the empty state. The closed tab is destroyed only after the hooks
+    // have fired, so the host can unbind views that still reference it.
     void closeTab(std::size_t index);
     void closeActiveTab();
 

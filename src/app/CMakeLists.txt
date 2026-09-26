@@ -1,6 +1,11 @@
 add_library(rivet_app STATIC
     DocumentWorkspace.cpp
+    PasswordPromptController.cpp
+    SearchBarController.cpp
     ShellController.cpp
+    SidebarController.cpp
+    StatusBarController.cpp
+    TextInteractionController.cpp
     TextLabel.cpp
 )
 

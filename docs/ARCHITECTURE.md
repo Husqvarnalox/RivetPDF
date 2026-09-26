@@ -140,7 +140,17 @@ A small, Rivet-owned retained-mode widget system: `Widget`, `Container`, `Button
 
 ### `rivet_app` (`src/app/`)
 
-Application shell wiring: `DocumentWorkspace`/`DocumentTab` (multi-tab workspace, asynchronous open with Loading/Ready/Error/NeedsPassword states, per-tab `ViewerState` + selection + search), the `ShellController` composition root (tab strip, toolbar, sidebar with Pages/Outline modes, viewport, search bar, password overlay, status bar), keyboard shortcuts, and the text-interaction bridge. Composes `rivet_ui` widgets with `rivet_editor` services.
+Application shell wiring: `DocumentWorkspace`/`DocumentTab` (multi-tab workspace, asynchronous open with Loading/Ready/Error/NeedsPassword states, per-tab `ViewerState` + selection + search) and the `ShellController` composition root. Composes `rivet_ui` widgets with `rivet_editor` services.
+
+`ShellController` owns the scheduler, engine, workspace and widget tree; it builds the tab strip, toolbar, viewport and loading overlay, runs the layout, owns keyboard focus and key routing (focused widget → Escape priorities → shortcuts → viewport), and rebinds everything when the active tab changes. It also handles tabs, window title, presentation mode, open and print. Feature logic lives in focused controllers that share one `ShellContext` (workspace, platform services, viewport, and status/focus/relayout sinks back into the shell):
+
+- `TextInteractionController` — the viewport's `IViewerTextBridge` (text hit testing, selection, selection/search highlight rects, link hit testing), asynchronous copy via `TextService::requestRangesText`, internal link navigation and the external-URL policy.
+- `SearchBarController` — the find bar; drives the active tab's `TextSearchController`. Result notifications from background tabs are ignored; switching tabs closes the bar.
+- `SidebarController` — Pages (thumbnails) / Outline modes. The outline loads asynchronously via `LinkService::requestOutline` and is rebuilt only if the same session is still active. Expansion state is per document.
+- `PasswordPromptController` — the masked prompt for NeedsPassword tabs; the field is cleared before `retryWithPassword`.
+- `StatusBarController` — the status message and the "Page [field] / N" indicator with strict page-number parsing.
+
+Controllers are main-thread only and every feature no-ops when no Ready tab is active. The shell constructs them after the members they reference and destroys them first (reverse declaration order). `DocumentWorkspace::closeTab` keeps the closed tab alive until its host hooks have run, so bound views can unbind from a live session.
 
 ---
 

@@ -199,6 +199,12 @@ void DocumentWorkspace::handleOpenCompleted(const std::shared_ptr<OpenOperation>
 
 void DocumentWorkspace::closeTab(std::size_t index) {
     if (index >= tabs_.size()) return;
+    // The closed tab (and its session) stays alive until the host hooks
+    // below have run: the host still has views bound to it (viewport,
+    // thumbnails) and unbinds them from onActiveTabChanged. Destroying the
+    // session first would leave those views cancelling work on a freed
+    // renderer.
+    const std::unique_ptr<DocumentTab> closed = std::move(tabs_[index]);
     tabs_.erase(tabs_.begin() + static_cast<std::ptrdiff_t>(index));
 
     if (tabs_.empty()) {

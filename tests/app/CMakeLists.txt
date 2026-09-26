@@ -1,5 +1,6 @@
 add_executable(rivet_app_tests
     TestDocumentWorkspace.cpp
+    TestShellWiring.cpp
     TestWorkspaceLifecycle.cpp
     TestUrlPolicy.cpp
 )
