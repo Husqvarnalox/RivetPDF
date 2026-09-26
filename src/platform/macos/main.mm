@@ -1,7 +1,10 @@
+// SPDX-License-Identifier: MPL-2.0
+#import "MacosAlertService.h"
 #import "MacosClipboard.h"
 #import "MacosExternalUrlOpener.h"
 #import "MacosPrintService.h"
 #import "MacosFileDialog.h"
+#import "MacosLifecycle.h"
 #import "MacosMainThreadDispatcher.h"
 #import "RivetContentView.h"
 
@@ -41,13 +44,22 @@
     // worker pool and in-flight backend work - must therefore be torn down
     // here, deterministically, before exit() starts.
     std::function<void()> teardown;
+    // Quit interception (non-owning; main() keeps the hooks alive).
+    rivet::platform::LifecycleHooks* hooks;
 }
 @property(nonatomic, strong) NSWindow* window; // keeps the window alive
+// NSWindow.delegate is weak: the app delegate owns the window delegate.
+@property(nonatomic, strong) RivetWindowDelegate* windowDelegate;
 @end
 
 @implementation RivetAppDelegate
 - (BOOL)applicationShouldTerminateAfterLastWindowClosed:(NSApplication*)application {
     return YES;
+}
+
+- (NSApplicationTerminateReply)applicationShouldTerminate:(NSApplication*)sender {
+    (void)sender;
+    return rivet::platform::macosApplicationShouldTerminate(hooks);
 }
 
 - (void)applicationWillTerminate:(NSNotification*)notification {
@@ -108,6 +120,14 @@ int main(int argc, char** argv) {
         const auto clipboard = std::make_unique<rivet::platform::MacosClipboard>();
         const auto urlOpener = std::make_unique<rivet::platform::MacosExternalUrlOpener>();
         const auto printService = std::make_unique<rivet::platform::MacosPrintService>();
+        const auto alertService = std::make_unique<rivet::platform::MacosAlertService>();
+        const auto lifecycle = std::make_unique<rivet::platform::LifecycleHooks>();
+
+        RivetWindowDelegate* windowDelegate = [[RivetWindowDelegate alloc] init];
+        windowDelegate->hooks = lifecycle.get();
+        appDelegate.windowDelegate = windowDelegate;
+        [window setDelegate:windowDelegate];
+        appDelegate->hooks = lifecycle.get();
 
         rivet::platform::ShellServices services;
         services.redrawSink = [contentView redrawSink];
@@ -116,6 +136,9 @@ int main(int argc, char** argv) {
         services.clipboard = clipboard.get();
         services.urlOpener = urlOpener.get();
         services.printService = printService.get();
+        services.saveDialog = fileDialog.get();
+        services.alerts = alertService.get();
+        services.lifecycle = lifecycle.get();
         NSWindow* __weak weakWindow = window;
         services.setWindowTitle = [weakWindow](const std::string& title) {
             // May be called from the main thread only (shell is main-thread
@@ -125,6 +148,11 @@ int main(int argc, char** argv) {
                 weakWindow.title = nsTitle;
             });
         };
+        services.setDocumentEdited = [weakWindow](bool edited) {
+            // Main thread only (shell contract); applied synchronously so the
+            // close-button dot is correct before any close/quit prompt.
+            [weakWindow setDocumentEdited:edited ? YES : NO];
+        };
 
         // The shell owns the widget tree; the view only borrows the root.
         auto shell = rivet::app::createShell(services);
@@ -133,11 +161,13 @@ int main(int argc, char** argv) {
             return shellPtr->handleKeyEvent(event);
         }];
         bridge->shell = shell.get();
-        appDelegate->teardown = [&shell, bridge, contentView] {
+        appDelegate->teardown = [&shell, bridge, contentView, hooks = lifecycle.get()] {
             // Detach every borrower of the widget tree first, then destroy
             // the shell (workspace shutdown waits for background opens, the
             // sessions drain their worker streams, the scheduler joins).
             bridge->shell = nullptr;
+            // Handlers may capture shell state: drop them before the shell.
+            hooks->clearHandlers();
             [contentView setKeyHandler:nullptr];
             [contentView setRootWidget:nullptr];
             shell.reset();
