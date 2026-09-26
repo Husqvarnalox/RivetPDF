@@ -8,7 +8,6 @@
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
-#include <iterator>
 #include <string>
 #include <vector>
 
@@ -63,9 +62,20 @@ void writeFile(const fs::path& path, const std::string& content) {
     out << content;
 }
 
+// Bulk reads via read()/gcount(): GCC 13 reports a false-positive
+// -Wnull-dereference inside <streambuf> for istreambuf_iterator / get().
+std::string readAll(std::istream& in) {
+    std::string out;
+    char buffer[4096];
+    while (in.read(buffer, sizeof buffer) || in.gcount() > 0) {
+        out.append(buffer, static_cast<std::size_t>(in.gcount()));
+    }
+    return out;
+}
+
 std::string readFile(const fs::path& path) {
     std::ifstream in(path, std::ios::binary);
-    return {std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
+    return readAll(in);
 }
 
 std::size_t entryCount(const fs::path& dir) {
@@ -372,7 +382,9 @@ RIVET_TEST(atomicWriterLargeStreamedWrite) {
     CHECK_EQ(fs::file_size(dest), std::uintmax_t{kChunk * kChunks});
     std::ifstream in(dest, std::ios::binary);
     in.seekg(static_cast<std::streamoff>(kChunk * 63));
-    CHECK_EQ(in.get(), 63);
+    char byte = 0;
+    in.read(&byte, 1);
+    CHECK_EQ(static_cast<int>(byte), 63);
     CHECK_EQ(entryCount(dir.path), std::size_t{1});
 }
 
@@ -400,8 +412,7 @@ RIVET_TEST(atomicWriterSourceReadThroughOpenFdSurvivesReplace) {
     std::ifstream source(dest, std::ios::binary); // retained handle
     CHECK(writeFileAtomically(dest, [&](IByteSink& sink) -> Status {
               // Stream from the retained source while writing its replacement.
-              std::string buffer((std::istreambuf_iterator<char>(source)),
-                                 std::istreambuf_iterator<char>());
+              std::string buffer = readAll(source);
               buffer += " + edits";
               return writeString(sink, buffer);
           }).has_value());
