@@ -370,7 +370,11 @@ Status AtomicFileWriter::commit() {
     if (destinationExisted_) {
         // Keep the original owner/group where permitted (e.g. saving a file
         // owned by another group member). Not permitted -> stays ours.
-        (void)::fchown(fd_, static_cast<uid_t>(ownerUid_), static_cast<gid_t>(ownerGid_));
+        // glibc marks fchown warn_unused_result; a (void) cast does not
+        // silence GCC, so consume the result explicitly.
+        if (::fchown(fd_, static_cast<uid_t>(ownerUid_), static_cast<gid_t>(ownerGid_)) != 0) {
+            // best effort: keep our ownership
+        }
     }
 
     if (const int fault = injected(options_, AtomicWriteFault::Sync); fault != 0) {
