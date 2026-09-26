@@ -17,6 +17,24 @@ core::DocumentId mintDocumentId() {
     return generator.next();
 }
 
+std::vector<std::string> readLabels(const pdf::PdfDocument& document, std::size_t pageCount) {
+    std::vector<std::string> labels;
+    labels.reserve(pageCount);
+    for (std::size_t index = 0; index < pageCount; ++index) {
+        // Optional metadata: a label failure never blocks the document.
+        labels.push_back(document.pageLabel(index).value_or(std::string{}));
+    }
+    return labels;
+}
+
+bool nearlyEqual(const pdf::PdfPageView& a, const pdf::PdfPageView& b) {
+    constexpr double kEps = 0.01;
+    const auto near = [](double x, double y) { return x - y <= kEps && y - x <= kEps; };
+    return a.rotation == b.rotation && near(a.cropBox.left, b.cropBox.left) &&
+           near(a.cropBox.bottom, b.cropBox.bottom) && near(a.cropBox.right, b.cropBox.right) &&
+           near(a.cropBox.top, b.cropBox.top);
+}
+
 } // namespace
 
 DocumentSession::DocumentSession(core::DocumentId id,
@@ -79,12 +97,7 @@ core::Result<std::unique_ptr<DocumentSession>> DocumentSession::create(
     if (!model.has_value()) {
         return std::unexpected(std::move(model).error());
     }
-    std::vector<std::string> labels;
-    labels.reserve(info.pageCount);
-    for (std::size_t index = 0; index < info.pageCount; ++index) {
-        // Optional metadata: a label failure never blocks the document.
-        labels.push_back(document->pageLabel(index).value_or(std::string{}));
-    }
+    std::vector<std::string> labels = readLabels(*document, info.pageCount);
 
     return std::unique_ptr<DocumentSession>(new DocumentSession(
         mintDocumentId(), path, info, std::move(labels), std::move(document), std::move(*model),
@@ -142,10 +155,83 @@ std::optional<PageDestination> DocumentSession::resolveLinkDestination(
 }
 
 core::Status DocumentSession::execute(std::unique_ptr<Command> command) {
+    if (editingLocked_) {
+        return std::unexpected(core::makeError(
+            core::ErrorCode::Unsupported,
+            editingLockReason_.empty() ? std::string("the document cannot be edited right now") : editingLockReason_,
+            "editor"));
+    }
     if (commands_.execute(std::move(command))) return core::ok();
     if (const auto& error = commands_.lastError(); error.has_value()) return std::unexpected(*error);
     return std::unexpected(core::makeError(core::ErrorCode::InvalidArgument, "the command could not be applied",
                                            "editor"));
+}
+
+void DocumentSession::setEditingLocked(bool locked, std::string reason) {
+    editingLocked_ = locked;
+    editingLockReason_ = locked ? std::move(reason) : std::string{};
+}
+
+core::Result<DocumentSession::RebaseTarget> DocumentSession::prepareRebase(
+    pdf::PdfEngine& engine, const std::filesystem::path& path, const pdf::PdfDocument& credentialsOf) {
+    auto opened = engine.reopenWithCredentialsOf(credentialsOf, path);
+    if (!opened.has_value()) return std::unexpected(std::move(opened).error());
+    RebaseTarget target;
+    target.document = std::move(*opened);
+    target.info = target.document->info();
+    auto pages = PageModel::describeAllPages(target.document);
+    if (!pages.has_value()) return std::unexpected(std::move(pages).error());
+    target.pages = std::move(*pages);
+    target.labels = readLabels(*target.document, target.info.pageCount);
+    return target;
+}
+
+core::Status DocumentSession::rebaseOnto(RebaseTarget target, std::optional<std::filesystem::path> newPath) {
+    const PageSnapshotPtr current = pageSnapshot(); // keep alive across the swap
+    if (target.document == nullptr || target.pages.size() != current->size() ||
+        target.info.pageCount != current->size()) {
+        return std::unexpected(core::makeError(core::ErrorCode::InvalidArgument,
+                                               "the saved file does not match the document's pages", "editor"));
+    }
+    std::vector<PageEntry> entries;
+    entries.reserve(current->size());
+    for (std::size_t index = 0; index < current->size(); ++index) {
+        const PageEntry& old = current->at(index);
+        PageSource& page = target.pages[index];
+        if (page.document != target.document || page.pageIndex != index) {
+            return std::unexpected(core::makeError(core::ErrorCode::InvalidArgument,
+                                                   "rebase pages must be the new document's pages in order",
+                                                   "editor"));
+        }
+        // Same view as presented (up to float noise): tiles/text keyed by
+        // (PageId, contentRevision) stay valid. Otherwise a fresh revision.
+        const std::uint64_t revision =
+            nearlyEqual(old.view, page.nativeView) ? old.contentRevision : model_->mintContentRevision();
+        entries.push_back(PageEntry{old.id, target.document, index, page.nativeView, revision, page.mediaBox,
+                                    page.nativeView});
+    }
+
+    // Base-level state first: the page-model observer (fired by the model
+    // rebase below) may read labels/info/document.
+    std::shared_ptr<pdf::PdfDocument> previousBase = std::move(document_);
+    document_ = target.document;
+    info_ = target.info;
+    baseLabels_ = std::move(target.labels);
+    if (newPath.has_value()) path_ = std::move(*newPath);
+    // Links (and the outline) index the previous documents' pages.
+    linkService_.resetForNewBase();
+    // Recorded commands reference entries of the previous documents; they
+    // cannot be re-targeted (see header). Clear before the publish so no
+    // stale command can run against the new model.
+    commands_.clear();
+
+    const core::Status rebased = model_->rebase(target.document, std::move(entries));
+    if (!rebased.has_value()) {
+        // Validated above; restore the previous base for consistency.
+        document_ = std::move(previousBase);
+        return rebased;
+    }
+    return core::ok();
 }
 
 void DocumentSession::markSaved() {

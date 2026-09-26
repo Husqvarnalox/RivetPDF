@@ -153,6 +153,18 @@ public:
     virtual core::Result<std::unique_ptr<PdfDocument>> openDocument(const std::filesystem::path& path,
                                                                     std::string_view password = {}) = 0;
 
+    // Opens `path` with the credentials `credentialsOf` was opened with (the
+    // same password, if any). Used to reopen a document that was just saved
+    // from `credentialsOf` - a PreserveBase save keeps the base's encryption,
+    // so the new file needs the same password - without the password ever
+    // leaving the backend. `credentialsOf` must be a document of this engine.
+    // Default: opens without a password (backends that retain none).
+    virtual core::Result<std::unique_ptr<PdfDocument>> reopenWithCredentialsOf(
+        const PdfDocument& credentialsOf, const std::filesystem::path& path) {
+        (void)credentialsOf;
+        return openDocument(path);
+    }
+
     // Materializes a page list (see PdfAssemblyRequest) into a new PDF
     // streamed to `sink`. The documents referenced by the request are only
     // READ: their live state (page tree, handles) is never modified, so the

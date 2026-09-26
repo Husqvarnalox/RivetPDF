@@ -116,6 +116,15 @@ core::Result<std::unique_ptr<PdfDocument>> PdfiumEngine::openDocument(const std:
     return document;
 }
 
+core::Result<std::unique_ptr<PdfDocument>> PdfiumEngine::reopenWithCredentialsOf(
+    const PdfDocument& credentialsOf, const std::filesystem::path& path) {
+    // The password stays inside the adapter: it is read from the retained
+    // copy and only forwarded to openDocument (never logged).
+    const auto* pdfium = dynamic_cast<const PdfiumDocument*>(&credentialsOf);
+    if (pdfium == nullptr) return openDocument(path, {});
+    return openDocument(path, pdfium->openPassword());
+}
+
 core::Status PdfiumEngine::assembleDocument(const PdfAssemblyRequest& request, IPdfByteSink& sink) {
     return assembleWithPdfium(*this, request, sink);
 }

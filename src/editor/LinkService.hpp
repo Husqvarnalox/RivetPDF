@@ -73,6 +73,14 @@ public:
     // Drops cached links of the given pages (deleted pages; main thread).
     void evictPages(std::span<const core::PageId> pageIds);
 
+    // The session switched to a new base document (DocumentSession::
+    // rebaseOnto): drops every cached link and the outline, whose
+    // destinations index the previous documents' pages. Loads already
+    // running finish against the previous documents; their results are
+    // still delivered to waiting callbacks but never cached (generation
+    // check). Main thread.
+    void resetForNewBase();
+
     // Document outline, loaded ONCE on this service's worker stream (the
     // outline walk is a PDFium call and must never run on the main thread).
     // cachedOutline() is null until loaded; requestOutline() delivers the
@@ -84,7 +92,9 @@ public:
 
 private:
     void scheduleLoad(const PageEntry& entry);
-    void put(core::PageId pageId, std::uint64_t contentRevision, std::vector<pdf::PdfPageLink> links);
+    void put(core::PageId pageId, std::uint64_t contentRevision, std::vector<pdf::PdfPageLink> links,
+             std::uint64_t generation);
+    std::uint64_t generation() const;
     // Cache probe for an exact (page, revision); nullopt on miss.
     std::optional<std::vector<pdf::PdfPageLink>> cached(core::PageId pageId, std::uint64_t contentRevision) const;
     static constexpr std::size_t kMaxCachedPages = 64;
@@ -98,6 +108,9 @@ private:
     mutable std::mutex mutex_;
     std::map<std::pair<core::PageId, std::uint64_t>, std::vector<LinksCallback>> pending_;
     Outline outline_; // guarded by mutex_; null until loaded
+    // Bumped by resetForNewBase (guarded by mutex_): results of loads
+    // scheduled under an older generation are not cached.
+    std::uint64_t generation_ = 0;
     // LRU: front = most recently used.
     mutable std::list<core::PageId> lru_;
     struct CachedLinks {

@@ -345,6 +345,25 @@ core::Status PageModel::updateViews(std::span<const ViewUpdate> updates) {
     return core::ok();
 }
 
+core::Status PageModel::rebase(std::shared_ptr<pdf::PdfDocument> base, std::vector<PageEntry> entries) {
+    if (base == nullptr) return std::unexpected(invalid("no base document"));
+    const std::vector<PageEntry>& current = snapshot_->entries();
+    if (entries.size() != current.size()) return std::unexpected(invalid("rebase must keep every page"));
+    for (std::size_t index = 0; index < entries.size(); ++index) {
+        const PageEntry& entry = entries[index];
+        if (entry.id != current[index].id) return std::unexpected(invalid("rebase must keep the page order"));
+        if (entry.source == nullptr || entry.sourcePageIndex >= entry.source->info().pageCount) {
+            return std::unexpected(invalid("rebase entry has no valid source page"));
+        }
+        if (!isValidViewFor(entry.view, entry.mediaBox)) {
+            return std::unexpected(invalid("page view is not within the media box"));
+        }
+    }
+    base_ = std::move(base);
+    publish(std::move(entries), false);
+    return core::ok();
+}
+
 void PageModel::publish(std::vector<PageEntry> entries, bool orderChanged) {
     if (orderChanged) ++orderRevision_;
     ++documentRevision_;

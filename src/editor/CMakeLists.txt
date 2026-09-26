@@ -11,6 +11,7 @@ add_library(rivet_editor STATIC
     CommandStack.cpp
     DocumentRenderer.cpp
     DocumentSession.cpp
+    DocumentSaver.cpp
     PrintSpooler.cpp
 )
 

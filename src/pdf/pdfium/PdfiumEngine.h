@@ -29,6 +29,11 @@ public:
     core::Result<std::unique_ptr<PdfDocument>> openDocument(const std::filesystem::path& path,
                                                             std::string_view password) override;
 
+    // Opens `path` with the password `credentialsOf` was opened with (a
+    // PdfiumDocument of this engine; any other document opens without one).
+    core::Result<std::unique_ptr<PdfDocument>> reopenWithCredentialsOf(
+        const PdfDocument& credentialsOf, const std::filesystem::path& path) override;
+
     // See PdfEngine::assembleDocument and PdfiumAssembly.cpp.
     core::Status assembleDocument(const PdfAssemblyRequest& request, IPdfByteSink& sink) override;
 };
