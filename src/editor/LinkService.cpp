@@ -16,20 +16,27 @@ LinkService::~LinkService() {
     executor_.waitUntilIdle();
 }
 
-std::vector<pdf::PdfPageLink> LinkService::cachedLinks(core::PageId pageId) const {
+std::optional<std::vector<pdf::PdfPageLink>> LinkService::cached(core::PageId pageId,
+                                                                 std::uint64_t contentRevision) const {
     std::lock_guard<std::mutex> lock(mutex_);
     const auto it = cache_.find(pageId);
-    if (it == cache_.end()) return {};
-    // Promote to MRU.
-    lru_.splice(lru_.begin(), lru_, it->second.first);
-    return it->second.second;
+    if (it == cache_.end() || it->second.contentRevision != contentRevision) return std::nullopt;
+    lru_.splice(lru_.begin(), lru_, it->second.lru); // promote to MRU
+    return it->second.links;
 }
 
-void LinkService::put(core::PageId pageId, std::vector<pdf::PdfPageLink> links) {
+std::vector<pdf::PdfPageLink> LinkService::cachedLinks(core::PageId pageId) const {
+    const PageSnapshotPtr snapshot = session_.pageSnapshot();
+    const PageEntry* entry = snapshot->find(pageId);
+    if (entry == nullptr) return {};
+    return cached(pageId, entry->contentRevision).value_or(std::vector<pdf::PdfPageLink>{});
+}
+
+void LinkService::put(core::PageId pageId, std::uint64_t contentRevision, std::vector<pdf::PdfPageLink> links) {
     std::lock_guard<std::mutex> lock(mutex_);
     const auto it = cache_.find(pageId);
     if (it != cache_.end()) {
-        lru_.erase(it->second.first);
+        lru_.erase(it->second.lru);
         cache_.erase(it);
     }
     while (cache_.size() >= kMaxCachedPages && !lru_.empty()) {
@@ -37,46 +44,66 @@ void LinkService::put(core::PageId pageId, std::vector<pdf::PdfPageLink> links) 
         lru_.pop_back();
     }
     lru_.push_front(pageId);
-    cache_[pageId] = {lru_.begin(), std::move(links)};
+    cache_[pageId] = CachedLinks{lru_.begin(), contentRevision, std::move(links)};
+}
+
+void LinkService::evictPages(std::span<const core::PageId> pageIds) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    for (const core::PageId id : pageIds) {
+        const auto it = cache_.find(id);
+        if (it == cache_.end()) continue;
+        lru_.erase(it->second.lru);
+        cache_.erase(it);
+    }
 }
 
 void LinkService::ensurePageLinks(core::PageId pageId) {
+    const PageSnapshotPtr snapshot = session_.pageSnapshot();
+    const PageEntry* entry = snapshot->find(pageId);
+    if (entry == nullptr) return;
+    if (cached(pageId, entry->contentRevision).has_value()) return;
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        if (cache_.count(pageId) != 0) return;
-        pending_[pageId]; // coalescing entry
+        pending_[{pageId, entry->contentRevision}]; // coalescing entry
     }
-    scheduleLoad(pageId);
+    scheduleLoad(*entry);
 }
 
 void LinkService::requestPageLinks(core::PageId pageId, LinksCallback onDone) {
     if (!onDone) return;
+    const PageSnapshotPtr snapshot = session_.pageSnapshot();
+    const PageEntry* entry = snapshot->find(pageId);
+    if (entry == nullptr) {
+        // Deleted page: no links (delivered like any other result).
+        if (dispatcher_ == nullptr) {
+            onDone({});
+        } else {
+            dispatcher_->post([alive = alive_, onDone = std::move(onDone)]() mutable {
+                if (alive->load(std::memory_order_acquire)) onDone({});
+            });
+        }
+        return;
+    }
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        pending_[pageId].push_back(std::move(onDone));
+        pending_[{pageId, entry->contentRevision}].push_back(std::move(onDone));
     }
-    scheduleLoad(pageId);
+    scheduleLoad(*entry);
 }
 
-void LinkService::scheduleLoad(core::PageId pageId) {
-    // Capture by value (see TextService::scheduleExtraction for the rationale).
-    pdf::PdfDocument& document = session_.document();
-    const std::size_t pageIndex = session_.pageIndexFor(pageId);
-    executor_.post([this, pageId, pageIndex, &document] {
+void LinkService::scheduleLoad(const PageEntry& entry) {
+    // Captures a copy of the snapshot entry (see TextService::scheduleExtraction).
+    executor_.post([this, entry] {
         std::vector<LinksCallback> callbacks;
         {
             std::lock_guard<std::mutex> lock(mutex_);
-            const auto it = pending_.find(pageId);
+            const auto it = pending_.find({entry.id, entry.contentRevision});
             if (it == pending_.end()) return;
             callbacks = std::move(it->second);
             pending_.erase(it);
         }
 
-        std::vector<pdf::PdfPageLink> links = cachedLinks(pageId);
-        if (links.empty() && pageIndex != DocumentSession::kInvalidPage) {
-            links = document.pageLinks(pageIndex).value_or(std::vector<pdf::PdfPageLink>{});
-            put(pageId, links);
-        }
+        std::vector<pdf::PdfPageLink> links = linksNow(entry);
 
         if (callbacks.empty()) return;
         if (dispatcher_ != nullptr) {
@@ -90,12 +117,12 @@ void LinkService::scheduleLoad(core::PageId pageId) {
     });
 }
 
-std::vector<pdf::PdfPageLink> LinkService::linksNow(core::PageId pageId) {
-    if (auto cached = cachedLinks(pageId); !cached.empty()) return cached;
-    const std::size_t pageIndex = session_.pageIndexFor(pageId);
-    if (pageIndex == DocumentSession::kInvalidPage) return {};
-    auto links = session_.document().pageLinks(pageIndex).value_or(std::vector<pdf::PdfPageLink>{});
-    put(pageId, links);
+std::vector<pdf::PdfPageLink> LinkService::linksNow(const PageEntry& entry) {
+    if (auto hit = cached(entry.id, entry.contentRevision)) return std::move(*hit);
+    if (entry.source == nullptr) return {};
+    auto links = entry.source->pageLinks(entry.sourcePageIndex, entry.view)
+                     .value_or(std::vector<pdf::PdfPageLink>{});
+    put(entry.id, entry.contentRevision, links);
     return links;
 }
 
@@ -106,6 +133,8 @@ LinkService::Outline LinkService::cachedOutline() const {
 
 void LinkService::requestOutline(std::function<void(Outline)> onDone) {
     if (!onDone) return;
+    // The outline always belongs to the BASE document (resolve its
+    // destinations with DocumentSession::resolveOutlineDestination).
     pdf::PdfDocument& document = session_.document();
     executor_.post([this, &document, onDone = std::move(onDone)]() mutable {
         Outline outline = cachedOutline();

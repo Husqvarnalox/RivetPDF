@@ -3,6 +3,7 @@
 #include "editor/Command.hpp"
 #include "editor/CommandStack.hpp"
 
+#include <cstdint>
 #include <memory>
 #include <string_view>
 #include <utility>
@@ -200,4 +201,37 @@ RIVET_TEST(onChangedCallbackFires) {
     CHECK(!stack.execute(nullptr));
     CHECK(!stack.execute(std::make_unique<CountingCommand>("broken", false)));
     CHECK_EQ(changes, 4);
+}
+
+RIVET_TEST(stateIdsTrackHistoryPositions) {
+    CommandStack stack(2);
+    CHECK_EQ(stack.stateId(), std::uint64_t{0});
+    CHECK(stack.execute(std::make_unique<CountingCommand>("a")));
+    const std::uint64_t a = stack.stateId();
+    CHECK(a != 0);
+    CHECK(stack.undo());
+    CHECK_EQ(stack.stateId(), std::uint64_t{0});
+    CHECK(stack.redo());
+    CHECK_EQ(stack.stateId(), a);
+    CHECK(stack.undo());
+    // A new command after an undo never reuses an old id.
+    CHECK(stack.execute(std::make_unique<CountingCommand>("b")));
+    const std::uint64_t b = stack.stateId();
+    CHECK(b != a && b != 0);
+    // Failed commands leave the state alone.
+    CHECK(!stack.execute(std::make_unique<CountingCommand>("fail", false)));
+    CHECK_EQ(stack.stateId(), b);
+    // Eviction (depth 2): undoing everything reaches the state after the
+    // evicted command, not the initial one.
+    CHECK(stack.execute(std::make_unique<CountingCommand>("c")));
+    CHECK(stack.execute(std::make_unique<CountingCommand>("d")));
+    const std::uint64_t d = stack.stateId();
+    while (stack.undo()) {
+    }
+    CHECK_EQ(stack.stateId(), b);
+    // clear() keeps the current state.
+    while (stack.redo()) {
+    }
+    stack.clear();
+    CHECK_EQ(stack.stateId(), d);
 }

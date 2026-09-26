@@ -7,6 +7,7 @@
 #include "core/async/SerialExecutor.hpp"
 #include "core/async/TaskScheduler.hpp"
 #include "pdf/PdfEngine.hpp"
+#include "pdf/PdfPageGeometry.hpp"
 #include "render/RenderPriority.hpp"
 #include "render/RenderRequest.hpp"
 #include "render/RenderSource.hpp"
@@ -17,25 +18,40 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <unordered_map>
 #include <vector>
 
 namespace rivet::editor {
 
-// Sentinel returned by the pageIndexForId mapping when a PageId is unknown.
-// A request whose page cannot be mapped completes with ErrorCode::NotFound
-// instead of reaching the PDF backend.
-inline constexpr std::size_t kInvalidPageIndex = static_cast<std::size_t>(-1);
+// Where a page's pixels come from: a page of some opened document presented
+// through a view (see PdfPageGeometry.hpp), identified for caching by the
+// page model's contentRevision. The shared_ptr keeps the source document
+// alive for the queued job.
+struct RenderPageTarget {
+    std::shared_ptr<pdf::PdfDocument> document;
+    std::size_t pageIndex = 0;
+    pdf::PdfPageView view;
+    std::uint64_t contentRevision = 0;
+};
+
+// Resolves a PageId to its current render target (nullopt = not in the
+// document). Called on the thread that calls requestRender() (the main
+// thread): the job only uses the captured target and never reads live
+// page-model state on the worker.
+using RenderPageResolver = std::function<std::optional<RenderPageTarget>(core::PageId)>;
 
 // render::IRenderSource over an open PDF document: rasterizes tiles on a
 // SerialExecutor (one job at a time per document, never on the main thread),
 // stores results in the shared TileCache and delivers them to callers.
 //
 // Callback contract (every callback is invoked EXACTLY once):
-//   - Validation failures fire inline on the calling thread with
-//     ErrorCode::InvalidArgument; no job is scheduled and nothing is recorded:
-//     a TileKey belonging to another document, or RasterParams not derived from
-//     the key (params.devicePixelsPerPoint must equal key.scale.scale()).
+//   - Validation failures fire inline on the calling thread; no job is
+//     scheduled and nothing is recorded: InvalidArgument for a TileKey
+//     belonging to another document or RasterParams not derived from the key
+//     (params.devicePixelsPerPoint must equal key.scale.scale()); NotFound
+//     for a PageId the resolver does not know (page deleted) or a key whose
+//     contentRevision is not the page's current one (stale view).
 //   - A tile that already FAILED for the current revision fires inline on the
 //     calling thread with the recorded error, WITHOUT scheduling. Failed tiles
 //     never re-enter the render pipeline (see failed-tile contract below).
@@ -44,8 +60,8 @@ inline constexpr std::size_t kInvalidPageIndex = static_cast<std::size_t>(-1);
 //   - Otherwise the request joins (or creates) a pending entry keyed by
 //     (TileKey, revision); duplicate requests are coalesced onto that entry
 //     and every registered callback receives the same outcome: the cache-shared
-//     bitmap on success, the backend error on failure, ErrorCode::NotFound for
-//     an unmapped PageId. Success results are also put() into the TileCache.
+//     bitmap on success, the backend error on failure. Success results are
+//     also put() into the TileCache.
 //   - Threading: with a mainDispatcher, ALL callbacks fire posted on the main
 //     thread; with a null dispatcher (tests) they fire inline on the worker
 //     thread that produced the result (synchronous deliveries: inline on the
@@ -56,8 +72,8 @@ inline constexpr std::size_t kInvalidPageIndex = static_cast<std::size_t>(-1);
 // the pixel data is never copied and must be treated as immutable by receivers.
 //
 // Failed-tile contract:
-//   - A job that completes with an error (backend failure, unmapped PageId,
-//     OOM while retaining the tile) records the error for its (TileKey,
+//   - A job that completes with an error (backend failure, OOM while
+//     retaining the tile) records the error for its (TileKey,
 //     revision) BEFORE delivering it. Later requestRender() calls for the same
 //     key + revision replay that error inline instead of scheduling work - a
 //     missing tile is re-requested on every repaint, and without the record
@@ -86,17 +102,17 @@ inline constexpr std::size_t kInvalidPageIndex = static_cast<std::size_t>(-1);
 // mirroring SerialExecutor's own wait for its in-flight task. The executor
 // must be dedicated to this renderer, as it is in DocumentSession. After the
 // destructor returns, no callback is pending and no worker touches this
-// object. The document, cache, executor and scheduler references must outlive
+// object. Source documents are kept alive by the captured RenderPageTarget;
+// the cache, executor and scheduler references must outlive
 // the renderer; DocumentSession declares its members so the renderer is
 // destroyed first.
 class DocumentRenderer final : public render::IRenderSource {
 public:
-    // pageIndexForId maps PageId -> zero-based PDF page index (the session
-    // owns the mapping); kInvalidPageIndex marks an unknown id. mainDispatcher
-    // may be null (tests): callbacks then fire inline on the worker thread.
+    // resolvePage maps PageId -> render target (the session resolves through
+    // its page model). mainDispatcher may be null (tests): callbacks then
+    // fire inline on the worker thread.
     DocumentRenderer(core::DocumentId documentId,
-                     pdf::PdfDocument& document,
-                     std::function<std::size_t(core::PageId)> pageIndexForId,
+                     RenderPageResolver resolvePage,
                      render::TileCache& cache,
                      core::TaskScheduler& scheduler,
                      core::SerialExecutor& executor,
@@ -149,6 +165,7 @@ private:
     struct PendingEntry {
         std::vector<Callback> callbacks;
         render::RasterParams params;
+        RenderPageTarget target;
         render::RenderPriority priority = render::RenderPriority::Prefetch;
         std::uint64_t sequence = 0; // FIFO tie-break within one priority lane
 
@@ -173,7 +190,7 @@ private:
     // Rasterizes one claimed entry (worker side). pdf::PdfDocument is touched
     // ONLY here - never on the caller's thread.
     void runJob(const render::TileKey& key, const render::RasterParams& params,
-                std::uint64_t revision);
+                const RenderPageTarget& target, std::uint64_t revision);
 
     // Worker-side completion: takes the pending entry's callbacks (erasing the
     // entry), records `error` in failed_ when the outcome is a failure (see
@@ -195,8 +212,7 @@ private:
                                  core::IMainThreadDispatcher* mainDispatcher);
 
     core::DocumentId documentId_;
-    pdf::PdfDocument& document_;
-    std::function<std::size_t(core::PageId)> pageIndexForId_;
+    RenderPageResolver resolvePage_;
     render::TileCache& cache_;
     core::SerialExecutor& executor_;
     core::IMainThreadDispatcher* mainDispatcher_;

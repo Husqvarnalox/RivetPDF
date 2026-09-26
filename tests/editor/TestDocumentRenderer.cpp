@@ -26,6 +26,7 @@
 #include <mutex>
 #include <thread>
 #include <memory>
+#include <optional>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -34,7 +35,7 @@ using rivet::core::Bitmap;
 using rivet::core::DocumentId;
 using rivet::core::Error;
 using rivet::core::ErrorCode;
-using rivet::editor::kInvalidPageIndex;
+using rivet::editor::RenderPageTarget;
 using rivet::core::PageId;
 using rivet::core::Rect;
 using rivet::core::Result;
@@ -120,10 +121,13 @@ public:
     static constexpr DocumentId kDocumentId{42};
 
     RendererHarness()
-        : renderer_(kDocumentId, document_,
-                    [this](PageId id) {
+        : renderer_(kDocumentId,
+                    [this](PageId id) -> std::optional<RenderPageTarget> {
                         const auto it = pageIndex_.find(id);
-                        return it == pageIndex_.end() ? kInvalidPageIndex : it->second;
+                        if (it == pageIndex_.end()) return std::nullopt;
+                        // Non-owning alias: the harness owns the document.
+                        return RenderPageTarget{std::shared_ptr<PdfDocument>(std::shared_ptr<void>{}, &document_),
+                                                it->second, {}, 0};
                     },
                     cache_, scheduler_, executor_, /*mainDispatcher=*/nullptr) {}
 

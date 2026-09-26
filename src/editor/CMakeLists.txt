@@ -1,4 +1,7 @@
 add_library(rivet_editor STATIC
+    PageCommands.cpp
+    PageModel.cpp
+    PageSelection.cpp
     SelectionModel.cpp
     SelectionText.cpp
     TextPageCache.cpp

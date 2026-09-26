@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 #pragma once
 
+#include "editor/PageModel.hpp"
 #include "editor/SelectionModel.hpp"
 
 #include "core/StrongId.hpp"
@@ -38,6 +39,14 @@ std::vector<TextRange> orderedSelectionRanges(
     const std::function<std::size_t(core::PageId)>& indexOf,
     const std::function<core::PageId(std::size_t)>& pageAt,
     std::size_t invalidIndex);
+
+// Post-edit policy for the text selection: true when `change` deleted,
+// rotated or cropped a page the selection references (either end, or any
+// page between the ends in the PREVIOUS order) - the caller then clears the
+// selection (character indices/rects of such pages are no longer valid or
+// the page is gone). Pure reorders of untouched pages keep the selection;
+// its ranges are re-derived from the current order on use.
+bool textSelectionInvalidatedBy(const TextSelection& selection, const PageModelChange& change);
 
 // Appends the UTF-8 text of chars [begin, end) (end clamped to the page).
 // Generated line-break characters (empty bounds) become '\n'; U+FFFD

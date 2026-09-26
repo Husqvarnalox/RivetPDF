@@ -63,16 +63,19 @@ void PrintCoordinator::print(editor::DocumentSession& session, const std::string
     }
 
     // Step 2: spool the chosen pages on the worker. The render functions
-    // borrow the session's document; cancelIfDocument() keeps them from
-    // outliving it.
+    // capture the page-model snapshot's entries (source document kept alive
+    // by the entry, page presented through its view), so printing reflects
+    // the edited page order/rotation/crop and never reads session state.
     std::vector<editor::PrintPageSource> pages;
     pages.reserve(pageCount);
-    pdf::PdfDocument* document = &session.document();
+    const editor::PageSnapshotPtr snapshot = session.pageSnapshot();
     for (std::size_t index = 0; index < pageCount; ++index) {
+        const editor::PageEntry& entry = snapshot->at(index);
         pages.push_back(editor::PrintPageSource{
-            session.pageSizePoints(index),
-            [document, index](const core::Rect& bandRectPoints, double devicePixelsPerPoint) {
-                return document->renderPage(index, bandRectPoints, devicePixelsPerPoint);
+            pdf::displaySize(entry.view),
+            [source = entry.source, sourceIndex = entry.sourcePageIndex, view = entry.view](
+                const core::Rect& bandRectPoints, double devicePixelsPerPoint) {
+                return source->renderPage(sourceIndex, view, bandRectPoints, devicePixelsPerPoint);
             }});
     }
     editor::PrintSpoolOptions options;

@@ -23,10 +23,10 @@ namespace rivet::editor {
 
 // Asynchronous, cancellable document text search over a TextService.
 //
-// Execution model: start() snapshots the reading order (the session's
-// PageIds, main thread) and posts ONE walker task on a dedicated
-// SerialExecutor. The walker takes each page's text via
-// TextService::textPageNow() (cache probe or a synchronous extraction on the
+// Execution model: start() captures the session's immutable page-model
+// snapshot (main thread) and posts ONE walker task on a dedicated
+// SerialExecutor. The walker walks the SNAPSHOT's order and takes each
+// page's text via TextService::textPageNow(entry) (cache probe or a synchronous extraction on the
 // walker thread; the global PDFium gate keeps this safe alongside render
 // jobs), runs searchTextPage (Unicode-aware, Rivet-owned case folding - no
 // ICU) and appends the matches.
@@ -97,6 +97,14 @@ public:
     void previous();
     void setCurrentIndex(std::optional<std::size_t> index);
 
+    // Post-edit policy: after ANY page-model change (reorder, delete,
+    // insert, duplicate, rotate, crop - and their undo/redo) a search with a
+    // non-empty query is RESTARTED with the same query and options over the
+    // new snapshot (matches cleared and re-found in the new reading order;
+    // the active match reset), so matches never point at deleted pages or
+    // stale page content. No-op when the query is empty. Main thread.
+    void handlePageModelChanged(const PageModelChange& change);
+
     // Fired on the main thread whenever matches, the searching state or the
     // active index changed; the shell re-reads the state and updates the UI.
     void setOnResultsChanged(std::function<void()> onResultsChanged);
@@ -107,7 +115,7 @@ public:
     }
 
 private:
-    void runWalk(std::uint64_t request, std::vector<core::PageId> order, std::string query,
+    void runWalk(std::uint64_t request, PageSnapshotPtr snapshot, std::string query,
                  pdf::TextSearchOptions options);
     // Main thread: invokes the callback (copied under the mutex, called
     // outside it).

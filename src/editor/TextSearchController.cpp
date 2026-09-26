@@ -51,9 +51,9 @@ void TextSearchController::start(std::string query, pdf::TextSearchOptions optio
     // letting each one start just to notice its token is stale.
     walkExecutor_.cancelPending();
     if (!query_.empty()) {
-        walkExecutor_.post([this, request, order = session_.pageOrder(), query = query_,
+        walkExecutor_.post([this, request, snapshot = session_.pageSnapshot(), query = query_,
                             options]() mutable {
-            runWalk(request, std::move(order), std::move(query), options);
+            runWalk(request, std::move(snapshot), std::move(query), options);
         });
     }
     notifyNow();
@@ -89,17 +89,25 @@ bool TextSearchController::searching() const {
     return searching_;
 }
 
-void TextSearchController::runWalk(std::uint64_t request, std::vector<core::PageId> order,
+void TextSearchController::handlePageModelChanged(const PageModelChange& change) {
+    (void)change; // every kind of change restarts (see header)
+    if (query_.empty()) return;
+    start(query_, options_);
+}
+
+void TextSearchController::runWalk(std::uint64_t request, PageSnapshotPtr snapshot,
                                    std::string query, pdf::TextSearchOptions options) {
     const auto stale = [&] { return activeRequest_.load(std::memory_order_acquire) != request; };
     std::vector<Match> fresh;
-    for (const core::PageId pageId : order) {
+    for (const PageEntry& entry : snapshot->entries()) {
+        const core::PageId pageId = entry.id;
         // Cheap per-page cancellation check (also covers destruction, which
         // invalidates the token before draining the executor).
         if (stale()) return;
 
-        // A page removed from the document meanwhile yields null: skipped.
-        const std::shared_ptr<const pdf::PdfTextPage> page = text_.textPageNow(pageId);
+        // The captured entry keeps its source document alive; edits made
+        // meanwhile restart the search (handlePageModelChanged).
+        const std::shared_ptr<const pdf::PdfTextPage> page = text_.textPageNow(entry);
         if (stale()) return;
         if (page == nullptr) continue; // extraction failed: skip, not fatal
 

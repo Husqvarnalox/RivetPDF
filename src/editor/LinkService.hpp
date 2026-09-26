@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0
 #pragma once
 
+#include "editor/PageModel.hpp"
+
 #include "core/StrongId.hpp"
 #include "core/async/IMainThreadDispatcher.hpp"
 #include "core/async/SerialExecutor.hpp"
@@ -17,8 +19,10 @@ class DocumentSession;
 #include <memory>
 #include <functional>
 #include <list>
+#include <map>
 #include <mutex>
 #include <optional>
+#include <span>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -36,7 +40,13 @@ namespace rivet::editor {
 //   - requestPageLinks(): extraction + exactly-once callback (main thread or
 //     inline in tests without a dispatcher).
 //   - linksNow(): worker-thread path (cache probe or synchronous load on the
-//     calling thread under the global PDFium gate).
+//     calling thread under the global PDFium gate) over a snapshot entry.
+//
+// Page model: links are loaded through each entry's view (rects in the
+// entry's display space) and cached by (PageId, contentRevision), so
+// reorders never invalidate them and rotate/crop only affect that page.
+// Destinations stay in the SOURCE document's page indexing: resolve them
+// with DocumentSession::resolveLinkDestination (deleted target = none).
 //
 // Lifetime: owned by DocumentSession, declared so it dies before the
 // document handle; the destructor cancels queued work and waits for the
@@ -58,7 +68,10 @@ public:
     void requestPageLinks(core::PageId pageId, LinksCallback onDone);
 
     // Worker-thread path (mirrors TextService::textPageNow). Never main thread.
-    std::vector<pdf::PdfPageLink> linksNow(core::PageId pageId);
+    std::vector<pdf::PdfPageLink> linksNow(const PageEntry& entry);
+
+    // Drops cached links of the given pages (deleted pages; main thread).
+    void evictPages(std::span<const core::PageId> pageIds);
 
     // Document outline, loaded ONCE on this service's worker stream (the
     // outline walk is a PDFium call and must never run on the main thread).
@@ -70,8 +83,10 @@ public:
     void requestOutline(std::function<void(Outline)> onDone);
 
 private:
-    void scheduleLoad(core::PageId pageId);
-    void put(core::PageId pageId, std::vector<pdf::PdfPageLink> links);
+    void scheduleLoad(const PageEntry& entry);
+    void put(core::PageId pageId, std::uint64_t contentRevision, std::vector<pdf::PdfPageLink> links);
+    // Cache probe for an exact (page, revision); nullopt on miss.
+    std::optional<std::vector<pdf::PdfPageLink>> cached(core::PageId pageId, std::uint64_t contentRevision) const;
     static constexpr std::size_t kMaxCachedPages = 64;
 
     DocumentSession& session_;
@@ -81,13 +96,16 @@ private:
     core::SerialExecutor executor_;
 
     mutable std::mutex mutex_;
-    std::unordered_map<core::PageId, std::vector<LinksCallback>> pending_;
+    std::map<std::pair<core::PageId, std::uint64_t>, std::vector<LinksCallback>> pending_;
     Outline outline_; // guarded by mutex_; null until loaded
     // LRU: front = most recently used.
     mutable std::list<core::PageId> lru_;
-    mutable std::unordered_map<core::PageId, std::pair<std::list<core::PageId>::iterator,
-                                                       std::vector<pdf::PdfPageLink>>>
-        cache_;
+    struct CachedLinks {
+        std::list<core::PageId>::iterator lru;
+        std::uint64_t contentRevision = 0;
+        std::vector<pdf::PdfPageLink> links;
+    };
+    mutable std::unordered_map<core::PageId, CachedLinks> cache_;
 };
 
 } // namespace rivet::editor

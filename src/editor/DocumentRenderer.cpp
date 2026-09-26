@@ -14,15 +14,13 @@ std::size_t DocumentRenderer::PendingKeyHash::operator()(const PendingKey& key) 
 }
 
 DocumentRenderer::DocumentRenderer(core::DocumentId documentId,
-                                   pdf::PdfDocument& document,
-                                   std::function<std::size_t(core::PageId)> pageIndexForId,
+                                   RenderPageResolver resolvePage,
                                    render::TileCache& cache,
                                    core::TaskScheduler& /*scheduler*/,
                                    core::SerialExecutor& executor,
                                    core::IMainThreadDispatcher* mainDispatcher)
     : documentId_(documentId),
-      document_(document),
-      pageIndexForId_(std::move(pageIndexForId)),
+      resolvePage_(std::move(resolvePage)),
       cache_(cache),
       executor_(executor),
       mainDispatcher_(mainDispatcher) {}
@@ -70,6 +68,21 @@ void DocumentRenderer::requestRender(const render::RenderRequest& request,
         return;
     }
 
+    // Resolve the page NOW (calling/main thread): the job renders exactly
+    // this target, and the key must name the page's current content.
+    std::optional<RenderPageTarget> target = resolvePage_ ? resolvePage_(request.key.pageId) : std::nullopt;
+    if (!target.has_value() || target->document == nullptr) {
+        reject(std::move(onDone), core::Error{core::ErrorCode::NotFound,
+                                              "no page matches the requested page id", "editor"});
+        return;
+    }
+    if (target->contentRevision != request.key.contentRevision) {
+        reject(std::move(onDone),
+               core::Error{core::ErrorCode::NotFound,
+                           "render request names a stale page content revision", "editor"});
+        return;
+    }
+
     std::uint64_t revision = 0;
     std::optional<core::Error> recordedFailure;
     {
@@ -108,6 +121,7 @@ void DocumentRenderer::requestRender(const render::RenderRequest& request,
             PendingEntry entry;
             entry.callbacks.push_back(std::move(onDone));
             entry.params = request.params;
+            entry.target = std::move(*target);
             entry.priority = priority;
             entry.sequence = nextSequence_++;
             pending_.emplace(pendingKey, std::move(entry));
@@ -222,6 +236,7 @@ void DocumentRenderer::drainLoop() {
     for (;;) {
         PendingKey claimKey;
         render::RasterParams claimParams;
+        RenderPageTarget claimTarget;
         std::uint64_t claimRevision = 0;
         {
             std::lock_guard<std::mutex> lock(mutex_);
@@ -230,14 +245,15 @@ void DocumentRenderer::drainLoop() {
             it->second.state = PendingEntry::State::InFlight;
             claimKey = it->first;
             claimParams = it->second.params;
+            claimTarget = it->second.target;
             claimRevision = it->first.revision;
         }
-        runJob(claimKey.key, claimParams, claimRevision);
+        runJob(claimKey.key, claimParams, claimTarget, claimRevision);
     }
 }
 
 void DocumentRenderer::runJob(const render::TileKey& key, const render::RasterParams& params,
-                              std::uint64_t revision) {
+                              const RenderPageTarget& target, std::uint64_t revision) {
     // Another path may have produced the tile after this entry was created
     // (e.g. a request that raced a completing job); deliver from the cache
     // instead of rasterizing twice.
@@ -246,19 +262,12 @@ void DocumentRenderer::runJob(const render::TileKey& key, const render::RasterPa
         return;
     }
 
-    const std::size_t pageIndex = pageIndexForId_(key.pageId);
-    if (pageIndex == kInvalidPageIndex) {
-        completePending(PendingKey{key, revision}, nullptr,
-                        core::Error{core::ErrorCode::NotFound,
-                                    "no PDF page matches the requested page id", "editor"});
-        return;
-    }
-
     // pdf::PdfDocument is only ever touched here, on the executor stream.
     core::Result<core::Bitmap> rendered = std::unexpected(
         core::Error{core::ErrorCode::Internal, "render job did not produce a result", "editor"});
     try {
-        rendered = document_.renderPage(pageIndex, params.pageRectPoints, params.devicePixelsPerPoint);
+        rendered = target.document->renderPage(target.pageIndex, target.view, params.pageRectPoints,
+                                               params.devicePixelsPerPoint);
     } catch (const std::exception& exception) {
         rendered = std::unexpected(
             core::Error{core::ErrorCode::Internal, exception.what(), "editor"});

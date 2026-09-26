@@ -392,7 +392,7 @@ incrementally during development.
 Within the approved scope, the architecture leaves room for:
 
 - **Multi-document tabs** - one `DocumentSession` per open document, each with its own `SerialExecutor` and revision counter. No new machinery is required: `TileKey` already includes `DocumentId`, the shared `TaskScheduler` already multiplexes executors, and one cache can serve all sessions. Session lifetime follows tab lifetime.
-- **Page editing** - page operations (reorder, rotate, delete, insert, ...) become `Command`s on the session's `CommandStack` (depth-bounded undo/redo is already in place). A successful command bumps the document revision, which lazily invalidates all affected tiles via the revision stamp in `TileCache`; `PageLayout` is recomputed for the new page list. Content editing (text/objects) is expected to be the hardest part and will be developed gradually on the same command/revision foundation.
+- **Page editing** - landed in the editor layer (Phase 3): `editor::PageModel` is the session-owned mutable page list (stable, never-reused `PageId`s; each entry = source document + source page index + `PdfPageView` + `contentRevision`), mutated only by transactional `PageCommands` on the `CommandStack`, publishing an immutable `PageModelSnapshot` after every mutation that worker jobs capture instead of reading session state. Tiles, text pages and links are keyed by (`PageId`, `contentRevision`), so reorder/delete/duplicate invalidate nothing and rotate/crop only the affected page; `PageLayout` is rebuilt from the snapshot. Dirty state follows `CommandStack::stateId()`; saving/extracting builds a `PdfAssemblyRequest` from the snapshot. Content editing (text/objects) is expected to be the hardest part and will be developed gradually on the same command foundation.
 
 Known limitations of the current foundation, recorded as future
 architectural requirements:
@@ -402,10 +402,6 @@ architectural requirements:
   microseconds per page for small documents, but a thousands-page document
   will need incremental/lazy metadata loading behind the same `PageLayout`
   interface.
-- **Immutable page model**: the `PageId` -> backend page index mapping is
-  fixed at open time. This is fine for the viewer; page editing/reordering
-  (next phase) requires a mutable page model with the mapping owned by the
-  session and updated by commands.
 
 Features beyond this (annotations, forms, editing, ...) are roadmap items in
 the README and are not yet part of the architecture described here. Page

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 #pragma once
 
+#include "PageModel.hpp"
 #include "SelectionText.hpp"
 #include "TextPageCache.hpp"
 
@@ -18,10 +19,11 @@ class DocumentSession;
 #include <atomic>
 #include <cstdint>
 #include <functional>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <string>
-#include <unordered_map>
+#include <span>
 #include <vector>
 
 namespace rivet::editor {
@@ -41,7 +43,16 @@ namespace rivet::editor {
 //   - textPageNow(): worker-thread path for the search walker: cache probe
 //     or a synchronous extraction on the CALLING thread (the global PDFium
 //     gate makes this safe alongside render jobs). Never call from the main
-//     thread.
+//     thread. It takes a PageEntry from a snapshot the caller captured on
+//     the main thread - it never reads live session state.
+//
+// Page model: text is extracted through each entry's VIEW (source document,
+// source page index, rotation + crop) and cached by (PageId,
+// contentRevision). Main-thread entry points resolve the page through the
+// session's current snapshot and hand the job a copy of the entry, so a
+// reorder/delete/duplicate never invalidates other pages' text and a
+// rotate/crop only misses for that page. Text of deleted pages is evicted
+// by the session (evictPages).
 //
 //   - requestRangesText(): the exact UTF-8 text of an ordered list of page
 //     ranges (a text selection). Every page is taken from the cache or
@@ -85,14 +96,18 @@ public:
     // Worker-thread extraction (search path). Cache probe first; on a miss
     // extracts synchronously on the calling thread and caches the result.
     // Returns null on failure.
-    std::shared_ptr<const pdf::PdfTextPage> textPageNow(core::PageId pageId);
+    std::shared_ptr<const pdf::PdfTextPage> textPageNow(const PageEntry& entry);
+
+    // Drops cached text of the given pages (deleted pages; main thread).
+    void evictPages(std::span<const core::PageId> pageIds);
 
     // The byte budget of the underlying cache (diagnostics/tests).
     std::size_t cacheMaxBytes() const { return cache_.maxBytes(); }
     TextPageCache& cache() { return cache_; }
 
 private:
-    void scheduleExtraction(core::PageId pageId);
+    void scheduleExtraction(const PageEntry& entry);
+    static std::shared_ptr<const pdf::PdfTextPage> extract(const PageEntry& entry);
 
     DocumentSession& session_;
     core::IMainThreadDispatcher* dispatcher_ = nullptr;
@@ -104,7 +119,8 @@ private:
     void deliver(std::function<void()> deliver);
 
     std::mutex mutex_;
-    std::unordered_map<core::PageId, std::vector<TextCallback>> pending_;
+    // Coalescing: keyed by (PageId, contentRevision).
+    std::map<std::pair<core::PageId, std::uint64_t>, std::vector<TextCallback>> pending_;
 
     // False once destruction started; shared with posted deliveries.
     std::shared_ptr<std::atomic<bool>> alive_ = std::make_shared<std::atomic<bool>>(true);

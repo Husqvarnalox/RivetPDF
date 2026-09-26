@@ -173,7 +173,7 @@ RIVET_TEST(textServiceWorkerPathExtractsSynchronously) {
     auto session = f.open();
     TextService& text = session->textService();
 
-    const auto page = text.textPageNow(session->pageId(1));
+    const auto page = text.textPageNow(session->pageSnapshot()->at(1));
     CHECK(page != nullptr);
     CHECK_EQ(page->text(), "delta alpha epsilon");
 }

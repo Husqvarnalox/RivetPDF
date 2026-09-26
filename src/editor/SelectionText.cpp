@@ -6,6 +6,25 @@
 
 namespace rivet::editor {
 
+bool textSelectionInvalidatedBy(const TextSelection& selection, const PageModelChange& change) {
+    if (change.previous == nullptr || (change.removed.empty() && change.contentChanged.empty())) {
+        return false;
+    }
+    const PageModelSnapshot& previous = *change.previous;
+    const std::size_t a = previous.indexOf(selection.anchor.page);
+    const std::size_t b = previous.indexOf(selection.focus.page);
+    if (a == PageModelSnapshot::kInvalidIndex || b == PageModelSnapshot::kInvalidIndex) return true;
+    const std::size_t lo = std::min(a, b);
+    const std::size_t hi = std::max(a, b);
+    const auto touches = [&](const std::vector<core::PageId>& ids) {
+        return std::any_of(ids.begin(), ids.end(), [&](core::PageId id) {
+            const std::size_t index = previous.indexOf(id);
+            return index != PageModelSnapshot::kInvalidIndex && index >= lo && index <= hi;
+        });
+    };
+    return touches(change.removed) || touches(change.contentChanged);
+}
+
 std::vector<TextRange> orderedSelectionRanges(
     const TextSelection& selection,
     const std::function<std::size_t(core::PageId)>& indexOf,

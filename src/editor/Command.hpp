@@ -1,5 +1,8 @@
 #pragma once
 
+#include "core/Error.hpp"
+
+#include <optional>
 #include <string_view>
 
 namespace rivet::editor {
@@ -21,6 +24,11 @@ public:
     virtual bool undo() = 0;
 
     virtual bool redo() { return execute(); }
+
+    // Why the last execute()/undo()/redo() returned false (nullopt when the
+    // command does not report reasons). Read by CommandStack before a
+    // failed command is destroyed (see CommandStack::lastError).
+    virtual std::optional<core::Error> failure() const { return std::nullopt; }
 };
 
 } // namespace rivet::editor
