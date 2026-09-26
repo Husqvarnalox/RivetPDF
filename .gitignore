@@ -51,6 +51,9 @@ CMakeUserPresets.json
 
 # AI / coding-agent local state
 .claude/
+CLAUDE.md
+CLAUDE.local.md
+graphify-out/
 .codex/
 .cursor/
 .windsurf/
