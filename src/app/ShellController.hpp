@@ -2,6 +2,7 @@
 #pragma once
 
 #include "app/DocumentWorkspace.hpp"
+#include "app/PageEditingController.hpp"
 #include "app/PasswordPromptController.hpp"
 #include "app/PrintCoordinator.hpp"
 #include "app/SearchBarController.hpp"
@@ -69,6 +70,12 @@ public:
     // by handleOpenRequest() and the platform entry point for
     // open-on-launch (`rivet file.pdf`).
     void openDocument(const std::filesystem::path& path);
+
+    // Page editing for platform menus: runs the command on the active tab
+    // (a status message otherwise). canPerformPageEdit drives menu item
+    // validation (enabled/disabled).
+    void performPageEdit(PageEditCommand command);
+    bool canPerformPageEdit(PageEditCommand command) const;
 
 private:
     // Root container that re-runs the shell layout whenever its frame changes.
@@ -138,6 +145,7 @@ private:
     std::unique_ptr<SearchBarController> searchBar_;
     std::unique_ptr<PasswordPromptController> passwordPrompt_;
     std::unique_ptr<StatusBarController> statusBar_;
+    std::unique_ptr<PageEditingController> pageEditing_;
 
     // Print flow (panel -> worker spool -> platform print). Declared last:
     // destroyed first, while the sessions its worker borrows are alive.

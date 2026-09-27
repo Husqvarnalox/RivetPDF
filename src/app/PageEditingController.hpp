@@ -125,6 +125,8 @@ public:
 
 private:
     DocumentTab* activeTab() const;
+    // The tab's stored selection, or an empty one (const reads).
+    const editor::PageSelection& selectionOf(const DocumentTab* tab) const;
     // Executes on the active tab's session; reports a failure as
     // "<what>: <reason>". Returns success.
     bool run(std::unique_ptr<editor::Command> command, const char* what);

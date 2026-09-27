@@ -3,6 +3,7 @@ add_executable(rivet_app_tests
     TestShellWiring.cpp
     TestWorkspaceLifecycle.cpp
     TestUrlPolicy.cpp
+    TestPageEditingController.cpp
 )
 
 add_test(NAME app COMMAND rivet_app_tests)

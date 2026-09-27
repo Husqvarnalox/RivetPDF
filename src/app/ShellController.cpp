@@ -106,6 +106,9 @@ void ShellController::buildWidgets() {
     textInteraction_ = std::make_unique<TextInteractionController>(*context_);
     viewport_->setTextBridge(textInteraction_.get());
 
+    // Page editing over the active tab (selection, thumbnails, crop tool).
+    pageEditing_ = std::make_unique<PageEditingController>(*context_, *sidebar_, *statusBar_);
+
     // Workspace events.
     workspace_.setOnTabsChanged([this] { refreshTabStrip(); });
     workspace_.setOnActiveTabChanged([this] { bindActiveTab(); });
@@ -217,6 +220,7 @@ void ShellController::bindActiveTab() {
     if (tab == nullptr || tab->state() != DocumentTab::State::Ready) {
         viewport_->clearDocument();
         sidebar_->bindTab(nullptr);
+        pageEditing_->bindTab(nullptr);
         if (tab == nullptr) {
             setStatus("No document open");
             setZoomDisplay(viewport_->zoom().zoom());
@@ -240,6 +244,7 @@ void ShellController::bindActiveTab() {
                            [session] { return session->revision(); }, &tab->viewState());
     // Thumbnails, page labels, outline and the restored current page.
     sidebar_->bindTab(tab);
+    pageEditing_->bindTab(tab);
 
     // First bind of a fresh tab: open fit-to-width (Phase 1 behavior). The
     // mode stays active (resizes recompute the zoom) until the user zooms.
@@ -286,6 +291,14 @@ void ShellController::openDocument(const std::filesystem::path& path) {
     workspace_.openDocument(path);
 }
 
+void ShellController::performPageEdit(PageEditCommand command) {
+    if (pageEditing_ != nullptr) pageEditing_->perform(command);
+}
+
+bool ShellController::canPerformPageEdit(PageEditCommand command) const {
+    return pageEditing_ != nullptr && pageEditing_->canPerform(command);
+}
+
 void ShellController::setPresentationMode(bool enabled) {
     if (presentationMode_ == enabled) return;
     presentationMode_ = enabled;
@@ -310,6 +323,10 @@ bool ShellController::handleKeyEvent(const ui::KeyEvent& event) {
     // 1. The focused widget (a text field) consumes its keys first.
     if (focusedWidget_ != nullptr && focusedWidget_->onKey(event)) return true;
 
+    // Keys of the active viewport tool (Enter/Esc while cropping) run before
+    // the shell's own Escape priorities.
+    if (pageEditing_ != nullptr && pageEditing_->handleToolKey(event)) return true;
+
     // Escape closes the search bar / exits presentation mode; otherwise it
     // blurs the focused widget.
     if (event.key == ui::Key::Escape && searchBar_->handleEscape()) return true;
@@ -330,6 +347,9 @@ bool ShellController::handleKeyEvent(const ui::KeyEvent& event) {
 }
 
 bool ShellController::handleShortcut(const ui::KeyEvent& event) {
+    // Page editing shortcuts (undo/redo, rotate) first.
+    if (pageEditing_ != nullptr && pageEditing_->handleShortcut(event)) return true;
+
     const bool command = event.modifiers.command;
     const bool control = event.modifiers.control;
 
