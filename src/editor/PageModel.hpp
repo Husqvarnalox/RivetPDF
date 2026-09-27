@@ -228,6 +228,14 @@ public:
     };
     core::Status updateViews(std::span<const ViewUpdate> updates);
 
+    // Re-bases the model onto `base` (a document just written from this
+    // model and reopened): `entries` replace the current ones one-for-one in
+    // the SAME order with the SAME ids (only source/sourcePageIndex/views/
+    // boxes/contentRevision may differ). One publish, orderChanged = false.
+    // InvalidArgument when the ids/order differ or an entry is incomplete.
+    // Used by DocumentSession::rebaseOnto only.
+    core::Status rebase(std::shared_ptr<pdf::PdfDocument> base, std::vector<PageEntry> entries);
+
     // Change observer (the owning session). Invoked synchronously after each
     // successful mutation on the calling (main) thread.
     void setOnChanged(std::function<void(const PageModelChange&)> onChanged);

@@ -148,9 +148,10 @@ public:
 
     // Runs a command through the stack. The error is the command's reported
     // failure (or a generic InvalidArgument).
+    // Refused while the editing lock is held (see setEditingLocked).
     core::Status execute(std::unique_ptr<Command> command);
-    bool undo() { return commands_.undo(); }
-    bool redo() { return commands_.redo(); }
+    bool undo() { return !editingLocked_ && commands_.undo(); }
+    bool redo() { return !editingLocked_ && commands_.redo(); }
 
     // Dirty = the current history state differs from the state last marked
     // saved (initially: the state after open). Undoing back to the saved
@@ -160,6 +161,55 @@ public:
     void markSaved();
     // Fired (main thread, synchronously) whenever isDirty() flips.
     void setOnDirtyChanged(std::function<void(bool dirty)> onDirtyChanged);
+
+    // --- Editing lock (in-flight save) --------------------------------------
+    //
+    // While locked, execute()/undo()/redo() refuse (execute reports
+    // ErrorCode::Unsupported with `reason`; undo/redo return false) so the
+    // page model cannot change under an in-flight save: the save's snapshot
+    // stays the state that is marked saved and rebased afterwards. Views,
+    // text selection, search, print and extract keep working. Main thread.
+    void setEditingLocked(bool locked, std::string reason = {});
+    bool isEditingLocked() const { return editingLocked_; }
+
+    // --- Rebase after save ----------------------------------------------------
+
+    // Everything needed to switch the session onto a freshly written file,
+    // prepared OFF the main thread by prepareRebase().
+    struct RebaseTarget {
+        std::shared_ptr<pdf::PdfDocument> document;
+        pdf::PdfDocumentInfo info;
+        std::vector<PageSource> pages;   // every page, native metadata
+        std::vector<std::string> labels; // parallel to pages ("" = none)
+    };
+
+    // Worker-safe (touches only the engine and the immutable credentials of
+    // `credentialsOf`): opens `path` with the password `credentialsOf` was
+    // opened with and reads its page metadata and labels.
+    static core::Result<RebaseTarget> prepareRebase(pdf::PdfEngine& engine,
+                                                    const std::filesystem::path& path,
+                                                    const pdf::PdfDocument& credentialsOf);
+
+    // Main thread. Switches the session's base document to `target` - the
+    // file just written from the CURRENT page model (same page count, page
+    // i of the file = model entry i):
+    //   - every entry keeps its PageId and contentRevision; its source
+    //     becomes the new document at sourcePageIndex = position, its view/
+    //     boxes the new file's native ones (display-identical, so render
+    //     tiles and text stay valid; an entry whose view differs beyond
+    //     float noise gets a fresh contentRevision instead);
+    //   - references to the previous base and imported documents are dropped
+    //     (they die once in-flight jobs release their snapshots);
+    //   - base info, page labels and the path (`newPath`, when given) are
+    //     replaced; cached links and the outline are reset (their
+    //     destinations index the previous documents);
+    //   - the UNDO HISTORY IS CLEARED: recorded commands hold entries of the
+    //     previous documents and cannot be re-targeted (a deleted page does
+    //     not exist in the new file). The current stateId is kept, so the
+    //     caller's markSaved() stays exact.
+    // Publishes one page-model change (no order change). InvalidArgument
+    // (session untouched) when the page count differs.
+    core::Status rebaseOnto(RebaseTarget target, std::optional<std::filesystem::path> newPath = std::nullopt);
 
     // --- Rendering, text, links ---------------------------------------------
 
@@ -224,6 +274,8 @@ private:
     std::optional<RenderPageTarget> resolveRenderTarget(core::PageId pageId) const;
 
     core::DocumentId id_;
+    bool editingLocked_ = false;
+    std::string editingLockReason_;
     std::filesystem::path path_;
     pdf::PdfDocumentInfo info_;
     core::IMainThreadDispatcher* mainDispatcher_ = nullptr;
