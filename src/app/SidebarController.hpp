@@ -9,6 +9,7 @@
 #include "ui/OutlinePanel.hpp"
 
 #include <cstddef>
+#include <optional>
 #include <set>
 #include <vector>
 
@@ -32,6 +33,9 @@ struct FlattenedOutline {
     std::vector<ui::OutlineRow> rows;
     std::vector<OutlinePath> paths;
     std::vector<std::size_t> destinations;
+    // The node's destination as written in the BASE document (nullopt when
+    // it has none); resolved through the page model on activation.
+    std::vector<std::optional<pdf::PdfDestination>> targets;
 };
 
 // Depth-first flatten of `root`'s children (the synthetic root itself is
@@ -67,6 +71,15 @@ public:
 
     // Current-page funnel: selects and reveals the page's thumbnail.
     void setCurrentPage(std::size_t page);
+
+    // The active tab's page model changed (order, count, sizes): rebuilds
+    // the thumbnail rows, re-reads the page labels (labels only while the
+    // model is the identity order, else positional numbers) and the outline
+    // destinations.
+    void pagesChanged();
+
+    // The thumbnail list (page editing wires its intents).
+    ui::PageThumbnailList& thumbnails() { return *thumbnails_; }
 
     // Positions the sidebar (frame in the parent's space; kHiddenFrame hides
     // it) and the active panel below the header.

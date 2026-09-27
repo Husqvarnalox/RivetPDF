@@ -9,6 +9,7 @@
 #include "render/ViewerState.hpp"
 #include "ui/ScrollBar.hpp"
 #include "ui/ViewerTextBridge.hpp"
+#include "ui/ViewportTool.hpp"
 #include "ui/Widget.hpp"
 
 #include <atomic>
@@ -16,6 +17,8 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <optional>
+#include <utility>
 
 namespace rivet::render {
 class PageLayout;
@@ -61,7 +64,7 @@ namespace rivet::ui {
 // itself (invalidate + drop queued renders on zoom change + scrollbar sync +
 // current-page tracking + status notification). The shell must use
 // setZoomChangedCallback rather than replacing the state's callback.
-class PdfViewport : public Widget {
+class PdfViewport : public Widget, public ViewportToolHost {
 public:
     static constexpr std::uint32_t kTileSize = 512; // device px per tile edge
 
@@ -113,6 +116,36 @@ public:
 
     // The content-space rect currently visible: {scrollOffset, frame / zoom}.
     core::Rect visibleContentRectPoints() const;
+
+    // Scroll anchor for edits that change the page list: the tracked page's
+    // id and the scroll position as a fraction of that page's height,
+    // recorded at every current-page update (so it still describes the view
+    // BEFORE an edit rebuilt the bound layout in place). nullopt when no
+    // document is bound.
+    struct PageAnchor {
+        core::PageId page;
+        double fraction = 0.0;
+    };
+    std::optional<PageAnchor> pageAnchor() const;
+
+    // The bound layout changed in place (page order, count or sizes: a page
+    // model edit). Recomputes an active fit mode, scrolls so that page
+    // `anchorIndex` (new layout order; nullopt = keep the offset) shows the
+    // same `fraction` of itself at the top, re-clamps, resyncs the
+    // scrollbars and re-reports the current page (always fired, even when
+    // the index is unchanged: the page behind the index may differ).
+    void documentLayoutChanged(std::optional<std::size_t> anchorIndex, double fraction);
+
+    // Viewport tool layer (crop, ...): the active tool gets pointer (except
+    // wheel), key and paint calls first. Non-owning; null uninstalls.
+    void setActiveTool(ViewportTool* tool);
+    ViewportTool* activeTool() const { return activeTool_; }
+
+    // ViewportToolHost
+    std::optional<core::Rect> pageRectInViewport(std::size_t pageIndex) const override;
+    double zoomFactor() const override { return state_->zoom().zoom(); }
+    core::Rect viewportBounds() const override { return bounds(); }
+    void requestRepaint() override { invalidate(); }
 
     // Status-bar hook; invoked when the zoom actually changes (not on scroll).
     void setZoomChangedCallback(std::function<void(double)> onZoomChanged);
@@ -206,6 +239,10 @@ private:
     render::ViewerState emptyStateState_;
     std::size_t currentPage_ = 0;
     double lastReportedZoom_ = 1.0;
+    // See pageAnchor().
+    core::PageId anchorPage_;
+    double anchorFraction_ = 0.0;
+    ViewportTool* activeTool_ = nullptr;
 
     std::function<void(double)> onZoomChanged_;
     std::function<void(std::size_t)> onPageChanged_;

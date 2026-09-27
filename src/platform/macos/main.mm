@@ -21,17 +21,35 @@
 // Note: ObjC classes must live at global scope (no C++ namespaces).
 
 // Bridges menu actions to the shell. The Open… menu item goes through the
-// same ShellController::handleOpenRequest() path as the toolbar button.
+// same ShellController::handleOpenRequest() path as the toolbar button; page
+// editing items carry their PageEditCommand as the item tag, route through
+// performPageEdit() and validate against canPerformPageEdit() (NSMenu
+// auto-enables items through item validation).
 @interface RivetAppBridge : NSObject {
 @public
     rivet::app::ShellController* shell; // non-owning; main() owns the shell
 }
 - (IBAction)openDocument:(id)sender;
+- (IBAction)pageEdit:(id)sender;
 @end
 
 @implementation RivetAppBridge
 - (IBAction)openDocument:(id)sender {
     if (shell != nullptr) shell->handleOpenRequest();
+}
+- (IBAction)pageEdit:(id)sender {
+    if (shell == nullptr) return;
+    NSMenuItem* item = sender;
+    if (item == nullptr) return;
+    shell->performPageEdit(static_cast<rivet::app::PageEditCommand>(item.tag));
+}
+// NSMenuItemValidation: gray out page editing commands that cannot run.
+- (BOOL)validateMenuItem:(NSMenuItem*)item {
+    if (shell == nullptr) return NO;
+    if (item.action == @selector(pageEdit:)) {
+        return shell->canPerformPageEdit(static_cast<rivet::app::PageEditCommand>(item.tag)) ? YES : NO;
+    }
+    return YES;
 }
 @end
 
@@ -97,6 +115,40 @@ int main(int argc, char** argv) {
             [fileMenu addItemWithTitle:@"Open…" action:@selector(openDocument:) keyEquivalent:@"o"];
         [openItem setTarget:bridge];
         [fileMenuItem setSubmenu:fileMenu];
+
+        // Edit > Undo/Redo (the shell's page command history is the single
+        // source of truth; Rivet has no other undo).
+        NSMenuItem* editMenuItem = [[NSMenuItem alloc] init];
+        [menuBar addItem:editMenuItem];
+        NSMenu* editMenu = [[NSMenu alloc] initWithTitle:@"Edit"];
+        [editMenu addItemWithTitle:@"Undo"
+                            action:@selector(pageEdit:)
+                     keyEquivalent:@"z"].tag = static_cast<NSInteger>(rivet::app::PageEditCommand::Undo);
+        NSMenuItem* redoItem =
+            [editMenu addItemWithTitle:@"Redo" action:@selector(pageEdit:) keyEquivalent:@"Z"];
+        redoItem.tag = static_cast<NSInteger>(rivet::app::PageEditCommand::Redo);
+        redoItem.keyEquivalentModifierMask = NSEventModifierFlagCommand | NSEventModifierFlagShift;
+        for (NSMenuItem* item in editMenu.itemArray) [item setTarget:bridge];
+        [editMenuItem setSubmenu:editMenu];
+
+        // Page > structure editing over the selection (or the current page).
+        NSMenuItem* pageMenuItem = [[NSMenuItem alloc] init];
+        [menuBar addItem:pageMenuItem];
+        NSMenu* pageMenu = [[NSMenu alloc] initWithTitle:@"Page"];
+        const std::pair<NSString*, rivet::app::PageEditCommand> pageItems[] = {
+            {@"Rotate Left", rivet::app::PageEditCommand::RotateLeft},
+            {@"Rotate Right", rivet::app::PageEditCommand::RotateRight},
+            {@"Duplicate", rivet::app::PageEditCommand::DuplicatePages},
+            {@"Delete", rivet::app::PageEditCommand::DeletePages},
+            {@"Crop…", rivet::app::PageEditCommand::Crop},
+            {@"Reset Crop", rivet::app::PageEditCommand::ResetCrop},
+        };
+        for (const auto& [title, command] : pageItems) {
+            NSMenuItem* item = [pageMenu addItemWithTitle:title action:@selector(pageEdit:) keyEquivalent:@""];
+            item.tag = static_cast<NSInteger>(command);
+            [item setTarget:bridge];
+        }
+        [pageMenuItem setSubmenu:pageMenu];
 
         [NSApp setMainMenu:menuBar];
 

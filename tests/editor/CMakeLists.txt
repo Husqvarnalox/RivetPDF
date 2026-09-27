@@ -14,6 +14,8 @@ add_executable(rivet_editor_tests
     # Page model -> assembly -> reload against PDFium fixtures: PDFium-ON
     # bodies only (returns early without a backend).
     TestPageModelPdfium.cpp
+    # Save pipeline: portable (FakeWritableEngine) + PDFium round trips.
+    TestDocumentSaver.cpp
 )
 
 add_test(NAME editor COMMAND rivet_editor_tests)

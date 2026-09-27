@@ -7,6 +7,7 @@
 #include "core/geometry/Size.hpp"
 
 #include <cstddef>
+#include <cstdint>
 #include <optional>
 #include <utility>
 #include <vector>
@@ -25,6 +26,10 @@ public:
         core::PageId id;
         core::Size sizePoints; // display size (post-rotation)
         core::PageRotation rotation = core::PageRotation::None;
+        // The page model's contentRevision of the page as laid out (see
+        // editor::PageEntry): part of every tile key, so a rotated/cropped
+        // page never matches tiles of its previous view.
+        std::uint64_t contentRevision = 0;
     };
 
     PageLayout() = default;

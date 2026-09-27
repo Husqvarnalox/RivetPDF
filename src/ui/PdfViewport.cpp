@@ -127,6 +127,7 @@ void PdfViewport::setDocument(core::DocumentId documentId, const render::PageLay
     // Restored offsets may exceed the new document's bounds.
     setScrollOffsetPoints(state_->scrollOffsetPoints());
     currentPage_ = 0;
+    anchorPage_ = core::PageId{};
     syncScrollbars();
     updateCurrentPage();
     invalidate();
@@ -142,6 +143,7 @@ void PdfViewport::clearDocument() {
     state_ = &emptyStateState_;
     emptyStateState_.setScrollOffsetPoints(core::Point{});
     currentPage_ = 0;
+    anchorPage_ = core::PageId{};
     syncScrollbars();
     updateCurrentPage();
     invalidate();
@@ -218,6 +220,53 @@ void PdfViewport::goToPage(std::size_t index) {
                                       layout_->pageTopOffsetPoints(index)});
 }
 
+std::optional<PdfViewport::PageAnchor> PdfViewport::pageAnchor() const {
+    if (layout_ == nullptr || !anchorPage_) return std::nullopt;
+    return PageAnchor{anchorPage_, anchorFraction_};
+}
+
+void PdfViewport::documentLayoutChanged(std::optional<std::size_t> anchorIndex, double fraction) {
+    if (layout_ == nullptr) return;
+    const std::size_t count = layout_->pageCount();
+    const bool anchored = anchorIndex.has_value() && *anchorIndex < count;
+    // Fit-page mode fits the anchored page.
+    if (count > 0) currentPage_ = anchored ? *anchorIndex : std::min(currentPage_, count - 1);
+    resolveFitMode();
+    core::Point offset = state_->scrollOffsetPoints();
+    if (anchored) {
+        const core::Rect frame = layout_->pageFramePoints(*anchorIndex);
+        offset.y = frame.minY() + (std::isfinite(fraction) ? fraction : 0.0) * frame.size.height;
+    }
+    // The page behind currentPage_ may be a different one now: force the
+    // current-page report.
+    currentPage_ = std::numeric_limits<std::size_t>::max();
+    // A changed offset re-enters onStateChanged (which reports the page).
+    state_->setScrollOffsetPoints(clampedScrollOffset(offset));
+    positionScrollbars();
+    syncScrollbars();
+    updateCurrentPage();
+    invalidate();
+}
+
+void PdfViewport::setActiveTool(ViewportTool* tool) {
+    if (activeTool_ == tool) return;
+    activeTool_ = tool;
+    // A tool takes over the pointer: drop any half-finished interaction.
+    selecting_ = false;
+    linkPressed_ = false;
+    pressedLink_.reset();
+    linkHovered_ = false;
+    invalidate();
+}
+
+std::optional<core::Rect> PdfViewport::pageRectInViewport(std::size_t pageIndex) const {
+    if (layout_ == nullptr || pageIndex >= layout_->pageCount()) return std::nullopt;
+    const double zoomFactor = state_->zoom().zoom();
+    const core::Rect pageFrame = layout_->pageFramePoints(pageIndex);
+    return core::Rect{(pageFrame.origin - state_->scrollOffsetPoints()) * zoomFactor,
+                      pageFrame.size * zoomFactor};
+}
+
 void PdfViewport::setZoomChangedCallback(std::function<void(double)> onZoomChanged) {
     onZoomChanged_ = std::move(onZoomChanged);
     // Sync the baseline so the first state change reports only real zoom
@@ -276,6 +325,7 @@ void PdfViewport::syncScrollbars() {
 
 void PdfViewport::updateCurrentPage() {
     if (layout_ == nullptr || layout_->pageCount() == 0) {
+        anchorPage_ = core::PageId{};
         if (currentPage_ != 0) {
             currentPage_ = 0;
             if (onPageChanged_) onPageChanged_(0);
@@ -285,6 +335,15 @@ void PdfViewport::updateCurrentPage() {
     const std::optional<std::size_t> current =
         layout_->currentPageIndex(visibleContentRectPoints());
     const std::size_t page = current.value_or(0);
+    // Anchor for page-list edits (see pageAnchor()): recorded before the
+    // callback so observers read the fresh value.
+    {
+        const core::Rect frame = layout_->pageFramePoints(page);
+        anchorPage_ = layout_->pages()[page].id;
+        anchorFraction_ = frame.size.height > 0.0
+                              ? (state_->scrollOffsetPoints().y - frame.minY()) / frame.size.height
+                              : 0.0;
+    }
     if (page != currentPage_) {
         currentPage_ = page;
         if (onPageChanged_) onPageChanged_(page);
@@ -360,6 +419,12 @@ bool PdfViewport::onMouse(const PointerEvent& event) {
         // Plain scroll: wheel delta is in logical pixels; convert to content
         // points (positive delta = content moves up/left = offset grows).
         scrollByContentPoints(event.scrollDelta / state_->zoom().zoom());
+        event.accepted = true;
+        return true;
+    }
+
+    // The active tool (crop, ...) sees every non-wheel pointer event first.
+    if (activeTool_ != nullptr && activeTool_->onMouse(*this, event)) {
         event.accepted = true;
         return true;
     }
@@ -456,6 +521,10 @@ bool PdfViewport::onMouse(const PointerEvent& event) {
 }
 
 bool PdfViewport::onKey(const KeyEvent& event) {
+    if (activeTool_ != nullptr && activeTool_->onKey(*this, event)) {
+        event.accepted = true;
+        return true;
+    }
     const bool zoomInKey = event.key == Key::Plus ||
                            (event.key == Key::Character && event.text == "=");
     const bool zoomOutKey = event.key == Key::Minus ||
@@ -631,6 +700,8 @@ void PdfViewport::paintSelf(PaintContext& context) const {
         // adjacent to the visible range, scheduled behind visible tiles.
         prefetchNeighborPages(*visible, contentRect, revision, context);
     }
+    // Tool layer above tiles and text overlays.
+    if (activeTool_ != nullptr) activeTool_->paint(*this, context);
     context.popClip();
 }
 
@@ -688,7 +759,7 @@ void PdfViewport::requestBandTiles(std::size_t pageIndex, const core::Rect& band
                                       tileExtentPoints, tileExtentPoints};
             const core::Rect clipped = tileRect.intersection(pageBounds);
             if (clipped.isEmpty()) continue;
-            const render::TileKey key{documentId_, info.id, physicalKey, tx, ty};
+            const render::TileKey key{documentId_, info.id, physicalKey, tx, ty, info.contentRevision};
             if (source_->cachedTile(key, revision) == nullptr) {
                 requestTileWithPriority(key, render::RasterParams{clipped, devicePixelsPerPoint},
                                         render::RenderPriority::Impending);
@@ -800,7 +871,7 @@ void PdfViewport::paintPageTiles(std::size_t pageIndex, const core::Rect& pageFr
             const core::Rect clipped = tileRect.intersection(pageBounds);
             if (clipped.isEmpty()) continue;
 
-            const render::TileKey key{documentId_, info.id, physicalKey, tx, ty};
+            const render::TileKey key{documentId_, info.id, physicalKey, tx, ty, info.contentRevision};
             const core::Rect dest{pageInViewport.origin + clipped.origin * state_->zoom().zoom(),
                                   clipped.size * state_->zoom().zoom()};
             if (const std::shared_ptr<const core::Bitmap> tile = source_->cachedTile(key, revision)) {

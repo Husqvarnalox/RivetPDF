@@ -32,8 +32,23 @@ std::vector<pdf::PdfPageLink> LinkService::cachedLinks(core::PageId pageId) cons
     return cached(pageId, entry->contentRevision).value_or(std::vector<pdf::PdfPageLink>{});
 }
 
-void LinkService::put(core::PageId pageId, std::uint64_t contentRevision, std::vector<pdf::PdfPageLink> links) {
+std::uint64_t LinkService::generation() const {
     std::lock_guard<std::mutex> lock(mutex_);
+    return generation_;
+}
+
+void LinkService::resetForNewBase() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    ++generation_;
+    cache_.clear();
+    lru_.clear();
+    outline_.reset();
+}
+
+void LinkService::put(core::PageId pageId, std::uint64_t contentRevision, std::vector<pdf::PdfPageLink> links,
+                      std::uint64_t generation) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (generation != generation_) return; // loaded from a previous base
     const auto it = cache_.find(pageId);
     if (it != cache_.end()) {
         lru_.erase(it->second.lru);
@@ -93,7 +108,7 @@ void LinkService::requestPageLinks(core::PageId pageId, LinksCallback onDone) {
 
 void LinkService::scheduleLoad(const PageEntry& entry) {
     // Captures a copy of the snapshot entry (see TextService::scheduleExtraction).
-    executor_.post([this, entry] {
+    executor_.post([this, entry, generation = generation()] {
         std::vector<LinksCallback> callbacks;
         {
             std::lock_guard<std::mutex> lock(mutex_);
@@ -103,7 +118,14 @@ void LinkService::scheduleLoad(const PageEntry& entry) {
             pending_.erase(it);
         }
 
-        std::vector<pdf::PdfPageLink> links = linksNow(entry);
+        std::vector<pdf::PdfPageLink> links;
+        if (auto hit = cached(entry.id, entry.contentRevision)) {
+            links = std::move(*hit);
+        } else if (entry.source != nullptr) {
+            links = entry.source->pageLinks(entry.sourcePageIndex, entry.view)
+                        .value_or(std::vector<pdf::PdfPageLink>{});
+            put(entry.id, entry.contentRevision, links, generation);
+        }
 
         if (callbacks.empty()) return;
         if (dispatcher_ != nullptr) {
@@ -118,11 +140,12 @@ void LinkService::scheduleLoad(const PageEntry& entry) {
 }
 
 std::vector<pdf::PdfPageLink> LinkService::linksNow(const PageEntry& entry) {
+    const std::uint64_t loadGeneration = generation();
     if (auto hit = cached(entry.id, entry.contentRevision)) return std::move(*hit);
     if (entry.source == nullptr) return {};
     auto links = entry.source->pageLinks(entry.sourcePageIndex, entry.view)
                      .value_or(std::vector<pdf::PdfPageLink>{});
-    put(entry.id, entry.contentRevision, links);
+    put(entry.id, entry.contentRevision, links, loadGeneration);
     return links;
 }
 
@@ -135,15 +158,18 @@ void LinkService::requestOutline(std::function<void(Outline)> onDone) {
     if (!onDone) return;
     // The outline always belongs to the BASE document (resolve its
     // destinations with DocumentSession::resolveOutlineDestination).
-    pdf::PdfDocument& document = session_.document();
-    executor_.post([this, &document, onDone = std::move(onDone)]() mutable {
+    // Shared ownership: a rebase may replace the session's base while this
+    // load is queued (the previous base then lives until the job is done).
+    std::shared_ptr<pdf::PdfDocument> document = session_.documentPtr();
+    executor_.post([this, document = std::move(document), generation = generation(),
+                    onDone = std::move(onDone)]() mutable {
         Outline outline = cachedOutline();
         if (outline == nullptr) {
-            auto loaded = document.outline();
+            auto loaded = document->outline();
             outline = std::make_shared<const std::optional<pdf::PdfOutlineNode>>(
                 loaded.has_value() ? std::move(*loaded) : std::nullopt);
             std::lock_guard<std::mutex> lock(mutex_);
-            outline_ = outline;
+            if (generation == generation_) outline_ = outline;
         }
         if (dispatcher_ == nullptr) {
             onDone(std::move(outline));

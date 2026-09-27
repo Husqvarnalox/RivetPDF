@@ -1,5 +1,7 @@
 add_library(rivet_app STATIC
     DocumentWorkspace.cpp
+    CropTool.cpp
+    PageEditingController.cpp
     PasswordPromptController.cpp
     PrintCoordinator.cpp
     SearchBarController.cpp
