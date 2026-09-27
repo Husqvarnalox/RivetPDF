@@ -125,6 +125,7 @@ void FileController::requestSave(DocumentTab& tab, std::filesystem::path destina
     // The model cannot change under the in-flight save: the snapshot that is
     // written stays the state that gets marked saved and rebased onto.
     tab.session()->setEditingLocked(true, "saving");
+    if (request.closeTabWhenDone) closeAfterSave_.push_back(request.tab);
     activeSave_ = request;
     setStatus_("Saving…");
 
@@ -163,6 +164,7 @@ void FileController::startNextSave() {
         return;
     }
     tab->session()->setEditingLocked(true, "saving");
+    if (request.closeTabWhenDone) closeAfterSave_.push_back(request.tab);
     activeSave_ = request;
     setStatus_("Saving…");
     auto result = std::make_shared<std::optional<editor::DocumentWriteResult>>();
