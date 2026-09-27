@@ -2,6 +2,7 @@
 #pragma once
 
 #include "app/DocumentWorkspace.hpp"
+#include "app/FileController.hpp"
 #include "app/PageEditingController.hpp"
 #include "app/PasswordPromptController.hpp"
 #include "app/PrintCoordinator.hpp"
@@ -77,6 +78,14 @@ public:
     void performPageEdit(PageEditCommand command);
     bool canPerformPageEdit(PageEditCommand command) const;
 
+    // File lifecycle for platform menus (same validation pattern).
+    void performFile(FileCommand command);
+    bool canPerformFile(FileCommand command) const;
+
+    // Tab close request (tab strip / Cmd+W): runs the dirty-document prompt
+    // and closes the tab when permitted (or when its save completes).
+    void requestCloseTab(std::size_t index);
+
 private:
     // Root container that re-runs the shell layout whenever its frame changes.
     class ShellRoot final : public ui::Container {
@@ -146,6 +155,7 @@ private:
     std::unique_ptr<PasswordPromptController> passwordPrompt_;
     std::unique_ptr<StatusBarController> statusBar_;
     std::unique_ptr<PageEditingController> pageEditing_;
+    std::unique_ptr<FileController> fileLifecycle_;
 
     // Print flow (panel -> worker spool -> platform print). Declared last:
     // destroyed first, while the sessions its worker borrows are alive.

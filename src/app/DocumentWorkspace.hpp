@@ -75,6 +75,11 @@ public:
     std::size_t currentPage() const { return currentPage_; }
     void setCurrentPage(std::size_t page) { currentPage_ = page; }
 
+    // Save As completion only (main thread): the document was written to and
+    // rebased onto `path`; the tab adopts its identity (path, dedup key,
+    // title). The workspace fires its tabs-changed hook.
+    void retitle(std::filesystem::path path);
+
     // False for a freshly created tab: the shell applies the initial fit
     // mode (fit width) on the first bind of a Ready tab. View-state values
     // restored from an already-initialized tab are used as they are.
@@ -168,6 +173,10 @@ public:
     // file) and makes it active. Asynchronous: the Loading tab exists before
     // this returns; the session arrives via a later main-thread completion.
     void openDocument(const std::filesystem::path& path);
+
+    // Save As completion only: adopts the new file identity into the tab
+    // (see DocumentTab::retitle) and fires the tabs-changed hook.
+    void retitleTab(TabId tab, std::filesystem::path path);
 
     // Retries the open of a NeedsPassword tab with a password. The password
     // is forwarded to the background open and NOT stored anywhere: the tab

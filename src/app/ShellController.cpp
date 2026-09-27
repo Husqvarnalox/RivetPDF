@@ -66,10 +66,7 @@ void ShellController::buildWidgets() {
     auto tabStrip = std::make_unique<ui::TabStrip>();
     tabStrip_ = tabStrip.get();
     tabStrip_->setOnTabActivated([this](std::size_t index) { workspace_.activateTab(index); });
-    tabStrip_->setOnTabCloseRequested([this](std::size_t index) {
-        cancelPrintForTab(index);
-        workspace_.closeTab(index);
-    });
+    tabStrip_->setOnTabCloseRequested([this](std::size_t index) { requestCloseTab(index); });
     root_->addChild(std::move(tabStrip));
 
     auto toolbar = std::make_unique<ui::Toolbar>(kToolbarHeight);
@@ -108,6 +105,20 @@ void ShellController::buildWidgets() {
 
     // Page editing over the active tab (selection, thumbnails, crop tool).
     pageEditing_ = std::make_unique<PageEditingController>(*context_, *sidebar_, *statusBar_);
+
+    // File lifecycle (save/save-as/import/merge/extract, dirty close/quit).
+    fileLifecycle_ = std::make_unique<FileController>(
+        *engine_, *context_, scheduler_, [this](std::string text) { setStatus(std::move(text)); },
+        [this] {
+            refreshTabStrip();
+            updateWindowTitle();
+        });
+    fileLifecycle_->setSelectionProvider([this] {
+        return pageEditing_ != nullptr && pageEditing_->activeSelection() != nullptr
+                   ? pageEditing_->targetPages()
+                   : std::vector<core::PageId>{};
+    });
+    fileLifecycle_->installLifecycleHandlers();
 
     // Workspace events.
     workspace_.setOnTabsChanged([this] { refreshTabStrip(); });
@@ -299,6 +310,23 @@ bool ShellController::canPerformPageEdit(PageEditCommand command) const {
     return pageEditing_ != nullptr && pageEditing_->canPerform(command);
 }
 
+void ShellController::performFile(FileCommand command) {
+    if (fileLifecycle_ != nullptr) fileLifecycle_->perform(command);
+}
+
+bool ShellController::canPerformFile(FileCommand command) const {
+    return fileLifecycle_ != nullptr && fileLifecycle_->canPerform(command);
+}
+
+void ShellController::requestCloseTab(std::size_t index) {
+    cancelPrintForTab(index);
+    DocumentTab* tab = workspace_.tab(index);
+    if (tab != nullptr && fileLifecycle_ != nullptr && !fileLifecycle_->confirmCloseTab(*tab)) {
+        return; // the user chose Cancel / Save (closes with the save)
+    }
+    workspace_.closeTab(index);
+}
+
 void ShellController::setPresentationMode(bool enabled) {
     if (presentationMode_ == enabled) return;
     presentationMode_ = enabled;
@@ -369,8 +397,15 @@ bool ShellController::handleShortcut(const ui::KeyEvent& event) {
                 return true;
             }
             if (event.text == "w") {
-                cancelPrintForTab(workspace_.activeIndex());
-                workspace_.closeActiveTab();
+                requestCloseTab(workspace_.activeIndex());
+                return true;
+            }
+            if (event.text == "s" && !event.modifiers.shift) {
+                performFile(FileCommand::Save);
+                return true;
+            }
+            if (event.text == "S" && event.modifiers.shift) {
+                performFile(FileCommand::SaveAs);
                 return true;
             }
             if (event.text == "f") {

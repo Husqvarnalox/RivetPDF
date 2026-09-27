@@ -23,6 +23,12 @@ DocumentTab::DocumentTab(TabId id, std::filesystem::path path, std::string title
     dedupKey_ = dedupKeyForPath(path_);
 }
 
+void DocumentTab::retitle(std::filesystem::path path) {
+    path_ = std::move(path);
+    dedupKey_ = dedupKeyForPath(path_);
+    title_ = path_.filename().string();
+}
+
 DocumentTab::~DocumentTab() { releaseSession(); }
 
 void DocumentTab::releaseSession() {
@@ -267,6 +273,13 @@ void DocumentWorkspace::setOnTabsChanged(std::function<void()> onTabsChanged) {
 
 void DocumentWorkspace::setOnActiveTabChanged(std::function<void()> onActiveTabChanged) {
     onActiveTabChanged_ = std::move(onActiveTabChanged);
+}
+
+void DocumentWorkspace::retitleTab(TabId tab, std::filesystem::path path) {
+    DocumentTab* target = tabById(tab);
+    if (target == nullptr) return;
+    target->retitle(std::move(path));
+    fireTabsChanged();
 }
 
 void DocumentWorkspace::fireTabsChanged() {

@@ -43,11 +43,20 @@
     if (item == nullptr) return;
     shell->performPageEdit(static_cast<rivet::app::PageEditCommand>(item.tag));
 }
-// NSMenuItemValidation: gray out page editing commands that cannot run.
+- (IBAction)fileCommand:(id)sender {
+    if (shell == nullptr) return;
+    NSMenuItem* item = sender;
+    if (item == nullptr) return;
+    shell->performFile(static_cast<rivet::app::FileCommand>(item.tag));
+}
+// NSMenuItemValidation: gray out commands that cannot run.
 - (BOOL)validateMenuItem:(NSMenuItem*)item {
     if (shell == nullptr) return NO;
     if (item.action == @selector(pageEdit:)) {
         return shell->canPerformPageEdit(static_cast<rivet::app::PageEditCommand>(item.tag)) ? YES : NO;
+    }
+    if (item.action == @selector(fileCommand:)) {
+        return shell->canPerformFile(static_cast<rivet::app::FileCommand>(item.tag)) ? YES : NO;
     }
     return YES;
 }
@@ -114,6 +123,27 @@ int main(int argc, char** argv) {
         NSMenuItem* openItem =
             [fileMenu addItemWithTitle:@"Open…" action:@selector(openDocument:) keyEquivalent:@"o"];
         [openItem setTarget:bridge];
+        [fileMenu addItem:[NSMenuItem separatorItem]];
+        NSMenuItem* saveItem =
+            [fileMenu addItemWithTitle:@"Save" action:@selector(fileCommand:) keyEquivalent:@"s"];
+        saveItem.tag = static_cast<NSInteger>(rivet::app::FileCommand::Save);
+        NSMenuItem* saveAsItem =
+            [fileMenu addItemWithTitle:@"Save As…" action:@selector(fileCommand:) keyEquivalent:@"S"];
+        saveAsItem.tag = static_cast<NSInteger>(rivet::app::FileCommand::SaveAs);
+        saveAsItem.keyEquivalentModifierMask = NSEventModifierFlagCommand | NSEventModifierFlagShift;
+        [fileMenu addItem:[NSMenuItem separatorItem]];
+        const std::pair<NSString*, rivet::app::FileCommand> fileItems[] = {
+            {@"Insert Pages Before Current…", rivet::app::FileCommand::ImportBefore},
+            {@"Insert Pages After Current…", rivet::app::FileCommand::ImportAfter},
+            {@"Merge with PDF…", rivet::app::FileCommand::Merge},
+            {@"Export Selected Pages…", rivet::app::FileCommand::Extract},
+        };
+        for (const auto& [title, command] : fileItems) {
+            NSMenuItem* item =
+                [fileMenu addItemWithTitle:title action:@selector(fileCommand:) keyEquivalent:@""];
+            item.tag = static_cast<NSInteger>(command);
+            [item setTarget:bridge];
+        }
         [fileMenuItem setSubmenu:fileMenu];
 
         // Edit > Undo/Redo (the shell's page command history is the single
