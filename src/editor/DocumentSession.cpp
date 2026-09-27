@@ -172,7 +172,8 @@ void DocumentSession::rebuildLayout() {
     std::vector<render::PageLayout::PageInfo> pages;
     pages.reserve(snapshot.size());
     for (const PageEntry& entry : snapshot.entries()) {
-        pages.push_back(render::PageLayout::PageInfo{entry.id, pdf::displaySize(entry.view), entry.view.rotation});
+        pages.push_back(render::PageLayout::PageInfo{entry.id, pdf::displaySize(entry.view), entry.view.rotation,
+                                                     entry.contentRevision});
     }
     layout_.setPages(std::move(pages));
 }

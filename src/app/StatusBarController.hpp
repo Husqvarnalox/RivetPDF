@@ -46,6 +46,11 @@ public:
     void setStatus(std::string text);
     const std::string& statusText() const;
 
+    // Page-selection summary ("3 pages selected"; empty hides it), shown
+    // left of the page indicator.
+    void setSelectionSummary(std::string text);
+    const std::string& selectionSummary() const;
+
     // Re-reads the active tab's page count and current page. The field text
     // is left alone while the field has focus (the user is editing it).
     void updatePageIndicator();
@@ -67,6 +72,7 @@ private:
     // Raw pointers into widgets owned by the parent's tree.
     ui::Container* bar_ = nullptr;
     TextLabel* statusLabel_ = nullptr;
+    TextLabel* selectionLabel_ = nullptr;
     TextLabel* pageCaptionLabel_ = nullptr;
     ui::TextField* pageField_ = nullptr;
     TextLabel* pageCountLabel_ = nullptr;

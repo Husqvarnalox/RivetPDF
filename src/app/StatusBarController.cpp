@@ -18,6 +18,7 @@ namespace {
 
 constexpr double kPageFieldWidth = 44.0;
 constexpr double kPageCountWidth = 64.0;
+constexpr double kSelectionWidth = 140.0;
 
 // Page indicator text, "12" style; page numbers shown are 1-based.
 std::string pageFieldText(std::size_t page) { return std::format("{}", page + 1); }
@@ -61,12 +62,19 @@ StatusBarController::StatusBarController(ShellContext& context, ui::Widget& pare
     pageCount->setFrame(core::Rect{0.0, 3.0, 60.0, 20.0});
     pageCountLabel_ = pageCount.get();
     bar_->addChild(std::move(pageCount));
+
+    // Page-selection summary, left of the page indicator.
+    auto selection = std::make_unique<TextLabel>("", ui::Font{12.0}, ui::Color::gray(0.35),
+                                                 ui::TextAlign::Right);
+    selectionLabel_ = selection.get();
+    bar_->addChild(std::move(selection));
 }
 
 void StatusBarController::layout(const core::Rect& frame) {
     bar_->setFrame(frame);
     const double width = frame.size.width;
-    statusLabel_->setFrame(core::Rect{12.0, 0.0, std::max(0.0, width - 220.0), kHeight});
+    statusLabel_->setFrame(
+        core::Rect{12.0, 0.0, std::max(0.0, width - 220.0 - kSelectionWidth), kHeight});
 
     // Page indicator cluster, right-aligned: "Page [field] / N". The count
     // label gets a fixed generous width (no PaintContext during layout).
@@ -75,11 +83,17 @@ void StatusBarController::layout(const core::Rect& frame) {
     const double fieldX = std::max(0.0, pageCountX - kPageFieldWidth - 8.0);
     pageField_->setFrame(core::Rect{fieldX, 2.0, kPageFieldWidth, 22.0});
     pageCaptionLabel_->setFrame(core::Rect{std::max(0.0, fieldX - 44.0), 3.0, 36.0, 20.0});
+    selectionLabel_->setFrame(
+        core::Rect{std::max(0.0, fieldX - 52.0 - kSelectionWidth), 3.0, kSelectionWidth, 20.0});
 }
 
 void StatusBarController::setStatus(std::string text) { statusLabel_->setText(std::move(text)); }
 
 const std::string& StatusBarController::statusText() const { return statusLabel_->text(); }
+
+void StatusBarController::setSelectionSummary(std::string text) { selectionLabel_->setText(std::move(text)); }
+
+const std::string& StatusBarController::selectionSummary() const { return selectionLabel_->text(); }
 
 const std::string& StatusBarController::pageCountText() const { return pageCountLabel_->text(); }
 

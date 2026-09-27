@@ -42,6 +42,7 @@ FlattenedOutline flattenOutline(const pdf::PdfOutlineNode& root, const std::set<
                                                 frame.node->destination->pageIndex < pageCount
                                             ? frame.node->destination->pageIndex
                                             : 0);
+            flat.targets.push_back(frame.node->destination);
             flat.paths.push_back(frame.path);
             flat.rows.push_back(std::move(row));
         }
@@ -115,6 +116,15 @@ void SidebarController::bindTab(DocumentTab* tab) {
     thumbnails_->setSelectedIndex(tab->currentPage());
 }
 
+void SidebarController::pagesChanged() {
+    DocumentTab* tab = context_.readyActiveTab();
+    if (tab == nullptr) return;
+    thumbnails_->reloadPages();
+    thumbnails_->setPageLabels(tab->session()->pageLabels());
+    thumbnails_->setSelectedIndex(tab->currentPage());
+    rebuildOutlineRows();
+}
+
 void SidebarController::setCurrentPage(std::size_t page) {
     thumbnails_->setSelectedIndex(page);
     thumbnails_->revealPage(page);
@@ -154,6 +164,18 @@ void SidebarController::activateRow(std::size_t row) {
     if (row >= outline_.destinations.size()) return;
     DocumentTab* tab = context_.readyActiveTab();
     if (tab == nullptr) return;
+    // Outline destinations point into the base document: resolve them
+    // through the page model (reordered / deleted pages).
+    if (row < outline_.targets.size() && outline_.targets[row].has_value()) {
+        const std::optional<editor::PageDestination> resolved =
+            tab->session()->resolveOutlineDestination(*outline_.targets[row]);
+        if (!resolved.has_value()) {
+            context_.setStatus("The outline entry's page is no longer in the document");
+            return;
+        }
+        context_.viewport.goToPage(resolved->index);
+        return;
+    }
     const std::size_t pageIndex = outline_.destinations[row];
     if (pageIndex >= tab->session()->pageCount()) return;
     context_.viewport.goToPage(pageIndex);

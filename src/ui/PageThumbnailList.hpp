@@ -16,6 +16,7 @@
 #include <functional>
 #include <memory>
 #include <optional>
+#include <string>
 #include <vector>
 
 namespace rivet::render {
@@ -42,7 +43,27 @@ namespace rivet::ui {
 // thousands of pages cost nothing until scrolled into view.
 //
 // Scrolling: internal ScrollBar + wheel events; no zoom (scale is 1 in this
-// widget). Clicking a row selects it and fires onSelectionChanged.
+// widget).
+//
+// Two independent row states:
+//   - the CURRENT row (setSelectedIndex; the page the viewport tracks):
+//     subtle gray fill, as before page editing existed;
+//   - the PAGE SELECTION (setPageSelection; owned by the app's
+//     editor::PageSelection): accent fill for selected rows, accent outline
+//     for the active row.
+// The widget never changes the page selection itself: it reports user
+// intents (row clicks with their gesture, keyboard navigation, delete,
+// select-all, drag-and-drop moves) and the owner pushes the resulting
+// selection back synchronously.
+//
+// Drag and drop: pressing a SELECTED row (after the click gesture was
+// applied) and moving more than kDragThreshold starts a drag of the whole
+// selection. While dragging, the drop GAP (0 = before the first row,
+// rowCount = after the last) follows the pointer and is shown as an
+// insertion line; moving within kAutoscrollBand of the top/bottom edge
+// scrolls the list (per pointer event - there is no timer). Release fires
+// onMoveRequested(gap); Esc (key) cancels. A release outside the widget is
+// never delivered, so the next button-less move or press cancels the drag.
 //
 // Lifetime: the layout/source must be kept alive by the shell or released
 // via clearDocument(). Completion callbacks are guarded by a shared alive
@@ -53,6 +74,16 @@ public:
     static constexpr double kThumbnailWidth = 160.0; // points
     static constexpr double kLabelHeight = 18.0;     // page label strip under the image
     static constexpr std::size_t kVisibleMarginRows = 2; // rows requested beyond the viewport
+    static constexpr double kDragThreshold = 4.0;        // points before a press becomes a drag
+    static constexpr double kAutoscrollBand = 28.0;      // edge band that autoscrolls a drag
+    static constexpr double kAutoscrollMaxStep = 24.0;   // points per pointer event at the edge
+
+    // How a row click should change the page selection.
+    enum class ClickGesture : std::uint8_t {
+        Replace, // plain click: select exactly this row
+        Toggle,  // Cmd/Ctrl-click: toggle this row
+        Extend,  // Shift-click: range from the anchor to this row
+    };
 
     PageThumbnailList();
     ~PageThumbnailList() override;
@@ -71,6 +102,43 @@ public:
     // Fired after the user clicks a row (not for programmatic selection).
     void setOnSelectionChanged(std::function<void(std::size_t)> onSelectionChanged);
 
+    // Page selection visuals: `selected` is parallel to the rows (shorter =
+    // the rest unselected); `active` is the keyboard-focus row.
+    void setPageSelection(std::vector<bool> selected, std::optional<std::size_t> active);
+    bool isRowSelected(std::size_t index) const {
+        return index < selectedRows_.size() && selectedRows_[index];
+    }
+    std::optional<std::size_t> activeRow() const { return activeRow_; }
+
+    // User intents (see class comment).
+    void setOnRowClicked(std::function<void(std::size_t row, ClickGesture gesture)> onRowClicked);
+    // Arrow keys: move the active row by `delta` rows; `extend` = Shift.
+    void setOnNavigate(std::function<void(int delta, bool extend)> onNavigate);
+    void setOnDeleteRequested(std::function<void()> onDeleteRequested);
+    void setOnSelectAllRequested(std::function<void()> onSelectAllRequested);
+    void setOnMoveRequested(std::function<void(std::size_t gap)> onMoveRequested);
+    // A press inside the list wants keyboard focus (the host routes focus).
+    void setOnFocusRequested(std::function<void()> onFocusRequested);
+
+    // The bound layout changed in place (page model edit): rebuilds the row
+    // geometry, keeps the scroll offset (clamped) and cancels a drag. The
+    // current row and page selection are left to the owner to re-push.
+    void reloadPages();
+
+    // Drag state (tests / painting).
+    bool isDragging() const { return dragging_; }
+    std::optional<std::size_t> dropGap() const {
+        return dragging_ ? std::optional<std::size_t>{dropGap_} : std::nullopt;
+    }
+    void cancelDrag();
+    double scrollOffset() const { return scrollOffset_; }
+
+    // Drop gap for a point in LIST-LOCAL coordinates: the gap before the row
+    // under the point when above its middle, after it otherwise.
+    std::size_t gapAt(const core::Point& localPoint) const;
+    // Row frame in list-local coordinates (scroll applied). Asserts range.
+    core::Rect rowFrame(std::size_t index) const;
+
     // Page labels from the PDF page-label tree ("i", "A-1", ...); rows with
     // an empty label fall back to "Page N". Call after setDocument.
     void setPageLabels(std::vector<std::string> labels);
@@ -80,6 +148,10 @@ public:
     void revealPage(std::size_t index);
 
     bool onMouse(const PointerEvent& event) override;
+    // Arrows/Shift+arrows navigate, Delete/Backspace delete, Cmd/Ctrl+A
+    // selects all, Esc cancels a drag. Only while focused (host routing).
+    bool onKey(const KeyEvent& event) override;
+    bool wantsFocus() const override { return true; }
     void layout() override;
     void paintSelf(PaintContext& context) const override;
 
@@ -93,7 +165,9 @@ private:
     std::pair<std::size_t, std::size_t> visibleRowRange() const;
     std::optional<std::size_t> rowIndexAt(const core::Point& localPoint) const;
 
+    void rebuildRowGeometry();
     void setScrollOffset(double offset);
+    void updateDrag(const core::Point& localPoint);
     void syncScrollbar();
     void positionScrollbar();
     void requestThumbnail(std::size_t index, double backingScale,
@@ -107,6 +181,23 @@ private:
 
     std::optional<std::size_t> selectedIndex_;
     std::function<void(std::size_t)> onSelectionChanged_;
+
+    std::vector<bool> selectedRows_;
+    std::optional<std::size_t> activeRow_;
+    std::function<void(std::size_t, ClickGesture)> onRowClicked_;
+    std::function<void(int, bool)> onNavigate_;
+    std::function<void()> onDeleteRequested_;
+    std::function<void()> onSelectAllRequested_;
+    std::function<void(std::size_t)> onMoveRequested_;
+    std::function<void()> onFocusRequested_;
+
+    // Press / drag state.
+    std::optional<std::size_t> pressedRow_;
+    core::Point pressPoint_;
+    bool pressCanDrag_ = false;
+    bool deferredReplace_ = false; // plain press on a selected row: Replace on release
+    bool dragging_ = false;
+    std::size_t dropGap_ = 0;
     std::vector<std::string> pageLabels_;
 
     // Prefix sums of row heights (prefixHeights_[i] = top of row i;
