@@ -3,6 +3,8 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
+#include <string>
 #include <string_view>
 
 namespace rivet::platform {
@@ -32,6 +34,17 @@ public:
 
     // Warning alert with a single OK button.
     virtual void showError(std::string_view title, std::string_view message) = 0;
+
+    // Modal single-line text prompt (OK / Cancel) pre-filled with
+    // `defaultText`. Returns the entered text, or nullopt when cancelled or
+    // when the platform has no text prompt (the default).
+    virtual std::optional<std::string> promptForText(std::string_view title, std::string_view message,
+                                                     std::string_view defaultText) {
+        (void)title;
+        (void)message;
+        (void)defaultText;
+        return std::nullopt;
+    }
 };
 
 } // namespace rivet::platform

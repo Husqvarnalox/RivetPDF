@@ -2,6 +2,7 @@
 #include "app/FileController.hpp"
 
 #include <format>
+#include <system_error>
 #include <utility>
 
 namespace rivet::app {
@@ -45,6 +46,7 @@ bool FileController::canPerform(FileCommand command) const {
     if (command == FileCommand::Extract && selectionProvider_ != nullptr) {
         return !selectionProvider_().empty();
     }
+    if (command == FileCommand::Split) return tab->session() != nullptr && tab->session()->pageCount() > 0;
     return true;
 }
 
@@ -60,6 +62,7 @@ void FileController::perform(FileCommand command) {
     case FileCommand::Extract:
         if (selectionProvider_ != nullptr) extract(*tab, selectionProvider_());
         break;
+    case FileCommand::Split: split(*tab); break;
     }
 }
 
@@ -289,6 +292,121 @@ void FileController::extract(DocumentTab& tab, std::span<const core::PageId> pag
                 }
             });
         }
+    });
+}
+
+// --- Split ------------------------------------------------------------------
+
+void FileController::split(DocumentTab& tab) {
+    if (tab.session() == nullptr || tab.state() != DocumentTab::State::Ready) return;
+    if (context_.services.alerts == nullptr) {
+        setStatus_("Text prompts are not available on this platform backend");
+        return;
+    }
+    const std::optional<std::string> text = context_.services.alerts->promptForText(
+        "Split PDF by Ranges",
+        std::format("Enter the page ranges to export, each to its own file (the document has {} pages), "
+                    "for example 1-3, 4-7, 8-10.",
+                    tab.session()->pageCount()),
+        "");
+    if (!text.has_value()) return; // cancelled: nothing changes
+    splitByRanges(tab, *text);
+}
+
+void FileController::splitByRanges(DocumentTab& tab, std::string_view rangeText) {
+    if (tab.session() == nullptr || tab.state() != DocumentTab::State::Ready) return;
+    const auto fail = [&](const std::string& message) {
+        setStatus_(message);
+        if (context_.services.alerts != nullptr) context_.services.alerts->showError("Split PDF", message);
+    };
+    editor::DocumentSession& session = *tab.session();
+    const core::Result<std::vector<editor::PageRange>> ranges =
+        editor::parsePageRanges(rangeText, session.pageCount());
+    if (!ranges.has_value()) {
+        fail("Invalid page ranges: " + ranges.error().message);
+        return;
+    }
+    if (context_.services.saveDialog == nullptr) {
+        setStatus_(kUnavailable);
+        return;
+    }
+    platform::ISaveDialog::Options options;
+    options.suggestedName = tab.path().filename().string();
+    options.title = "Split PDF";
+    options.prompt = "Split";
+    const std::optional<std::filesystem::path> chosen = context_.services.saveDialog->runSavePanel(options);
+    if (!chosen.has_value()) return;
+
+    // Never overwrite: every output must be new, checked before any write.
+    const std::vector<std::filesystem::path> outputs = editor::splitOutputPaths(*chosen, *ranges);
+    for (const std::filesystem::path& output : outputs) {
+        std::error_code ec;
+        if (std::filesystem::exists(output, ec)) {
+            fail(std::format("Split cancelled: {} already exists. Nothing was written.",
+                             output.filename().string()));
+            return;
+        }
+    }
+
+    // One consistent snapshot: every job is captured now, on the main thread.
+    std::vector<editor::DocumentWriteJob> jobs;
+    jobs.reserve(ranges->size());
+    for (std::size_t i = 0; i < ranges->size(); ++i) {
+        std::vector<core::PageId> pages;
+        pages.reserve((*ranges)[i].size());
+        for (std::size_t page = (*ranges)[i].first; page <= (*ranges)[i].last; ++page) {
+            pages.push_back(session.pageId(page - 1));
+        }
+        core::Result<editor::DocumentWriteJob> job = editor::makeExtractJob(session, pages, outputs[i]);
+        if (!job.has_value()) {
+            fail("Could not prepare the split: " + describeFailure(job.error()));
+            return;
+        }
+        jobs.push_back(std::move(*job));
+    }
+
+    struct SplitOutcome {
+        std::size_t written = 0;
+        std::optional<core::Error> failure;
+        std::size_t failedIndex = 0;
+    };
+    auto outcome = std::make_shared<SplitOutcome>();
+    const std::size_t total = jobs.size();
+    setStatus_(std::format("Splitting into {} {}…", total, total == 1 ? "file" : "files"));
+    core::IMainThreadDispatcher* dispatcher = context_.services.mainDispatcher;
+    platform::IAlertService* alerts = context_.services.alerts;
+    pdf::PdfEngine& engine = engine_;
+    scheduler_.post([this, &engine, outcome, jobs = std::move(jobs), outputs, total, dispatcher, alerts,
+                     alive = alive_]() mutable {
+        // Worker: touches only the engine, the jobs (which own their
+        // snapshots) and the flag. Controller destruction cancels it.
+        editor::DocumentWriteControl control;
+        control.cancelled = [alive] { return !*alive; };
+        for (std::size_t i = 0; i < jobs.size(); ++i) {
+            editor::DocumentWriteResult write = editor::runDocumentWrite(engine, jobs[i], control);
+            if (!write.written.has_value()) {
+                outcome->failure = write.written.error();
+                outcome->failedIndex = i;
+                break;
+            }
+            ++outcome->written;
+        }
+        // The jobs (and their PDF snapshots) are released on this worker.
+        jobs.clear();
+        if (dispatcher == nullptr) return;
+        dispatcher->post([this, outcome, outputs, total, alerts, alive] {
+            if (!*alive) return;
+            if (!outcome->failure.has_value()) {
+                setStatus_(std::format("Split into {} {}", total, total == 1 ? "file" : "files"));
+                return;
+            }
+            const std::string message = std::format(
+                "Split failed at {}: {} ({} of {} files written)",
+                outputs[outcome->failedIndex].filename().string(),
+                describeFailure(*outcome->failure), outcome->written, total);
+            setStatus_(message);
+            if (alerts != nullptr) alerts->showError("Split PDF", message);
+        });
     });
 }
 

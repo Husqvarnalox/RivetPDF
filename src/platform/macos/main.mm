@@ -139,6 +139,7 @@ int main(int argc, char** argv) {
             {@"Insert Pages After Current…", rivet::app::FileCommand::ImportAfter},
             {@"Merge with PDF…", rivet::app::FileCommand::Merge},
             {@"Export Selected Pages…", rivet::app::FileCommand::Extract},
+            {@"Split PDF by Ranges…", rivet::app::FileCommand::Split},
         };
         for (const auto& [title, command] : fileItems) {
             NSMenuItem* item =

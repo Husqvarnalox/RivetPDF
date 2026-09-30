@@ -10,6 +10,7 @@
 #include "editor/DocumentSaver.hpp"
 #include "editor/DocumentSession.hpp"
 #include "editor/PageCommands.hpp"
+#include "editor/PageRangeParser.hpp"
 #include "platform/AppLifecycle.hpp"
 
 #include <algorithm>
@@ -22,6 +23,7 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace rivet::app {
@@ -35,6 +37,7 @@ enum class FileCommand : std::uint8_t {
     ImportAfter = 3,  // ... after the current page
     Merge = 4,        // append all pages of another PDF
     Extract = 5,      // write the selected pages to a new PDF
+    Split = 6,        // write page ranges to one new PDF each
 };
 
 // The application file lifecycle for one shell, on top of the editor's save
@@ -45,6 +48,17 @@ enum class FileCommand : std::uint8_t {
 //       markSaved; Save As retitles the tab on success
 //   Extract        -> save panel -> worker assembly of the given pages into
 //       a new PDF; the source document is never modified
+//   Split          -> range prompt -> save panel (directory + base name) ->
+//       one Extract job per range, captured up front from one model
+//       snapshot, written sequentially by ONE worker task; export only
+//       (the source is never modified). Partial-success semantics: outputs
+//       already written stay, the failing one leaves nothing under its final
+//       name (atomic write), later ones are not attempted. Existing output
+//       files are never overwritten (checked before anything is written).
+//       Like Extract it is not tied to the tab: closing the tab does not
+//       stop it (the jobs own their snapshots); destroying the controller
+//       (app quit) cancels it cooperatively and drops the completion, and
+//       quit does not wait for it.
 //   Import / Merge -> open panel -> worker: open the source PDF and read its
 //       page metadata -> completion: InsertPagesCommand (atomic on the model)
 //
@@ -109,6 +123,13 @@ public:
     void saveAs(DocumentTab& tab);
     // Writes `pages` (model order) to a new PDF chosen in the save panel.
     void extract(DocumentTab& tab, std::span<const core::PageId> pages);
+    // Split: prompts for page ranges (IAlertService::promptForText), then
+    // calls splitByRanges. Cancelling the prompt changes nothing.
+    void split(DocumentTab& tab);
+    // Split with the range text already known (see editor::parsePageRanges):
+    // validates, shows the save panel for the output directory + base name,
+    // then writes `<stem>_<a>-<b>.pdf` per range.
+    void splitByRanges(DocumentTab& tab, std::string_view rangeText);
     // Imports every page of a chosen PDF at `beforeIndex` (nullopt = append).
     void importPages(DocumentTab& tab, std::optional<std::size_t> beforeIndex);
 

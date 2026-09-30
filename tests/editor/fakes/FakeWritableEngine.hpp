@@ -149,9 +149,9 @@ public:
     }
 
     core::Status assembleDocument(const pdf::PdfAssemblyRequest& request, pdf::IPdfByteSink& sink) override {
-        ++assemblies;
+        const int ordinal = ++assemblies;
         waitAtGate();
-        if (failAssembly.load()) {
+        if (failAssembly.load() || (failAssemblyFrom.load() > 0 && ordinal >= failAssemblyFrom.load())) {
             return std::unexpected(core::makeError(core::ErrorCode::InvalidDocument, "assembly failed", "test"));
         }
         std::ostringstream out;
@@ -191,6 +191,8 @@ public:
     std::set<std::string> lockedPaths;
     std::map<std::string, std::size_t> pageCounts;
     std::atomic<bool> failAssembly{false};
+    // > 0: assemblies numbered >= this value fail (1-based; partial failures).
+    std::atomic<int> failAssemblyFrom{0};
     std::string reopenPassword;
     std::string lastPassword;
 

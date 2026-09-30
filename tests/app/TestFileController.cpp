@@ -19,7 +19,11 @@
 #include "ui/Container.hpp"
 #include "ui/PdfViewport.hpp"
 
+#include <atomic>
+#include <algorithm>
 #include <cstdio>
+#include <fstream>
+#include <optional>
 #include <deque>
 #include <filesystem>
 #include <memory>
@@ -69,6 +73,7 @@ private:
 class WaitDispatcher final : public rivet::core::IMainThreadDispatcher {
 public:
     void post(std::function<void()> task) override {
+        ++posted;
         {
             std::lock_guard<std::mutex> lock(mutex_);
             queue_.push_back(std::move(task));
@@ -83,6 +88,7 @@ public:
         }
         for (auto& task : run) task();
     }
+    std::atomic<int> posted{0};
     bool waitUntil(const std::function<bool()>& predicate) {
         const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
         for (;;) {
@@ -135,8 +141,15 @@ public:
         reviewAnswers.pop_front();
         return answer;
     }
-    void showError(std::string_view, std::string_view) override {}
+    void showError(std::string_view, std::string_view message) override { errors.emplace_back(message); }
+    std::optional<std::string> promptForText(std::string_view, std::string_view, std::string_view) override {
+        ++textPrompts;
+        return textAnswer;
+    }
 
+    std::optional<std::string> textAnswer;
+    int textPrompts = 0;
+    std::vector<std::string> errors;
     std::deque<rivet::platform::SaveChangesChoice> saveAnswers;
     std::deque<rivet::platform::ReviewChangesChoice> reviewAnswers;
     std::vector<std::string> savePrompts;
@@ -389,6 +402,202 @@ RIVET_TEST(extractWithoutPagesIsReported) {
     DocumentTab* tab = shell.open("doc.pdf");
     shell.files->extract(*tab, {});
     CHECK(shell.hasStatus("No pages selected"));
+}
+
+// --- Split ---------------------------------------------------------------------
+
+namespace {
+
+using Markers = std::vector<std::string>;
+
+// Sorted file names in `dir` (leftover temp files would show up here).
+std::vector<std::string> listDir(const fs::path& dir) {
+    std::vector<std::string> names;
+    for (const auto& entry : fs::directory_iterator(dir)) names.push_back(entry.path().filename().string());
+    std::sort(names.begin(), names.end());
+    return names;
+}
+
+} // namespace
+
+RIVET_TEST(splitWritesEachRangeAndLeavesSourceAlone) {
+    Shell shell;
+    DocumentTab* tab = shell.open("doc.pdf", 10);
+    CHECK(tab != nullptr);
+    tab->setCurrentPage(6);
+    shell.saveDialog.next_ = shell.dir("report.pdf");
+
+    shell.files->splitByRanges(*tab, "1-3, 4-7, 8-10");
+    CHECK(shell.dispatcher.waitUntil([&] { return shell.hasStatus("Split into 3 files"); }));
+    CHECK((rivet::test::fakeFileMarkers(shell.dir("report_1-3.pdf")) == Markers{"doc-1", "doc-2", "doc-3"}));
+    CHECK((rivet::test::fakeFileMarkers(shell.dir("report_4-7.pdf")) ==
+           Markers{"doc-4", "doc-5", "doc-6", "doc-7"}));
+    CHECK((rivet::test::fakeFileMarkers(shell.dir("report_8-10.pdf")) == Markers{"doc-8", "doc-9", "doc-10"}));
+    CHECK(!fs::exists(shell.dir("report.pdf"))); // the base name is not itself written
+    CHECK((listDir(shell.dir.dir()) == std::vector<std::string>{"doc.pdf", "report_1-3.pdf", "report_4-7.pdf",
+                                                              "report_8-10.pdf"}));
+    // Export only: nothing about the source changed.
+    CHECK(!tab->session()->isDirty());
+    CHECK(!tab->session()->commands().canUndo());
+    CHECK_EQ(tab->session()->pageCount(), 10u);
+    CHECK_EQ(tab->currentPage(), 6u);
+    CHECK(shell.alerts.errors.empty());
+}
+
+RIVET_TEST(splitSinglePagesAndPdfExtensionNormalisation) {
+    Shell shell;
+    DocumentTab* tab = shell.open("doc.pdf", 10);
+    shell.saveDialog.next_ = shell.dir("Report.PDF");
+    shell.files->splitByRanges(*tab, "9, 2");
+    CHECK(shell.dispatcher.waitUntil([&] { return shell.hasStatus("Split into 2 files"); }));
+    CHECK((listDir(shell.dir.dir()) == std::vector<std::string>{"Report_2.pdf", "Report_9.pdf", "doc.pdf"}));
+    CHECK((rivet::test::fakeFileMarkers(shell.dir("Report_9.pdf")) == Markers{"doc-9"}));
+    CHECK((rivet::test::fakeFileMarkers(shell.dir("Report_2.pdf")) == Markers{"doc-2"}));
+}
+
+RIVET_TEST(splitUsesTheEditedModelOrderAndKeepsEdits) {
+    Shell shell;
+    DocumentTab* tab = shell.open("doc.pdf", 10);
+    auto& session = *tab->session();
+    // Delete page 2 and move the old page 10 (now index 8) to the front.
+    CHECK(session.execute(std::make_unique<rivet::editor::DeletePagesCommand>(
+                              session.pageModel(), std::vector{session.pageId(1)}))
+              .has_value());
+    CHECK(session.execute(std::make_unique<rivet::editor::MovePagesCommand>(
+                              session.pageModel(), std::vector{session.pageId(8)}, 0))
+              .has_value());
+    CHECK(session.isDirty());
+    shell.saveDialog.next_ = shell.dir("e.pdf");
+    shell.files->splitByRanges(*tab, "1-3, 9");
+    CHECK(shell.dispatcher.waitUntil([&] { return shell.hasStatus("Split into 2 files"); }));
+    CHECK((rivet::test::fakeFileMarkers(shell.dir("e_1-3.pdf")) == Markers{"doc-10", "doc-1", "doc-3"}));
+    CHECK((rivet::test::fakeFileMarkers(shell.dir("e_9.pdf")) == Markers{"doc-9"}));
+    CHECK(session.isDirty()); // still dirty: nothing was saved
+    CHECK_EQ(session.pageCount(), 9u);
+}
+
+RIVET_TEST(splitPromptsForRangesAndCancelChangesNothing) {
+    Shell shell;
+    DocumentTab* tab = shell.open("doc.pdf", 10);
+    shell.saveDialog.next_ = shell.dir("p.pdf");
+    // Cancelled prompt: no panel, no status, no files.
+    shell.alerts.textAnswer.reset();
+    shell.files->perform(FileCommand::Split);
+    CHECK_EQ(shell.alerts.textPrompts, 1);
+    CHECK(shell.statusLog.empty());
+    CHECK(shell.saveDialog.next_.has_value()); // the panel was never shown
+    // Answered prompt runs the split.
+    shell.alerts.textAnswer = "1-2";
+    shell.files->perform(FileCommand::Split);
+    CHECK(shell.dispatcher.waitUntil([&] { return shell.hasStatus("Split into 1 file"); }));
+    CHECK(fs::exists(shell.dir("p_1-2.pdf")));
+    CHECK(tab != nullptr);
+    CHECK(shell.files->canPerform(FileCommand::Split));
+}
+
+RIVET_TEST(splitWithoutAlertServiceIsReported) {
+    Shell shell(false);
+    DocumentTab* tab = shell.open("doc.pdf", 10);
+    shell.files->split(*tab);
+    CHECK(shell.hasStatus("Text prompts are not available"));
+}
+
+RIVET_TEST(splitInvalidRangesReportAndWriteNothing) {
+    Shell shell;
+    DocumentTab* tab = shell.open("doc.pdf", 10);
+    for (const char* text : {"", "0", "3-1", "1-11", "abc", "1-3,3-5"}) {
+        shell.statusLog.clear();
+        shell.saveDialog.next_ = shell.dir("x.pdf");
+        shell.files->splitByRanges(*tab, text);
+        CHECK(shell.hasStatus("Invalid page ranges"));
+        CHECK(shell.saveDialog.next_.has_value()); // rejected before the panel
+    }
+    CHECK_EQ(shell.alerts.errors.size(), 6u);
+    CHECK((listDir(shell.dir.dir()) == std::vector<std::string>{"doc.pdf"}));
+    CHECK_EQ(shell.engine.assemblies.load(), 0);
+    CHECK(!tab->session()->isDirty());
+}
+
+RIVET_TEST(splitAbortsBeforeWritingWhenAnOutputExists) {
+    Shell shell;
+    DocumentTab* tab = shell.open("doc.pdf", 10);
+    {
+        std::ofstream existing(shell.dir("r_4-7.pdf"), std::ios::binary);
+        existing << "precious";
+    }
+    shell.saveDialog.next_ = shell.dir("r.pdf");
+    shell.files->splitByRanges(*tab, "1-3, 4-7, 8-10");
+    CHECK(shell.hasStatus("Split cancelled: r_4-7.pdf already exists"));
+    CHECK_EQ(shell.alerts.errors.size(), 1u);
+    CHECK((listDir(shell.dir.dir()) == std::vector<std::string>{"doc.pdf", "r_4-7.pdf"}));
+    std::ifstream in(shell.dir("r_4-7.pdf"), std::ios::binary);
+    std::string content;
+    std::getline(in, content);
+    CHECK(content == "precious");
+    CHECK_EQ(shell.engine.assemblies.load(), 0);
+}
+
+RIVET_TEST(splitUnwritableDestinationFailsControlled) {
+    Shell shell;
+    DocumentTab* tab = shell.open("doc.pdf", 10);
+    shell.saveDialog.next_ = shell.dir("missing-dir/r.pdf");
+    shell.files->splitByRanges(*tab, "1-3, 4-7");
+    CHECK(shell.dispatcher.waitUntil([&] { return shell.hasStatus("Split failed at r_1-3.pdf"); }));
+    CHECK(shell.lastStatus().find("(0 of 2 files written)") != std::string::npos);
+    CHECK_EQ(shell.alerts.errors.size(), 1u);
+    CHECK(!fs::exists(shell.dir("missing-dir")));
+    CHECK((listDir(shell.dir.dir()) == std::vector<std::string>{"doc.pdf"}));
+    CHECK(!tab->session()->isDirty());
+    CHECK_EQ(tab->session()->pageCount(), 10u);
+}
+
+RIVET_TEST(splitPartialFailureKeepsEarlierOutputsOnly) {
+    Shell shell;
+    DocumentTab* tab = shell.open("doc.pdf", 10);
+    shell.engine.failAssemblyFrom = 2; // the second output fails
+    shell.saveDialog.next_ = shell.dir("r.pdf");
+    shell.files->splitByRanges(*tab, "1-3, 4-7, 8-10");
+    CHECK(shell.dispatcher.waitUntil([&] { return shell.hasStatus("Split failed at r_4-7.pdf"); }));
+    CHECK(shell.lastStatus().find("(1 of 3 files written)") != std::string::npos);
+    // The first output stays; the failed one left nothing (no temp either);
+    // the third was never attempted.
+    CHECK((listDir(shell.dir.dir()) == std::vector<std::string>{"doc.pdf", "r_1-3.pdf"}));
+    CHECK_EQ(shell.engine.assemblies.load(), 2);
+    CHECK(!tab->session()->isDirty());
+}
+
+RIVET_TEST(splitSurvivesTabCloseAndUsesItsSnapshot) {
+    Shell shell;
+    DocumentTab* tab = shell.open("doc.pdf", 10);
+    shell.engine.closeGate();
+    shell.saveDialog.next_ = shell.dir("c.pdf");
+    shell.files->splitByRanges(*tab, "1-2, 3-4");
+    CHECK(shell.engine.waitParked(1));
+    // The user edits and closes the tab while the split is running.
+    shell.workspace.closeTab(shell.workspace.activeIndex());
+    shell.engine.release();
+    CHECK(shell.dispatcher.waitUntil([&] { return shell.hasStatus("Split into 2 files"); }));
+    CHECK((rivet::test::fakeFileMarkers(shell.dir("c_1-2.pdf")) == Markers{"doc-1", "doc-2"}));
+    CHECK((rivet::test::fakeFileMarkers(shell.dir("c_3-4.pdf")) == Markers{"doc-3", "doc-4"}));
+}
+
+RIVET_TEST(splitIsCancelledWhenTheControllerIsDestroyed) {
+    Shell shell;
+    DocumentTab* tab = shell.open("doc.pdf", 10);
+    shell.engine.closeGate();
+    shell.saveDialog.next_ = shell.dir("d.pdf");
+    shell.files->splitByRanges(*tab, "1-2, 3-4");
+    CHECK(shell.engine.waitParked(1));
+    shell.statusLog.clear();
+    const int postedBefore = shell.dispatcher.posted.load();
+    shell.files.reset(); // app quit: does not wait for the worker
+    shell.engine.release();
+    // The worker finishes (cancelled before its commit) and posts its
+    // completion, which the dead controller ignores.
+    CHECK(shell.dispatcher.waitUntil([&] { return shell.dispatcher.posted.load() > postedBefore; }));
+    CHECK(shell.statusLog.empty());
+    CHECK((listDir(shell.dir.dir()) == std::vector<std::string>{"doc.pdf"}));
+    CHECK_EQ(shell.engine.assemblies.load(), 1); // the second output was never started
 }
 
 // --- Close / quit lifecycle -------------------------------------------------------

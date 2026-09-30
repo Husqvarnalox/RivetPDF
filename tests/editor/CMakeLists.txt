@@ -11,6 +11,7 @@ add_executable(rivet_editor_tests
     # Page model, page commands, page selection (portable, fakes/).
     TestPageModel.cpp
     TestPageSession.cpp
+    TestPageRangeParser.cpp
     # Page model -> assembly -> reload against PDFium fixtures: PDFium-ON
     # bodies only (returns early without a backend).
     TestPageModelPdfium.cpp

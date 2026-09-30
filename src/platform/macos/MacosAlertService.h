@@ -11,6 +11,8 @@ public:
     SaveChangesChoice askSaveChanges(std::string_view documentTitle) override;
     ReviewChangesChoice askReviewUnsavedChanges(std::size_t unsavedDocumentCount) override;
     void showError(std::string_view title, std::string_view message) override;
+    std::optional<std::string> promptForText(std::string_view title, std::string_view message,
+                                             std::string_view defaultText) override;
 };
 
 } // namespace rivet::platform

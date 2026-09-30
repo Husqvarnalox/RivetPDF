@@ -24,6 +24,7 @@
 #include <deque>
 #include <filesystem>
 #include <memory>
+#include <optional>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -130,6 +131,32 @@ public:
 private:
     fs::path path_;
 };
+
+class FakeOpenDialog final : public rivet::platform::IFileDialog {
+public:
+    rivet::core::Result<fs::path> openPdf() override { return next_; }
+    fs::path next_;
+};
+
+class FakeSaveDialog final : public rivet::platform::ISaveDialog {
+public:
+    std::optional<fs::path> runSavePanel(const Options&) override { return next_; }
+    std::optional<fs::path> next_;
+};
+
+// "PAGE-n" (base fixture pages) or "IMPORT-n" (import-3.pdf pages).
+std::string label(PdfDocument& document, std::size_t page) {
+    const std::string all = pageText(document, page);
+    if (const auto at = all.find("PAGE-"); at != std::string::npos) return all.substr(at, 6);
+    if (const auto at = all.find("IMPORT-"); at != std::string::npos) return all.substr(at, 8);
+    return all;
+}
+
+std::vector<std::string> labels(PdfDocument& document) {
+    std::vector<std::string> out;
+    for (std::size_t i = 0; i < document.info().pageCount; ++i) out.push_back(label(document, i));
+    return out;
+}
 
 struct Shell {
     std::unique_ptr<PdfEngine> engine = pdfiumEngine();
@@ -275,4 +302,67 @@ RIVET_TEST(pdfiumFileControllerSaveAsAndExtractRoundTrip) {
     CHECK((markers(**out) == std::vector<std::string>{"PAGE-1", "PAGE-4"}));
     CHECK_EQ(session.pageCount(), 5u);
     CHECK(!session.isDirty());
+}
+
+RIVET_TEST(pdfiumFileControllerSplitByRangesRoundTrip) {
+    Shell shell;
+    if (shell.engine == nullptr) return;
+    FakeOpenDialog openDialog;
+    FakeSaveDialog saveDialog;
+    shell.services.fileDialog = &openDialog;
+    shell.services.saveDialog = &saveDialog;
+
+    TempDir dir;
+    DocumentTab* tab = shell.openCopy(fixture("markers-5.pdf"), dir("work.pdf"));
+    CHECK(tab != nullptr);
+    if (tab == nullptr) return;
+    DocumentSession& session = *tab->session();
+    auto& model = session.pageModel();
+
+    // Import 3 pages (IMPORT-1..3) at the end, duplicate pages 0 and 3, move
+    // the last page to the front, rotate one page and crop another:
+    //   I3 P1 P1' P2(rot90) P3(crop) P4 P4' P5 I1 I2
+    openDialog.next_ = fixture("import-3.pdf");
+    shell.files->importPages(*tab, std::nullopt);
+    CHECK(shell.dispatcher.waitUntil([&] { return shell.hasStatus("Imported 3 pages"); }));
+    CHECK(session.execute(std::make_unique<rivet::editor::DuplicatePagesCommand>(
+                              model, std::vector{session.pageId(0), session.pageId(3)}))
+              .has_value());
+    CHECK_EQ(session.pageCount(), 10u);
+    CHECK(session.execute(std::make_unique<rivet::editor::MovePagesCommand>(model, std::vector{session.pageId(9)}, 0))
+              .has_value());
+    CHECK(session.execute(std::make_unique<rivet::editor::RotatePagesCommand>(model, std::vector{session.pageId(3)}, 90))
+              .has_value());
+    const rivet::pdf::PdfBox crop{100.0, 100.0, 400.0, 500.0};
+    CHECK(session.execute(std::make_unique<rivet::editor::CropPagesCommand>(model, std::vector{session.pageId(4)}, crop))
+              .has_value());
+    CHECK(session.isDirty());
+
+    saveDialog.next_ = dir("out.pdf");
+    shell.files->splitByRanges(*tab, "1-3, 4-7, 8-10");
+    CHECK(shell.dispatcher.waitUntil([&] { return shell.hasStatus("Split into 3 files"); }));
+    CHECK(session.isDirty()); // export only
+    CHECK_EQ(session.pageCount(), 10u);
+
+    auto a = shell.engine->openDocument(dir("out_1-3.pdf"), {});
+    auto b = shell.engine->openDocument(dir("out_4-7.pdf"), {});
+    auto c = shell.engine->openDocument(dir("out_8-10.pdf"), {});
+    CHECK(a.has_value() && b.has_value() && c.has_value());
+    if (!a || !b || !c) return;
+    CHECK_EQ((*a)->info().pageCount, 3u);
+    CHECK_EQ((*b)->info().pageCount, 4u);
+    CHECK_EQ((*c)->info().pageCount, 3u);
+    CHECK((labels(**a) == std::vector<std::string>{"IMPORT-3", "PAGE-1", "PAGE-1"}));
+    CHECK((labels(**b) == std::vector<std::string>{"PAGE-2", "PAGE-3", "PAGE-4", "PAGE-4"}));
+    CHECK((labels(**c) == std::vector<std::string>{"PAGE-5", "IMPORT-1", "IMPORT-2"}));
+
+    // Rotation and CropBox survived in the output carrying those pages.
+    CHECK((*b)->pageInfo(0)->view.rotation == rivet::core::PageRotation::Clockwise90);
+    CHECK((*b)->pageInfo(1)->view.rotation == rivet::core::PageRotation::None);
+    const auto cropped = (*b)->pageInfo(1)->view.cropBox;
+    CHECK_NEAR(cropped.left, crop.left, 0.01);
+    CHECK_NEAR(cropped.bottom, crop.bottom, 0.01);
+    CHECK_NEAR(cropped.right, crop.right, 0.01);
+    CHECK_NEAR(cropped.top, crop.top, 0.01);
+    CHECK((*a)->pageInfo(1)->view.rotation == rivet::core::PageRotation::None);
 }

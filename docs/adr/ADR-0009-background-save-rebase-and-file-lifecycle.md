@@ -136,3 +136,22 @@ change is published (`orderChanged = false`).
   acts on the deferred close intent / quit only when the save succeeded);
   covered by `failedSaveOnDirtyCloseKeepsTheTabOpen` and
   `failedSaveOnQuitAbortsTheQuit`.
+
+## Addendum: Split by ranges
+
+Split PDF by ranges is an export built on the Extract job: one
+`DocumentWriteJob` per range, captured on the main thread from one snapshot
+and written sequentially by a single worker task. Decisions:
+
+- It never mutates the source (no dirty flag, model, selection or history
+  change).
+- No fake cross-file transaction: the first failure stops the run, earlier
+  outputs stay, the failing output is atomic (nothing under its final name).
+  The status reports the failing file and "N of M files written".
+- Existing outputs are never overwritten: all output paths are checked
+  before any write and the split is aborted naming the first collision.
+- Like Extract, it is not tied to the tab (closing the tab is safe; the jobs
+  own their snapshots). Controller destruction (quit) cancels cooperatively
+  through `DocumentWriteControl::cancelled` bound to `alive_` and drops the
+  completion; quit does not wait for the worker.
+- Ranges must be disjoint; uncovered pages are simply not exported.

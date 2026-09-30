@@ -78,4 +78,26 @@ void MacosAlertService::showError(std::string_view title, std::string_view messa
     [alert runModal];
 }
 
+std::optional<std::string> MacosAlertService::promptForText(std::string_view title,
+                                                            std::string_view message,
+                                                            std::string_view defaultText) {
+    NSAlert* alert = [[NSAlert alloc] init];
+    alert.alertStyle = NSAlertStyleInformational;
+    alert.messageText = toNSString(title);
+    alert.informativeText = toNSString(message);
+    NSButton* ok = [alert addButtonWithTitle:@"OK"];
+    (void)ok;
+    NSButton* cancel = [alert addButtonWithTitle:@"Cancel"];
+    cancel.keyEquivalent = @"\033";
+
+    NSTextField* field = [[NSTextField alloc] initWithFrame:NSMakeRect(0, 0, 320, 24)];
+    field.stringValue = toNSString(defaultText);
+    alert.accessoryView = field;
+    alert.window.initialFirstResponder = field;
+
+    if ([alert runModal] != NSAlertFirstButtonReturn) return std::nullopt;
+    const char* utf8 = field.stringValue.UTF8String;
+    return std::string(utf8 != nullptr ? utf8 : "");
+}
+
 } // namespace rivet::platform

@@ -13,6 +13,7 @@ add_library(rivet_editor STATIC
     DocumentSession.cpp
     DocumentSaver.cpp
     PrintSpooler.cpp
+    PageRangeParser.cpp
 )
 
 add_library(rivet::editor ALIAS rivet_editor)
