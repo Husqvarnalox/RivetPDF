@@ -165,7 +165,13 @@ Outcome runJob(PrintSpooler& spooler, QueueDispatcher& dispatcher, std::vector<P
 
 std::vector<std::uint8_t> readFile(const std::filesystem::path& path) {
     std::ifstream in(path, std::ios::binary);
-    return std::vector<std::uint8_t>(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+    std::vector<std::uint8_t> out;
+    char buffer[4096];
+    while (in.read(buffer, sizeof buffer) || in.gcount() > 0) {
+        const auto* bytes = reinterpret_cast<const std::uint8_t*>(buffer);
+        out.insert(out.end(), bytes, bytes + in.gcount());
+    }
+    return out;
 }
 
 } // namespace
