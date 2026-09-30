@@ -157,7 +157,7 @@ private:
     // A save of `tab` settled: runs the deferred close intent and, when
     // quitting, advances the outstanding set (completing the reply on the
     // last one) and starts the next chained save.
-    void saveSettled(TabId tab);
+    void saveSettled(TabId tab, bool saved);
 
     pdf::PdfEngine& engine_;
     ShellContext& context_;

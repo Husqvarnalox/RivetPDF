@@ -522,6 +522,39 @@ RIVET_TEST(quitDuringInFlightSaveWaitsForIt) {
     CHECK(!shell.files->isSavingAnything());
 }
 
+RIVET_TEST(failedSaveOnDirtyCloseKeepsTheTabOpen) {
+    Shell shell;
+    DocumentTab* tab = shell.open("doc.pdf");
+    shell.rotateFirst(*tab);
+    shell.engine.failAssembly = true;
+    shell.alerts.saveAnswers.push_back(rivet::platform::SaveChangesChoice::Save);
+
+    CHECK(!shell.files->confirmCloseTab(*tab));
+    CHECK(shell.dispatcher.waitUntil([&] { return shell.hasStatus("Save failed"); }));
+    shell.dispatcher.waitUntil([&] { return !shell.files->isSavingAnything(); });
+    // The edits must survive a failed save: tab still open and dirty.
+    CHECK_EQ(shell.workspace.tabCount(), 1u);
+    CHECK(tab->session()->isDirty());
+}
+
+RIVET_TEST(failedSaveOnQuitAbortsTheQuit) {
+    Shell shell;
+    DocumentTab* tab = shell.open("doc.pdf");
+    shell.rotateFirst(*tab);
+    shell.engine.failAssembly = true;
+    shell.alerts.saveAnswers.push_back(rivet::platform::SaveChangesChoice::Save);
+    bool replied = false;
+    bool proceed = true;
+    shell.files->handleQuitRequest([&](bool decision) {
+        replied = true;
+        proceed = decision;
+    });
+    CHECK(shell.dispatcher.waitUntil([&] { return replied; }));
+    CHECK(!proceed);
+    CHECK_EQ(shell.workspace.tabCount(), 1u);
+    CHECK(tab->session()->isDirty());
+}
+
 RIVET_TEST(quitWithNoAlertServiceNeverDiscards) {
     Shell shell{false};
     DocumentTab* tab = shell.open("doc.pdf");

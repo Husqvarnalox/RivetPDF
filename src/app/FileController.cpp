@@ -152,7 +152,8 @@ void FileController::startNextSave() {
     queuedSaves_.pop_front();
     DocumentTab* tab = context_.workspace.tabById(request.tab);
     if (tab == nullptr || tab->session() == nullptr || tab->state() != DocumentTab::State::Ready) {
-        saveSettled(request.tab); // gone meanwhile: run the intents, advance
+        // Gone meanwhile: nothing left to lose. Still present but unusable: not saved.
+        saveSettled(request.tab, tab == nullptr);
         return;
     }
     core::Result<editor::DocumentWriteJob> job =
@@ -160,7 +161,7 @@ void FileController::startNextSave() {
     if (!job.has_value()) {
         tab->session()->setEditingLocked(false);
         setStatus_("Could not prepare the save: " + describeFailure(job.error()));
-        saveSettled(request.tab);
+        saveSettled(request.tab, false);
         return;
     }
     tab->session()->setEditingLocked(true, "saving");
@@ -190,7 +191,7 @@ void FileController::handleSaveCompleted(
     // atomically; there is nothing to rebase and nothing to report.
     if (tab == nullptr || tab->session() == nullptr || tab->state() != DocumentTab::State::Ready ||
         !result->has_value()) {
-        saveSettled(request.tab);
+        saveSettled(request.tab, tab == nullptr);
         return;
     }
     editor::DocumentSession& session = *tab->session();
@@ -199,7 +200,7 @@ void FileController::handleSaveCompleted(
         // The destination is intact (atomic replace): stay dirty, stay editable.
         session.setEditingLocked(false);
         setStatus_("Save failed: " + describeFailure(write.written.error()));
-        saveSettled(request.tab);
+        saveSettled(request.tab, false);
         return;
     }
     const bool pathChanged = request.destination != session.path();
@@ -222,18 +223,24 @@ void FileController::handleSaveCompleted(
     session.markSaved();
     session.setEditingLocked(false);
     setStatus_(std::format("Saved {}", session.path().filename().string()));
-    saveSettled(request.tab);
+    saveSettled(request.tab, true);
 }
 
-void FileController::saveSettled(TabId tab) {
-    // The user chose to close this tab behind its save.
-    if (std::erase(closeAfterSave_, tab) > 0) {
+void FileController::saveSettled(TabId tab, bool saved) {
+    // The user chose to close this tab behind its save. A failed save must
+    // never discard the edits: the tab stays open (and dirty).
+    if (std::erase(closeAfterSave_, tab) > 0 && saved) {
         const std::size_t index = context_.workspace.indexOfTab(tab);
         if (index != DocumentWorkspace::kNoTab) context_.workspace.closeTab(index);
     }
     if (pendingQuit_.has_value()) {
         std::erase(pendingQuit_->outstanding, tab);
-        if (pendingQuit_->outstanding.empty()) {
+        if (!saved) {
+            // Quit was waiting on this save: abort it, the app keeps running.
+            auto quit = std::move(*pendingQuit_);
+            pendingQuit_.reset();
+            quit.reply(false);
+        } else if (pendingQuit_->outstanding.empty()) {
             auto quit = std::move(*pendingQuit_);
             pendingQuit_.reset();
             quit.reply(true);
@@ -510,7 +517,7 @@ void FileController::handleQuitRequest(platform::IAppLifecycle::QuitReply reply)
     for (const TabId tabId : outstanding) {
         DocumentTab* tab = context_.workspace.tabById(tabId);
         if (tab == nullptr || tab->session() == nullptr) {
-            saveSettled(tabId); // vanished meanwhile: re-check the quit state
+            saveSettled(tabId, true); // vanished meanwhile: re-check the quit state
             continue;
         }
         if (isSaving(tabId)) continue;
