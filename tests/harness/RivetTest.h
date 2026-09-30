@@ -18,6 +18,7 @@
 #include <exception>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace rivet::test {
@@ -49,6 +50,29 @@ void reportEq(const A& a, const B& b, const char* ea, const char* eb, const char
         std::fprintf(stderr, "    CHECK_EQ failed at %s:%d: %s == %s\n", file, line, ea, eb);
         throw CheckFailure("CHECK_EQ");
     }
+}
+
+// UTF-32 text from a (valid) UTF-8 narrow literal. Tests use this instead of
+// U"..." literals: GCC on Darwin (seen with Homebrew GCC 16) emits non-char
+// string literals into __TEXT,__const under an assembler-local "L" label, so
+// with .subsections_via_symbols the literal belongs to whatever symbol
+// precedes it in that section. When that symbol is a weak one (e.g. a
+// typeinfo name), the linker coalesces it with another object's copy and the
+// literal's address resolves into unrelated data. Narrow literals live in
+// __cstring, which the linker splits by content, so they are unaffected.
+inline std::u32string utf32(std::string_view utf8) {
+    std::u32string out;
+    for (std::size_t i = 0; i < utf8.size();) {
+        const auto lead = static_cast<unsigned char>(utf8[i]);
+        const std::size_t length = lead < 0x80u ? 1 : lead < 0xE0u ? 2 : lead < 0xF0u ? 3 : 4;
+        char32_t codePoint = length == 1 ? lead : length == 2 ? (lead & 0x1Fu) : length == 3 ? (lead & 0x0Fu) : (lead & 0x07u);
+        for (std::size_t k = 1; k < length && i + k < utf8.size(); ++k) {
+            codePoint = (codePoint << 6) | (static_cast<unsigned char>(utf8[i + k]) & 0x3Fu);
+        }
+        out.push_back(codePoint);
+        i += length;
+    }
+    return out;
 }
 
 inline int runAll() {

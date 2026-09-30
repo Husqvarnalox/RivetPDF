@@ -43,6 +43,7 @@ using rivet::pdf::PdfEngine;
 using rivet::pdf::PdfPageInfo;
 using rivet::pdf::PdfTextPage;
 using rivet::pdf::TextChar;
+using rivet::test::utf32;
 
 namespace {
 
@@ -178,7 +179,7 @@ TextSelection select(PageId anchorPage, std::uint32_t anchorChar, PageId focusPa
 } // namespace
 
 RIVET_TEST(selectionRangesForwardBackwardAndSamePage) {
-    Fixture f({U"alpha one", U"bravo two", U"charlie three"});
+    Fixture f({utf32("alpha one"), utf32("bravo two"), utf32("charlie three")});
     const PageId p0 = f.session->pageId(0);
     const PageId p1 = f.session->pageId(1);
     const PageId p2 = f.session->pageId(2);
@@ -203,7 +204,7 @@ RIVET_TEST(selectionRangesForwardBackwardAndSamePage) {
 }
 
 RIVET_TEST(rangeTextHandlesLineBreaksCyrillicAndClamping) {
-    const auto page = makePage(U"Привет\r\nмир�!");
+    const auto page = makePage(utf32("Привет\r\nмир�!"));
     std::string out;
     rivet::editor::appendRangeText(*page, 0, TextRange::kToPageEnd, out);
     // "\r\n" collapses to one '\n'; U+FFFD with geometry is kept as text.
@@ -219,7 +220,7 @@ RIVET_TEST(rangeTextHandlesLineBreaksCyrillicAndClamping) {
 }
 
 RIVET_TEST(copyExtractsColdPagesInsteadOfSkippingThem) {
-    Fixture f({U"alpha one", U"bravo два", U"charlie three"});
+    Fixture f({utf32("alpha one"), utf32("bravo два"), utf32("charlie three")});
     // A zero budget: nothing is ever cached, every page is cold.
     f.session->textService().cache().setMaxBytes(0);
     const PageId p0 = f.session->pageId(0);
@@ -236,7 +237,7 @@ RIVET_TEST(copyExtractsColdPagesInsteadOfSkippingThem) {
 }
 
 RIVET_TEST(copyReportsAFailedPageInsteadOfAPartialText) {
-    Fixture f({U"alpha", U"bravo", U"charlie"});
+    Fixture f({utf32("alpha"), utf32("bravo"), utf32("charlie")});
     f.document().failPage = 1;
     const auto result = f.copy(select(f.session->pageId(0), 0, f.session->pageId(2), 3));
     CHECK(result.has_value());
@@ -245,7 +246,7 @@ RIVET_TEST(copyReportsAFailedPageInsteadOfAPartialText) {
 }
 
 RIVET_TEST(copyCallbackIsDroppedWhenTheSessionCloses) {
-    Fixture f({U"alpha", U"bravo", U"charlie"});
+    Fixture f({utf32("alpha"), utf32("bravo"), utf32("charlie")});
     f.session->textService().cache().setMaxBytes(0);
     f.document().parkPage = 1;
     bool delivered = false;

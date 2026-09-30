@@ -23,6 +23,7 @@ using rivet::pdf::PdfTextPage;
 using rivet::pdf::TextChar;
 using rivet::pdf::TextSearchOptions;
 using rivet::pdf::TextSearchResult;
+using rivet::test::utf32;
 
 constexpr char32_t kReplacement = 0xFFFD;
 
@@ -183,13 +184,13 @@ RIVET_TEST(pdfTextPageBuildsUtf8Text) {
 // skips zero-area chars, and clamps the requested range.
 RIVET_TEST(pdfTextRectsForRange) {
     // One row of four chars: one union rect.
-    const PdfTextPage single = makeGridPage(U"abcd", 4);
+    const PdfTextPage single = makeGridPage(utf32("abcd"), 4);
     const std::vector<core::Rect> singleRects = single.rectsForRange(0, 4);
     CHECK_EQ(singleRects.size(), std::size_t{1});
     CHECK(core::Rect::nearlyEqual(singleRects[0], core::Rect{0.0, 0.0, 38.0, 10.0}));
 
     // Two rows of three: two rects with disjoint y bands.
-    const PdfTextPage twoRows = makeGridPage(U"abcdef", 3);
+    const PdfTextPage twoRows = makeGridPage(utf32("abcdef"), 3);
     const std::vector<core::Rect> rows = twoRows.rectsForRange(0, 6);
     CHECK_EQ(rows.size(), std::size_t{2});
     CHECK_LT(rows[0].maxY(), rows[1].minY()); // reading order: row 0 above row 1
@@ -240,7 +241,7 @@ RIVET_TEST(pdfTextRectsForRange) {
 // x-center within the row (ties -> earlier), including the rotated-page case
 // where rows run vertically.
 RIVET_TEST(pdfTextCharIndexAtPoint) {
-    const PdfTextPage line = makeGridPage(U"abc", 3);
+    const PdfTextPage line = makeGridPage(utf32("abc"), 3);
     // Char x-centers: 4, 14, 24; row y-center 5.
     CHECK_EQ(line.charIndexAtPoint(core::Point{2.0, 5.0}).value(), 0u);
     CHECK_EQ(line.charIndexAtPoint(core::Point{14.0, 5.0}).value(), 1u);
@@ -254,7 +255,7 @@ RIVET_TEST(pdfTextCharIndexAtPoint) {
     // Off-row vertically: nearest row wins regardless of x.
     CHECK_EQ(line.charIndexAtPoint(core::Point{14.0, 100.0}).value(), 1u);
 
-    const PdfTextPage twoRows = makeGridPage(U"abcdef", 3);
+    const PdfTextPage twoRows = makeGridPage(utf32("abcdef"), 3);
     // Row y-centers: 5 and 17. Equidistant point -> earlier row.
     CHECK_EQ(twoRows.charIndexAtPoint(core::Point{2.0, 11.0}).value(), 0u);
     // Closer to the second row -> its first char.
@@ -263,7 +264,7 @@ RIVET_TEST(pdfTextCharIndexAtPoint) {
 
     // Rotated-page case: a CW90 page's line runs vertically, so each char is
     // its own row and the hit test effectively walks down the line.
-    const PdfTextPage vertical = makeVerticalPage(U"abcd");
+    const PdfTextPage vertical = makeVerticalPage(utf32("abcd"));
     CHECK_EQ(vertical.charIndexAtPoint(core::Point{5.0, 3.0}).value(), 0u);
     CHECK_EQ(vertical.charIndexAtPoint(core::Point{5.0, 21.0}).value(), 1u);
     CHECK_EQ(vertical.charIndexAtPoint(core::Point{5.0, 45.0}).value(), 3u);
@@ -282,7 +283,7 @@ RIVET_TEST(pdfTextCharIndexAtPoint) {
 // searchTextPage: matches in page order, Unicode case-insensitive folding,
 // case-sensitive misses, whole-word boundaries, and non-overlapping scans.
 RIVET_TEST(pdfTextSearchBasics) {
-    const PdfTextPage page = makeGridPage(U"Hello Rivet, says Rivet", 24);
+    const PdfTextPage page = makeGridPage(utf32("Hello Rivet, says Rivet"), 24);
 
     // Plain match, two hits in page order.
     std::vector<TextSearchResult> hits = rivet::pdf::searchTextPage(page, "Rivet");
@@ -305,17 +306,17 @@ RIVET_TEST(pdfTextSearchBasics) {
     CHECK(rivet::pdf::searchTextPage(page, "").empty());
 
     // Needle longer than the text: no results.
-    CHECK(rivet::pdf::searchTextPage(makeGridPage(U"abc", 3), "abcdef").empty());
+    CHECK(rivet::pdf::searchTextPage(makeGridPage(utf32("abc"), 3), "abcdef").empty());
 
     // Non-overlapping: "aa" in "aaa" matches once.
-    const PdfTextPage aaa = makeGridPage(U"aaa", 3);
+    const PdfTextPage aaa = makeGridPage(utf32("aaa"), 3);
     hits = rivet::pdf::searchTextPage(aaa, "aa");
     CHECK_EQ(hits.size(), std::size_t{1});
     CHECK_EQ(hits[0], (TextSearchResult{0, 2}));
 }
 
 RIVET_TEST(pdfTextSearchWholeWord) {
-    const PdfTextPage page = makeGridPage(U"Rivets Rivet", 12);
+    const PdfTextPage page = makeGridPage(utf32("Rivets Rivet"), 12);
     // Without wholeWord: both occurrences.
     std::vector<TextSearchResult> hits = rivet::pdf::searchTextPage(page, "Rivet");
     CHECK_EQ(hits.size(), std::size_t{2});
@@ -326,7 +327,7 @@ RIVET_TEST(pdfTextSearchWholeWord) {
     CHECK_EQ(hits.size(), std::size_t{1});
     CHECK_EQ(hits[0], (TextSearchResult{7, 5}));
     // Word at the very start/end counts as bounded.
-    const PdfTextPage solo = makeGridPage(U"Rivet", 5);
+    const PdfTextPage solo = makeGridPage(utf32("Rivet"), 5);
     hits = rivet::pdf::searchTextPage(solo, "Rivet", TextSearchOptions{false, true});
     CHECK_EQ(hits.size(), std::size_t{1});
     CHECK_EQ(hits[0].startIndex, 0u);

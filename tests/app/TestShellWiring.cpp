@@ -47,6 +47,7 @@ using rivet::app::DocumentWorkspace;
 using rivet::app::FlattenedOutline;
 using rivet::app::OutlinePath;
 using rivet::app::PasswordPromptController;
+using rivet::test::utf32;
 using rivet::app::SearchBarController;
 using rivet::app::ShellContext;
 using rivet::app::SidebarController;
@@ -116,7 +117,7 @@ public:
     }
 
 private:
-    std::vector<std::u32string> pages_{U"alpha beta", U"beta gamma", U"delta beta"};
+    std::vector<std::u32string> pages_{utf32("alpha beta"), utf32("beta gamma"), utf32("delta beta")};
     PdfDocumentInfo info_;
 };
 
