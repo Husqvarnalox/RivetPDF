@@ -195,7 +195,7 @@ void FileController::handleSaveCompleted(
         return;
     }
     editor::DocumentSession& session = *tab->session();
-    const editor::DocumentWriteResult& write = **result;
+    editor::DocumentWriteResult& write = **result;
     if (!write.written.has_value()) {
         // The destination is intact (atomic replace): stay dirty, stay editable.
         session.setEditingLocked(false);
@@ -281,7 +281,7 @@ void FileController::extract(DocumentTab& tab, std::span<const core::PageId> pag
         if (context_.services.mainDispatcher != nullptr) {
             context_.services.mainDispatcher->post([this, result, alive] {
                 if (!*alive) return;
-                const editor::DocumentWriteResult& write = **result;
+                editor::DocumentWriteResult& write = **result;
                 if (write.written.has_value()) {
                     setStatus_("Exported");
                 } else {
