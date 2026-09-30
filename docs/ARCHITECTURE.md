@@ -21,6 +21,9 @@ Key decisions are recorded in `docs/adr/`:
 | [ADR-0005](adr/ADR-0005-tile-based-rendering.md) | Tile-based rendering and cache policy |
 | [ADR-0006](adr/ADR-0006-serialized-pdf-access-per-document.md) | Serialized PDF access per document |
 | [ADR-0007](adr/ADR-0007-pdf-javascript-xfa-disabled.md) | PDF JavaScript/XFA disabled |
+| [ADR-0008](adr/ADR-0008-page-model-and-stable-page-identity.md) | Page model, stable page identity, assembled saves |
+| [ADR-0009](adr/ADR-0009-background-save-rebase-and-file-lifecycle.md) | Background save, editing lock, rebase, dirty close/quit |
+| [ADR-0010](adr/ADR-0010-atomic-save-replacement.md) | Atomic save by temp file + rename |
 
 ---
 
@@ -29,15 +32,15 @@ Key decisions are recorded in `docs/adr/`:
 Rivet is organized as a set of statically linked CMake libraries plus one
 executable:
 
-- `rivet_core` - geometry, strong IDs, errors, logging, time, bitmaps, task scheduling.
+- `rivet_core` - geometry, strong IDs, errors, logging, time, bitmaps, task scheduling, atomic file writing.
 - `rivet_render` - coordinate transforms, page layout, zoom, viewer state, tile cache, render contracts.
-- `rivet_pdf` - PDF engine interfaces (`PdfEngine`, `PdfDocument`, `PdfTypes`) and a null engine when PDFium is not compiled in.
+- `rivet_pdf` - PDF engine interfaces (`PdfEngine`, `PdfDocument`, `PdfTypes`, page views/geometry, document assembly) and a null engine when PDFium is not compiled in.
 - `rivet_pdfium` - the PDFium adapter; only built with `RIVET_WITH_PDFIUM=ON`.
-- `rivet_editor` - commands/undo, document sessions, the render source that drives rasterization.
+- `rivet_editor` - page model, commands/undo, document sessions, the save pipeline, the render source that drives rasterization.
 - `rivet_ui` - Rivet-owned retained-mode widgets.
 - `rivet_platform` - thin platform abstraction headers (file dialog, main-thread dispatch).
 - `rivet_platform_macos` - AppKit/CoreGraphics/CoreText implementation of the platform abstractions; hosts the application.
-- `rivet_app` - shell wiring: toolbar, sidebar, status bar, viewport, `DocumentSession` management.
+- `rivet_app` - shell wiring: toolbar, sidebar, status bar, viewport, `DocumentSession` management, page-editing and file-lifecycle controllers.
 - `rivet` - the executable.
 
 Dependency direction (an arrow `A -> B` means A may depend on B):
@@ -99,6 +102,7 @@ Foundation types shared by everything else.
 - **`Bitmap`** (`core/Bitmap.hpp`): Rivet-owned raster surface, `BGRA8888Straight` (matching PDFium's `FPDFBitmap_BGRA`), move-only, explicit stride. Allocation arithmetic is overflow-checked and bounded (`kMaxBitmapDimension` = 1M px per axis, `kMaxBitmapBytes` = 512 MiB) because document-driven dimensions are untrusted input.
 - **`log`** (`core/Log.hpp`): minimal built-in, thread-safe stderr logging with levels. Never logs document contents or user text.
 - **`Time`** (`core/Time.hpp`): wall-clock milliseconds and a monotonic `Stopwatch`.
+- **`AtomicFileWriter`** (`core/io/`): temp-file + `rename(2)` writer with `IByteSink`; every failure leaves the destination untouched ([ADR-0010](adr/ADR-0010-atomic-save-replacement.md)).
 - **Async** (`core/async/`): `TaskScheduler` (shared worker pool over `std::jthread`), `SerialExecutor` (FIFO serialization over the shared pool), `IMainThreadDispatcher` (marshal-to-main-thread abstraction). See section 5.
 
 ### `rivet_render` (`src/render/`)
@@ -118,21 +122,24 @@ Everything needed to turn a document into pixels, independent of any UI toolkit 
 
 ### `rivet_pdf` (`src/pdf/`)
 
-Engine-independent interfaces: `PdfEngine` (backend availability, `openDocument`), `PdfDocument` (owned document handle; `pageInfo`, `renderPage`), `PdfTypes` (`PdfDocumentInfo`, `PdfPageInfo`), and the `createEngine()` factory (`PdfSystem.hpp`). When `RIVET_WITH_PDFIUM=OFF`, `createEngine()` returns a null backend: `isAvailable()` is `false` and every operation reports `NotAvailable`. The application shell still launches in this configuration.
+Engine-independent interfaces: `PdfEngine` (backend availability, `openDocument`), `PdfDocument` (owned document handle; `pageInfo`, `renderPage`), `PdfTypes` (`PdfDocumentInfo`, `PdfPageInfo`), `PdfPageGeometry` (`PdfBox`, `PdfPageView`, pure user/display-space mapping), `PdfAssembly` (`PdfAssemblyRequest`, `IPdfByteSink`; `PdfEngine::assembleDocument`), and the `createEngine()` factory (`PdfSystem.hpp`). When `RIVET_WITH_PDFIUM=OFF`, `createEngine()` returns a null backend: `isAvailable()` is `false` and every operation reports `NotAvailable`. The application shell still launches in this configuration.
 
 ### `rivet_pdfium` (`src/pdf/pdfium/`)
 
-The PDFium adapter, built only when `RIVET_WITH_PDFIUM=ON`. Implements the `rivet_pdf` interfaces on top of PDFium and links the imported target `PDFium::PDFium` created by `cmake/FindPDFium.cmake`. All `FPDF_*` usage is confined to this directory. Beyond rendering it provides text extraction (`PdfTextPage` in displayed-page coordinates), document outline (depth/node/cycle-bounded), page labels, and per-page links (internal destinations and scheme-validated external URLs). See [ADR-0003](adr/ADR-0003-pdfium-abstraction-boundary.md) and `docs/BUILDING_PDFIUM.md`.
+The PDFium adapter, built only when `RIVET_WITH_PDFIUM=ON`. Implements the `rivet_pdf` interfaces on top of PDFium and links the imported target `PDFium::PDFium` created by `cmake/FindPDFium.cmake`. All `FPDF_*` usage is confined to this directory. Beyond rendering it provides text extraction (`PdfTextPage` in displayed-page coordinates), document outline (depth/node/cycle-bounded), page labels, and per-page links (internal destinations and scheme-validated external URLs), and document assembly for save/extract (`PdfiumAssembly`: `FPDF_CreateNewDocument`, `FPDF_ImportPagesByIndex`, `FPDF_MovePages`, `FPDFPage_Delete`, `FPDFPage_SetRotation`, `FPDFPage_SetCropBox`, `FPDF_SaveAsCopy`). Documents are opened through `FPDF_LoadCustomDocument` over a shared `PdfiumFileSource` (an open file descriptor), so a document keeps reading its original bytes even after a save atomically replaces the path. See [ADR-0003](adr/ADR-0003-pdfium-abstraction-boundary.md) and `docs/BUILDING_PDFIUM.md`.
 
 ### `rivet_editor` (`src/editor/`)
 
-- **`Command` / `CommandStack`** - undo/redo with `execute` / `undo` / `redo` / `canUndo` / `canRedo` / `clear`, depth-bounded.
-- **`DocumentSession`** - owns one open document: its `DocumentId`, the PDF document handle, the `PageLayout`, a revision counter, the `CommandStack`, and a `SerialExecutor`-driven `DocumentRenderer`.
+- **`PageModel` / `PageModelSnapshot` / `PageCommands`** - the editable page list and its commands; see section 10.
+- **`Command` / `CommandStack`** - undo/redo with `execute` / `undo` / `redo` / `canUndo` / `canRedo` / `clear`, depth-bounded (100), with per-state `stateId()` for dirty tracking.
+- **`PageSelection`** - page selection by `PageId` (set + active page + range anchor), independent of the text selection.
+- **`DocumentSession`** - owns one open document: its `DocumentId`, the base PDF handle, the `PageModel`, the `PageLayout` (rebuilt from the snapshot after every model change), the `CommandStack`, dirty state, the editing lock, `rebaseOnto`, and a `SerialExecutor`-driven `DocumentRenderer`.
+- **`DocumentSaver`** - `makeSaveJob` / `makeExtractJob` (main thread) and `runDocumentWrite` (worker): assembly into an `AtomicFileWriter`, plus reopening the written file for rebase; see section 11.
 - **`DocumentRenderer`** - implements `IRenderSource`: dedupes requests, serializes PDF access through the session's `SerialExecutor`, stores results in the `TileCache`, and returns bitmaps via main-thread callbacks.
 
 ### `rivet_ui` (`src/ui/`)
 
-A small, Rivet-owned retained-mode widget system: `Widget`, `Container`, `Button`, `Toolbar`, `ScrollBar`, `TextField` (UTF-8 caret/selection, echo masking), `TabStrip`, `PageThumbnailList` (lazy, virtualized thumbnails over the shared TileCache), `OutlinePanel`, `PdfViewport`. Painting goes through a `PaintContext` abstraction that hides CoreGraphics. Widgets and event handling are main-thread-only. `IViewerTextBridge` (implemented by the app layer) connects the viewport to text features without an editor dependency. See [ADR-0004](adr/ADR-0004-retained-mode-rivet-ui.md).
+A small, Rivet-owned retained-mode widget system: `Widget`, `Container`, `Button`, `Toolbar`, `ScrollBar`, `TextField` (UTF-8 caret/selection, echo masking), `TabStrip`, `PageThumbnailList` (lazy, virtualized thumbnails over the shared TileCache; emits selection/reorder/delete intents by `PageId`, including drag-and-drop with a drop gap), `OutlinePanel`, `PdfViewport`. Painting goes through a `PaintContext` abstraction that hides CoreGraphics. Widgets and event handling are main-thread-only. `ViewportTool` (an interface the viewport hosts for modal editing tools such as the crop tool; receives pointer/key events and paints an overlay). `IViewerTextBridge` (implemented by the app layer) connects the viewport to text features without an editor dependency. See [ADR-0004](adr/ADR-0004-retained-mode-rivet-ui.md).
 
 ### `rivet_platform` / `rivet_platform_macos` (`src/platform/`)
 
@@ -148,6 +155,8 @@ Application shell wiring: `DocumentWorkspace`/`DocumentTab` (multi-tab workspace
 - `SearchBarController` — the find bar; drives the active tab's `TextSearchController`. Result notifications from background tabs are ignored; switching tabs closes the bar.
 - `SidebarController` — Pages (thumbnails) / Outline modes. The outline loads asynchronously via `LinkService::requestOutline` and is rebuilt only if the same session is still active. Expansion state is per document.
 - `PasswordPromptController` — the masked prompt for NeedsPassword tabs; the field is cleared before `retryWithPassword`.
+- `PageEditingController` — page selection (per tab, by `PageId`), thumbnail intents, rotate/delete/duplicate/move/crop/undo/redo as commands on the session's `CommandStack`, the crop tool, and the reaction to every page-model change (selection policy, text-selection invalidation, search restart, layout anchoring). Refuses edits while the session is editing-locked.
+- `FileController` — Save / Save As / Extract / Import / Merge, the save-in-flight bookkeeping and the dirty close/quit orchestration (section 11).
 - `StatusBarController` — the status message and the "Page [field] / N" indicator with strict page-number parsing.
 
 Controllers are main-thread only and every feature no-ops when no Ready tab is active. The shell constructs them after the members they reference and destroys them first (reverse declaration order). `DocumentWorkspace::closeTab` keeps the closed tab alive until its host hooks have run, so bound views can unbind from a live session.
@@ -165,7 +174,7 @@ CMake >= 3.28 with the Ninja generator. Presets: `debug`, `release`,
 Tests use CTest and a tiny internal harness (`tests/harness/RivetTest.h`); no
 third-party test framework. One test executable per module: `rivet_core_tests`,
 `rivet_async_tests`, `rivet_render_tests`, `rivet_pdf_tests`,
-`rivet_editor_tests`, `rivet_ui_tests`.
+`rivet_editor_tests`, `rivet_ui_tests`, `rivet_app_tests`, `rivet_platform_portable_tests` (plus the macOS-only `rivet_platform_tests`). Round-trip coverage of the real save path (assemble, atomic write, reopen, verify rotation/crop/order/encryption/deleted content) lives in `tests/pdf/TestPdfPageEditing.cpp`, `tests/editor/TestPageModelPdfium.cpp` and `tests/app/TestFileRoundTripPdfium.cpp` and runs only when PDFium is built in; the app-layer lifecycle/race tests (`TestFileController.cpp`, `TestPageEditingController.cpp`) and the editor model/command/saver tests run with fakes in every configuration.
 
 ---
 
@@ -213,6 +222,8 @@ Precisely:
 
 `PageLayout` works in **content space** (points, top-left origin, y-down): pages stacked vertically, each frame horizontally centered within the widest page, surrounded by a margin (default 24 pt) with a gap between pages (default 16 pt). A page's frame in content space becomes its `pageFrameLogical` once the viewport scroll offset is applied.
 
+Page editing adds a **view**: `pdf::PdfPageView` = absolute rotation + crop box in PDF user space (the effective `CropBox ∩ MediaBox`). `pdf::userToDisplay` / `displayToUser` / `userBoxToDisplayRect` / `displayRectToUserBox` (`src/pdf/PdfPageGeometry`) map between user space and page display space for any view, using the same formulas as above with the crop box as origin (`dx0 = x - crop.left`, `dy0 = y - crop.bottom`). Page display space is therefore always the space of the page's *current* view (what is rendered); a cropped page's display space starts at the crop box corner. See section 12 for how the crop tool uses this.
+
 `PdfDocument::renderPage` and `RasterParams` take the sub-rectangle in **page display space** (item 2) plus `devicePixelsPerPoint`; the engine never needs to know about viewport offsets or backing scales separately.
 
 ---
@@ -239,8 +250,10 @@ Precisely:
 - **Shared `TaskScheduler`**: fixed-size `std::jthread` pool, FIFO queue, used for background rasterization. Shutdown is intentionally fast: pending tasks are discarded, in-flight tasks run to completion before join.
 - **`SerialExecutor` per open document**: exactly one task of a given executor runs at any moment, in FIFO post order, executed on the shared `TaskScheduler`. Idle executors cost nothing. This serializes all access to one PDFium document handle without dedicating an OS thread per document.
 - **Process-wide PDFium call gate**: PDFium's entire public API is not thread-safe (it also holds process-global state such as font caches and `FPDF_GetLastError`), so no two `FPDF_*` calls may run concurrently even for *different* documents. The PDFium adapter serializes every call through an internal `PdfiumCallGate` (a mutex that never leaves `rivet_pdfium`); the per-document executors remain in charge of FIFO ordering, coalescing, cancellation and lifecycle. See [ADR-0006](adr/ADR-0006-serialized-pdf-access-per-document.md) and its correction section.
+- **Saving/extracting/importing** run on the shared `TaskScheduler` (not on a document's `SerialExecutor`): `editor::runDocumentWrite` assembles and writes from an immutable `PageModelSnapshot`, and the import worker opens the source PDF and reads its page metadata. The assembly holds the PDFium call gate for its whole duration and its byte sink must not call back into the PDF layer. Completions return to the main thread through `IMainThreadDispatcher` (section 11).
 - **Print spooling**: `editor::PrintSpooler` renders print bands on its own `SerialExecutor` (over the shared pool) and delivers progress/completion through `IMainThreadDispatcher`; the main thread only shows panels and composites pre-rendered band files (section 6, Printing).
-- **Main-thread marshaling**: render callbacks are delivered via `IMainThreadDispatcher`, implemented by the platform layer (dispatch to the macOS main queue in production). All widget and event handling is main-thread-only.
+- **Main-thread-only state**: the `PageModel`, `CommandStack`, `PageSelection`, dirty/editing-lock state, `DocumentSession::rebaseOnto` and all controllers. Workers never read them; they capture a `PageModelSnapshot` (or a copy of an entry) on the main thread. Observers (page-model change, dirty change, command-stack change) fire synchronously on the main thread and never under a lock.
+- **Main-thread marshaling**: render callbacks and all async completions are delivered via `IMainThreadDispatcher`, implemented by the platform layer (dispatch to the macOS main queue in production). All widget and event handling is main-thread-only.
 - **`TileCache`** is internally mutex-guarded: entries may be inserted, looked up and evicted from scheduler threads and the main thread concurrently.
 - `ZoomState` and widget state are main-thread-only and not internally synchronized.
 
@@ -253,7 +266,7 @@ Rendering is tile-oriented from day one ([ADR-0005](adr/ADR-0005-tile-based-rend
 - **Tile size**: 512 x 512 device pixels.
 - **`RenderScaleKey`**: zoom quantized UP to multiples of 1/64 (`ceil(zoom * 64) / 64`, clamped to `[0.10, 64.0]`). Rounding up guarantees the raster is never produced at a lower resolution than requested; the painter scales down by less than 1/64. Zoom levels that quantize to the same key share tiles.
 - **`PhysicalRenderScaleKey`**: device pixels per point = quantized zoom x display backing scale, quantized UP to multiples of 1/64 and clamped to `[0.1, 512]`. Two render requests that would produce different pixel dimensions (e.g. 100% zoom on a 1x vs a 2x display) never share a cache entry: `RasterParams::devicePixelsPerPoint` is always derived from this key, and `DocumentRenderer` rejects requests whose params disagree with the key.
-- **`TileKey`** = `(DocumentId, PageId, PhysicalRenderScaleKey, tileX, tileY)` - cache identity per tile cell of the page grid.
+- **`TileKey`** = `(DocumentId, PageId, PhysicalRenderScaleKey, tileX, tileY, contentRevision)` - cache identity per tile cell of the page grid; `contentRevision` is the page model's per-page content revision (rotate/crop mint a new one, so only the edited page misses; see section 10).
 - **`RenderRequest`** = `TileKey` + `RasterParams{ pageRectPoints (page display space), devicePixelsPerPoint }`.
 - **`RenderPriority`**: `Visible` (on screen now), `Impending` (about to become visible via scroll lookahead), `Prefetch`.
 
@@ -352,7 +365,61 @@ PDFs are untrusted input.
 
 ---
 
-## 10. Directory layout
+## 10. Page model, identity and undo
+
+Full rationale: [ADR-0008](adr/ADR-0008-page-model-and-stable-page-identity.md).
+
+**Model.** `editor::PageModel` is the session-owned ordered list of `PageEntry` (`PageId`, source document + source page index, `PdfPageView`, `contentRevision`, plus the source's media box and native view). Sources are never mutated. Every mutation is transactional and publishes an immutable `PageModelSnapshot` plus a `PageModelChange` diff; `DocumentSession` reacts (layout rebuild, eviction of text/links of deleted pages) and then calls the app's observer.
+
+**PageId.** Minted by the model, never reused. Move, rotate and crop keep the id; duplicate and insert/import mint new ids; delete retires ids; undo restores the original ids (redo replays the ids minted by the first execute); rebase after save keeps all ids. `contentRevision` is minted model-wide by rotate/crop and restored exactly by undo/redo, so `(PageId, contentRevision)` names one view forever. Tiles (`TileKey.contentRevision`), text pages and links are cached by it: reorder/delete/duplicate invalidate nothing, rotate/crop only the affected page.
+
+**Page source / assembly.** A snapshot converts to a `PdfAssemblyRequest` (`Save` = `PreserveBase` over every page; `Extract` = `Fresh` over a subset in model order). `PdfEngine::assembleDocument` builds the result on a private working document, never the live ones (PDFium: `FPDF_LoadCustomDocument` / `FPDF_CreateNewDocument`, `FPDF_ImportPagesByIndex`, `FPDF_MovePages`, `FPDFPage_Delete`, `FPDFPage_SetRotation`, `FPDFPage_SetCropBox`, `FPDF_SaveAsCopy` with `FPDF_NO_INCREMENTAL`). Page labels are shown only while the model is the identity order over the base pages; outline/link destinations resolve to the first entry presenting the source page (nothing once deleted).
+
+**Commands and the single stack.** All page edits are `PageCommand`s (Move, Delete, Rotate, Duplicate, Insert, Crop) on the session's one `CommandStack` (depth 100). A multi-page operation is one command, one model mutation and one undo step. A failing command leaves the model untouched and reports `failure()`; only successful executes are pushed, and pushing clears redo. Delete refuses to remove every page (the model is never empty).
+
+**Dirty checkpoint.** Every history position has a `stateId()`: 0 initially, a fresh monotonic id per successful execute, the lower state's id after undo, the command's id after redo. Evicting the oldest entries or `clear()` keeps the current id. `DocumentSession::isDirty()` is `stateId() != savedStateId_`; `markSaved()` records the current id. Undoing back to the saved state is clean again; a new command after an undo gets a new id and never falsely matches. `setOnDirtyChanged` fires on every flip. `rebaseOnto` clears the undo history but keeps the `stateId`, so a save leaves the document clean with an empty undo stack.
+
+---
+
+## 11. File lifecycle: save, extract, import, close
+
+Full rationale: [ADR-0009](adr/ADR-0009-background-save-rebase-and-file-lifecycle.md), [ADR-0010](adr/ADR-0010-atomic-save-replacement.md).
+
+```text
+ main: makeSaveJob (snapshot + request), lock editing
+   worker: assembleDocument -> 256 KiB buffered sink -> AtomicFileWriter
+           (temp in dest dir, fsync, rename)  -> reopen file, read page metadata
+ main: rebaseOnto (same PageIds, sources -> new file, undo cleared)
+       -> markSaved -> unlock editing
+```
+
+- **Background serialization**: assembly and the atomic write run on the shared pool, never the main thread; PDFium access is under the process-wide call gate for the whole assembly.
+- **Editing lock**: while a save is in flight `DocumentSession::execute/undo/redo` refuse, so the written snapshot is exactly the state that is marked saved and rebased. Viewing, selection, search, print and extract keep working.
+- **Atomic replacement**: temp file in the destination directory then `rename(2)`; any failure leaves the destination intact and no temp file ([ADR-0010](adr/ADR-0010-atomic-save-replacement.md)). Saving over the document's own path is supported because the live document reads through its own open descriptor (`PdfiumFileSource`).
+- **Rebase**: the session switches to the freshly written file with identical ids/order; previous documents are released once in-flight jobs drop their snapshots.
+- **Operation identity**: `FileController` addresses async completions by `(TabId, generation)`; `TabId`s are never reused and a generation is minted per operation. A completion applies only while its tab is alive and Ready (imports also only while the generation is registered). A completion for a closed tab is dropped (the file was still written atomically). A heap-owned `alive_` flag guards completions against a destroyed controller.
+- **One save at a time** per shell: interactive saves during a save are reported; quit-lifecycle saves are queued and chained.
+- **Dirty only cleared on success**: `markSaved()` runs only in the success path; a failed save unlocks editing and leaves the document dirty.
+- **Import / Merge**: open panel; a worker opens the source and reads its page metadata; an `InsertPagesCommand` inserts all pages (new ids, native views) before the current page, after it, or appended, as one undo step. Encrypted sources are rejected.
+- **Extract**: save panel; a worker assembles a `Fresh` document from the selected pages in model order. The source model and its dirty state are not affected; document-level structure (outline, metadata, forms, labels, encryption) is not carried over.
+- **Dirty close/quit**: a dirty tab prompts Save / Don't Save / Cancel; several dirty tabs use the platform review prompt. "Save" on a tab close closes the tab when its save settles; window close with "Save" performs the saves and leaves the window open; quit defers the platform reply until every accepted save settled. With no alert service the answer is Cancel (nothing is discarded silently). Known gap (recorded in ADR-0009): a save that *fails* still runs the deferred close/quit bookkeeping.
+
+---
+
+## 12. Crop semantics
+
+The crop tool (`app::CropTool`, a `ui::ViewportTool`) edits one page's crop box over the rendered page; it never mutates the document, it reports `onApply(PdfBox)` / `onReset` / `onCancel` and the owner runs `CropPagesCommand`.
+
+- **Stored form**: a crop is a `PdfBox` in PDF **user space** (the page's unrotated space, origin bottom-left) kept in the entry's `view.cropBox`; rotation is an independent absolute value in `view.rotation`. Saving writes them to `/CropBox` (`FPDFPage_SetCropBox`) and `/Rotate` (`FPDFPage_SetRotation`).
+- **Editing space** (`CropFrame`): the *uncropped display space* - display space (points, top-left origin, y-down, current rotation applied) of the view `{view.rotation, mediaBox}`. The whole media box is `{0, 0, displaySize}` and the current crop is a sub-rect of it. The currently rendered page is that space translated by the current crop rect's origin, so the tool can extend the crop beyond the rendered page up to the media box (`base_` is the rendered page's origin in this space).
+- **Conversions**: `toUserBox` clamps the edited rect to the media rect, maps it with `displayRectToUserBox` over the uncropped view (so rotation is handled by the same mapping as rendering), and intersects the result with the media box; `fromUserBox` is the clamped inverse (`userBoxToDisplayRect`). Rotating a page after cropping keeps the user-space box and only changes how it is displayed.
+- **Clamping**: every edge is clamped into the media rect; the minimum size is 18 pt per axis (`kMinSizePoints`, reduced to the media size when smaller); drag-to-move is clamped to the media box; hit testing uses fixed logical-point handle sizes (independent of zoom and backing scale).
+- **Targets**: the tool edits the current page; the command applies the resulting user-space box to the whole selection when the current page belongs to it, otherwise to the current page only. The same user-space box is applied to every target, and the command fails atomically if it does not lie within any target's media box. Reset (`std::nullopt`) restores each page's native crop box.
+- **Command**: `CropPagesCommand` validates with `isValidViewFor` (non-empty crop inside the media box, 0.01 pt slack), mints a fresh `contentRevision` per page and is one undo step; undo/redo restore the recorded views and revisions.
+
+---
+
+## 13. Directory layout
 
 ```text
 rivet/
@@ -366,18 +433,19 @@ rivet/
 ├── src/
 │   ├── core/                 # rivet_core
 │   │   ├── geometry/         # Point, Size, Rect, Insets, Matrix, PageRotation
+│   │   ├── io/               # AtomicFileWriter (temp file + rename)
 │   │   └── async/            # TaskScheduler, SerialExecutor, IMainThreadDispatcher
 │   ├── render/               # rivet_render
-│   ├── pdf/                  # rivet_pdf (interfaces + null engine)
+│   ├── pdf/                  # rivet_pdf (interfaces, page geometry, assembly contracts, null engine)
 │   │   └── pdfium/           # rivet_pdfium (only with RIVET_WITH_PDFIUM=ON); FPDF_* confined here
-│   ├── editor/               # rivet_editor
+│   ├── editor/               # rivet_editor (page model, commands, session, saver, render/text/link services)
 │   ├── ui/                   # rivet_ui
 │   ├── platform/             # rivet_platform (abstraction headers)
 │   │   └── macos/            # rivet_platform_macos (AppKit host, CoreGraphics PaintContext, rivet executable)
-│   └── app/                  # rivet_app
+│   └── app/                  # rivet_app (shell, workspace, controllers, crop tool)
 ├── tests/
 │   ├── harness/              # RivetTest.h, TestMain.cpp (internal micro-harness)
-│   ├── core/  render/  pdf/  editor/  ui/
+│   ├── core/  render/  pdf/  editor/  ui/  app/  platform/
 └── build/                    # preset build trees (gitignored)
 ```
 
@@ -387,12 +455,12 @@ incrementally during development.
 
 ---
 
-## 11. Planned evolution
+## 14. Planned evolution
 
 Within the approved scope, the architecture leaves room for:
 
 - **Multi-document tabs** - one `DocumentSession` per open document, each with its own `SerialExecutor` and revision counter. No new machinery is required: `TileKey` already includes `DocumentId`, the shared `TaskScheduler` already multiplexes executors, and one cache can serve all sessions. Session lifetime follows tab lifetime.
-- **Page editing** - landed in the editor layer (Phase 3): `editor::PageModel` is the session-owned mutable page list (stable, never-reused `PageId`s; each entry = source document + source page index + `PdfPageView` + `contentRevision`), mutated only by transactional `PageCommands` on the `CommandStack`, publishing an immutable `PageModelSnapshot` after every mutation that worker jobs capture instead of reading session state. Tiles, text pages and links are keyed by (`PageId`, `contentRevision`), so reorder/delete/duplicate invalidate nothing and rotate/crop only the affected page; `PageLayout` is rebuilt from the snapshot. Dirty state follows `CommandStack::stateId()`; saving/extracting builds a `PdfAssemblyRequest` from the snapshot. Content editing (text/objects) is expected to be the hardest part and will be developed gradually on the same command foundation.
+- **Page editing** - landed in Phase 3 (sections 10-12, [ADR-0008](adr/ADR-0008-page-model-and-stable-page-identity.md), [ADR-0009](adr/ADR-0009-background-save-rebase-and-file-lifecycle.md)). Content editing (text/objects) is expected to be the hardest part and will be developed gradually on the same command foundation.
 
 Known limitations of the current foundation, recorded as future
 architectural requirements:
@@ -403,7 +471,7 @@ architectural requirements:
   will need incremental/lazy metadata loading behind the same `PageLayout`
   interface.
 
-Features beyond this (annotations, forms, editing, ...) are roadmap items in
+Features beyond this (annotations, forms, content editing, ...) are roadmap items in
 the README and are not yet part of the architecture described here. Page
 labels, outline/bookmarks, links, text selection/search and the workspace
-model landed in Phase 2 (2026-09-25).
+model landed in Phase 2 (2026-09-25); page editing and the file lifecycle in Phase 3.
