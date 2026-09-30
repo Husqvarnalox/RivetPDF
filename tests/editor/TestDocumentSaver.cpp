@@ -22,6 +22,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <atomic>
 #include <cerrno>
 #include <chrono>
@@ -77,8 +78,13 @@ private:
 };
 
 std::string readFile(const fs::path& path) {
+    std::error_code ec;
+    const auto size = fs::file_size(path, ec);
+    std::string data(ec ? 0 : static_cast<std::size_t>(size), '\0');
     std::ifstream in(path, std::ios::binary);
-    return std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+    if (!data.empty()) in.read(data.data(), static_cast<std::streamsize>(data.size()));
+    data.resize(static_cast<std::size_t>(std::max<std::streamsize>(in.gcount(), 0)));
+    return data;
 }
 
 void writeFile(const fs::path& path, const std::string& content) {
