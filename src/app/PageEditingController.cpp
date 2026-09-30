@@ -51,7 +51,7 @@ PageEditingController::PageEditingController(ShellContext& context, SidebarContr
                 return;
             }
             DocumentTab* tab = activeTab();
-            if (tab == nullptr) {
+            if (tab == nullptr || tab->session() == nullptr) {
                 endCrop();
                 return;
             }
@@ -179,7 +179,7 @@ void PageEditingController::handlePageModelChanged(TabId tabId, const editor::Pa
 
 void PageEditingController::syncSelectionView() {
     DocumentTab* tab = activeTab();
-    if (tab == nullptr) {
+    if (tab == nullptr || tab->session() == nullptr) {
         statusBar_.setSelectionSummary("");
         return;
     }
@@ -207,8 +207,10 @@ std::string PageEditingController::selectionSummary() const {
 
 void PageEditingController::handleRowClicked(std::size_t row, ui::PageThumbnailList::ClickGesture gesture) {
     DocumentTab* tab = activeTab();
-    if (tab == nullptr || row >= tab->session()->pageCount()) return;
-    editor::PageSelection& selection = *activeSelection();
+    if (tab == nullptr || tab->session() == nullptr || row >= tab->session()->pageCount()) return;
+    editor::PageSelection* selectionPtr = activeSelection();
+    if (selectionPtr == nullptr) return;
+    editor::PageSelection& selection = *selectionPtr;
     const core::PageId page = tab->session()->pageId(row);
     switch (gesture) {
     case ui::PageThumbnailList::ClickGesture::Replace:
@@ -228,9 +230,11 @@ void PageEditingController::handleRowClicked(std::size_t row, ui::PageThumbnailL
 
 void PageEditingController::handleNavigate(int delta, bool extend) {
     DocumentTab* tab = activeTab();
-    if (tab == nullptr || tab->session()->pageCount() == 0) return;
+    if (tab == nullptr || tab->session() == nullptr || tab->session()->pageCount() == 0) return;
     const editor::PageSnapshotPtr& snapshot = tab->session()->pageSnapshot();
-    editor::PageSelection& selection = *activeSelection();
+    editor::PageSelection* selectionPtr = activeSelection();
+    if (selectionPtr == nullptr) return;
+    editor::PageSelection& selection = *selectionPtr;
     std::size_t row = tab->currentPage();
     if (const std::size_t active = tab->session()->pageIndexFor(selection.active());
         active != editor::DocumentSession::kInvalidPage) {
@@ -251,7 +255,7 @@ void PageEditingController::handleNavigate(int delta, bool extend) {
 
 bool PageEditingController::canPerform(PageEditCommand command) const {
     DocumentTab* tab = context_.readyActiveTab();
-    if (tab == nullptr) return false;
+    if (tab == nullptr || tab->session() == nullptr) return false;
     editor::DocumentSession& session = *tab->session();
     switch (command) {
     case PageEditCommand::Undo:
@@ -304,6 +308,7 @@ void PageEditingController::rotate(int degrees) {
     const std::vector<core::PageId> targets = targetPages();
     if (targets.empty()) return;
     DocumentTab* tab = activeTab();
+    if (tab == nullptr || tab->session() == nullptr) return;
     if (tab->session()->isEditingLocked()) {
         context_.setStatus(kLockedMessage);
         return;
@@ -316,6 +321,7 @@ void PageEditingController::deletePages() {
     const std::vector<core::PageId> targets = targetPages();
     if (targets.empty()) return;
     DocumentTab* tab = activeTab();
+    if (tab == nullptr || tab->session() == nullptr) return;
     if (tab->session()->isEditingLocked()) {
         context_.setStatus(kLockedMessage);
         return;
@@ -327,6 +333,7 @@ void PageEditingController::duplicatePages() {
     const std::vector<core::PageId> targets = targetPages();
     if (targets.empty()) return;
     DocumentTab* tab = activeTab();
+    if (tab == nullptr || tab->session() == nullptr) return;
     if (tab->session()->isEditingLocked()) {
         context_.setStatus(kLockedMessage);
         return;
@@ -335,7 +342,9 @@ void PageEditingController::duplicatePages() {
     editor::DuplicatePagesCommand* raw = command.get();
     if (!run(std::move(command), "Duplicate Pages")) return;
     // The duplicates become the selection (Preview-style); originals stay.
-    editor::PageSelection& selection = *activeSelection();
+    editor::PageSelection* selectionPtr = activeSelection();
+    if (selectionPtr == nullptr) return;
+    editor::PageSelection& selection = *selectionPtr;
     selection.clear();
     for (const core::PageId created : raw->createdIds()) selection.toggle(created);
     syncSelectionView();
@@ -344,6 +353,7 @@ void PageEditingController::duplicatePages() {
 void PageEditingController::moveBlock(const std::vector<core::PageId>& ids, std::size_t destination) {
     if (ids.empty()) return;
     DocumentTab* tab = activeTab();
+    if (tab == nullptr || tab->session() == nullptr) return;
     if (tab->session()->isEditingLocked()) {
         context_.setStatus(kLockedMessage);
         return;
@@ -356,6 +366,7 @@ void PageEditingController::movePagesBy(int delta) {
     const std::vector<core::PageId> ids = targetPages();
     if (ids.empty()) return;
     DocumentTab* tab = activeTab();
+    if (tab == nullptr || tab->session() == nullptr) return;
     const editor::PageSnapshotPtr& snapshot = tab->session()->pageSnapshot();
     const std::size_t first = snapshot->indexOf(ids.front());
     const std::size_t maxDestination = snapshot->size() - ids.size();
@@ -369,6 +380,7 @@ void PageEditingController::movePagesTo(std::size_t index) {
     const std::vector<core::PageId> ids = targetPages();
     if (ids.empty()) return;
     DocumentTab* tab = activeTab();
+    if (tab == nullptr || tab->session() == nullptr) return;
     const editor::PageSnapshotPtr& snapshot = tab->session()->pageSnapshot();
     const std::size_t first = snapshot->indexOf(ids.front());
     const std::size_t destination =
@@ -381,6 +393,7 @@ void PageEditingController::dropSelectionAtGap(std::size_t gap) {
     const std::vector<core::PageId> ids = targetPages();
     if (ids.empty()) return;
     DocumentTab* tab = activeTab();
+    if (tab == nullptr || tab->session() == nullptr) return;
     const editor::PageSnapshotPtr& snapshot = tab->session()->pageSnapshot();
     const std::size_t destination =
         editor::MovePagesCommand::destinationForGap(*snapshot, ids, gap);
@@ -390,14 +403,16 @@ void PageEditingController::dropSelectionAtGap(std::size_t gap) {
 
 void PageEditingController::selectAllPages() {
     DocumentTab* tab = activeTab();
-    if (tab == nullptr) return;
-    activeSelection()->selectAll(*tab->session()->pageSnapshot());
+    if (tab == nullptr || tab->session() == nullptr) return;
+    if (editor::PageSelection* selection = activeSelection(); selection != nullptr) {
+        selection->selectAll(*tab->session()->pageSnapshot());
+    }
     syncSelectionView();
 }
 
 void PageEditingController::undo() {
     DocumentTab* tab = activeTab();
-    if (tab == nullptr) return;
+    if (tab == nullptr || tab->session() == nullptr) return;
     if (tab->session()->isEditingLocked()) {
         context_.setStatus(kLockedMessage);
         return;
@@ -407,7 +422,7 @@ void PageEditingController::undo() {
 
 void PageEditingController::redo() {
     DocumentTab* tab = activeTab();
-    if (tab == nullptr) return;
+    if (tab == nullptr || tab->session() == nullptr) return;
     if (tab->session()->isEditingLocked()) {
         context_.setStatus(kLockedMessage);
         return;
@@ -417,7 +432,7 @@ void PageEditingController::redo() {
 
 void PageEditingController::beginCrop() {
     DocumentTab* tab = activeTab();
-    if (tab == nullptr || isCropping()) return;
+    if (tab == nullptr || tab->session() == nullptr || isCropping()) return;
     const editor::PageSnapshotPtr& snapshot = tab->session()->pageSnapshot();
     const core::PageId current = tab->session()->pageId(tab->currentPage());
     const editor::PageEntry* entry = snapshot->find(current);
@@ -440,7 +455,7 @@ void PageEditingController::resetCrop() {
     }
     const std::vector<core::PageId> targets = targetPages();
     DocumentTab* tab = activeTab();
-    if (targets.empty() || tab == nullptr) return;
+    if (targets.empty() || tab == nullptr || tab->session() == nullptr) return;
     run(std::make_unique<editor::CropPagesCommand>(tab->session()->pageModel(), targets, std::nullopt),
         "Reset Crop");
 }
