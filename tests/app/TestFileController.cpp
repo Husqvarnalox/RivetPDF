@@ -215,8 +215,9 @@ struct Shell {
 
     // Runs one structural edit through the session (marks the doc dirty).
     void rotateFirst(DocumentTab& tab) {
-        tab.session()->execute(std::make_unique<rivet::editor::RotatePagesCommand>(
+        const auto status = tab.session()->execute(std::make_unique<rivet::editor::RotatePagesCommand>(
             tab.session()->pageModel(), std::vector{tab.session()->pageId(0)}, 90));
+        CHECK(status.has_value());
     }
 
     std::string lastStatus() const { return statusLog.empty() ? std::string() : statusLog.back(); }

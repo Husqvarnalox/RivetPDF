@@ -433,7 +433,7 @@ Supported compilers are expected to include:
 * [x] Duplicate
 * [x] Insert
 * [x] Extract
-* [ ] Split
+* [x] Split
 * [x] Merge
 * [x] Crop
 
