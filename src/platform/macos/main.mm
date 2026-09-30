@@ -127,9 +127,11 @@ int main(int argc, char** argv) {
         NSMenuItem* saveItem =
             [fileMenu addItemWithTitle:@"Save" action:@selector(fileCommand:) keyEquivalent:@"s"];
         saveItem.tag = static_cast<NSInteger>(rivet::app::FileCommand::Save);
+        [saveItem setTarget:bridge];
         NSMenuItem* saveAsItem =
             [fileMenu addItemWithTitle:@"Save As…" action:@selector(fileCommand:) keyEquivalent:@"S"];
         saveAsItem.tag = static_cast<NSInteger>(rivet::app::FileCommand::SaveAs);
+        [saveAsItem setTarget:bridge];
         saveAsItem.keyEquivalentModifierMask = NSEventModifierFlagCommand | NSEventModifierFlagShift;
         [fileMenu addItem:[NSMenuItem separatorItem]];
         const std::pair<NSString*, rivet::app::FileCommand> fileItems[] = {

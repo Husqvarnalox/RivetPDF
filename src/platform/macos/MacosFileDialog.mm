@@ -3,6 +3,9 @@
 
 #import <AppKit/AppKit.h>
 
+#include <cctype>
+#include <string>
+
 #if __has_include(<UniformTypeIdentifiers/UniformTypeIdentifiers.h>)
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 #define RIVET_HAVE_UNIFORM_TYPE_IDENTIFIERS 1
@@ -93,7 +96,17 @@ std::optional<std::filesystem::path> MacosFileDialog::runSavePanel(
     if ([panel runModal] != NSModalResponseOK) return std::nullopt;
     NSURL* url = panel.URL;
     if (url == nil || url.path == nil) return std::nullopt;
-    return std::filesystem::path(url.path.UTF8String);
+    std::filesystem::path chosen(url.path.UTF8String);
+    // The panel appends ".pdf" on top of a typed ".pdf" in some configurations
+    // ("a.pdf" -> "a.pdf.pdf"); never keep the doubled extension.
+    std::string name = chosen.filename().string();
+    auto lower = name;
+    for (char& c : lower) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    if (lower.size() > 8 && lower.ends_with(".pdf.pdf")) {
+        name.resize(name.size() - 4);
+        chosen.replace_filename(name);
+    }
+    return chosen;
 }
 
 } // namespace rivet::platform

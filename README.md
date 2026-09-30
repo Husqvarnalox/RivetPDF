@@ -21,11 +21,9 @@ Your documents stay on your computer.
 
 > **Early development**
 
-Rivet is currently in the initial development stage.
+Rivet is under active development. The macOS build currently provides a PDF viewer (tabs, thumbnails, outline, search, text selection, printing) and page-level editing: multi-select, drag reorder, rotate, delete, duplicate, crop, import/merge, export of selected pages, undo/redo, and background Save / Save As with atomic file replacement and unsaved-changes prompts. Content, annotation and form editing are not implemented yet.
 
-The architecture, rendering pipeline, document model, and editing engine are still being designed and implemented.
-
-The project is not ready for daily use yet.
+The project is not ready for daily use yet. Windows and Linux shells are not implemented; only the portable layers build and are tested there.
 
 ---
 
@@ -404,40 +402,40 @@ Supported compilers are expected to include:
 
 ### Phase 1 — Foundation
 
-* [ ] Repository structure
-* [ ] Cross-platform build system
-* [ ] Application window
-* [ ] Platform abstraction
-* [ ] PDFium integration
-* [ ] Open PDF
-* [ ] Basic page rendering
-* [ ] Zoom
-* [ ] Scroll
-* [ ] Render cache
-* [ ] Tile rendering
+* [x] Repository structure
+* [x] Cross-platform build system
+* [x] Application window
+* [x] Platform abstraction
+* [x] PDFium integration
+* [x] Open PDF
+* [x] Basic page rendering
+* [x] Zoom
+* [x] Scroll
+* [x] Render cache
+* [x] Tile rendering
 
 ### Phase 2 — Viewer
 
-* [ ] Page thumbnails
-* [ ] Multiple documents
-* [ ] Text extraction
-* [ ] Text selection
-* [ ] Copy text
-* [ ] Search
-* [ ] Bookmarks
-* [ ] Printing
+* [x] Page thumbnails
+* [x] Multiple documents
+* [x] Text extraction
+* [x] Text selection
+* [x] Copy text
+* [x] Search
+* [x] Bookmarks
+* [x] Printing
 
 ### Phase 3 — Page Editing
 
-* [ ] Page reorder
-* [ ] Rotate
-* [ ] Delete
-* [ ] Duplicate
-* [ ] Insert
-* [ ] Extract
+* [x] Page reorder
+* [x] Rotate
+* [x] Delete
+* [x] Duplicate
+* [x] Insert
+* [x] Extract
 * [ ] Split
-* [ ] Merge
-* [ ] Crop
+* [x] Merge
+* [x] Crop
 
 ### Phase 4 — Annotations
 

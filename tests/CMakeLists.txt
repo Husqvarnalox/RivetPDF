@@ -31,3 +31,8 @@ endif()
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/platform/CMakeLists.txt")
     add_subdirectory(platform)
 endif()
+
+option(RIVET_BUILD_PERF_PROBES "Build non-gating performance probes (tests/perf)" OFF)
+if(RIVET_BUILD_PERF_PROBES AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/perf/CMakeLists.txt")
+    add_subdirectory(perf)
+endif()
