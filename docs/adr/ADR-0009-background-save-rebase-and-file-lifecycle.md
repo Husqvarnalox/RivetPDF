@@ -131,9 +131,8 @@ change is published (`orderChanged = false`).
 - Correctness of the dirty flag rests on three facts: the model cannot change
   during a save, `stateId`s are never reused, and `markSaved()` is success
   only.
-- Known gap: `saveSettled` runs the deferred close intent and the quit
-  bookkeeping for failed saves too, so a failed save that was started from
-  a "Save" answer to a close/quit prompt can still close the tab / complete
-  the quit. The status bar reports the failure, but the unsaved changes are
-  lost with the tab. A follow-up should keep the tab/quit pending on failure
-  (or re-prompt).
+- A failed save that was started from a "Save" answer to a close/quit
+  prompt keeps the tab open and aborts the quit (`saveSettled(tab, saved)`
+  acts on the deferred close intent / quit only when the save succeeded);
+  covered by `failedSaveOnDirtyCloseKeepsTheTabOpen` and
+  `failedSaveOnQuitAbortsTheQuit`.
