@@ -576,6 +576,62 @@ RIVET_TEST(cropFailureKeepsToolOpen) {
     CHECK(!shell.session().isDirty());
 }
 
+// Regression: the tool captured a page index and frame at begin, so any
+// page-model change closes it without applying a crop to a stale target.
+RIVET_TEST(cropEndsWithoutApplyingOnPageModelChange) {
+    Shell shell;
+    (void)shell.open("cropmodel.pdf");
+    const auto cropBoxHeight = [&](std::size_t index) {
+        return shell.session().pageSnapshot()->find(pageIdAt(shell, index))->view.cropBox.height();
+    };
+
+    // Rotate while cropping.
+    shell.editing->beginCrop();
+    CHECK(shell.editing->isCropping());
+    shell.editing->perform(PageEditCommand::RotateRight);
+    CHECK(!shell.editing->isCropping());
+    CHECK(shell.viewport->activeTool() == nullptr);
+    CHECK(shell.session().pageSnapshot()->find(pageIdAt(shell, 0))->view.rotation ==
+          rivet::core::PageRotation::Clockwise90);
+    CHECK_EQ(cropBoxHeight(0), 792.0);
+
+    // Undo while cropping.
+    shell.editing->beginCrop();
+    CHECK(shell.editing->isCropping());
+    shell.editing->perform(PageEditCommand::Undo);
+    CHECK(!shell.editing->isCropping());
+    CHECK(shell.viewport->activeTool() == nullptr);
+    CHECK(shell.session().pageSnapshot()->find(pageIdAt(shell, 0))->view.rotation ==
+          rivet::core::PageRotation::None);
+
+    // Redo while cropping.
+    shell.editing->beginCrop();
+    shell.editing->perform(PageEditCommand::Redo);
+    CHECK(!shell.editing->isCropping());
+
+    // Delete while cropping: the tool's page is gone, nothing else changes.
+    const std::size_t before = shell.session().pageSnapshot()->size();
+    shell.editing->beginCrop();
+    CHECK(shell.editing->isCropping());
+    shell.editing->deletePages();
+    CHECK(!shell.editing->isCropping());
+    CHECK(shell.viewport->activeTool() == nullptr);
+    CHECK_EQ(shell.session().pageSnapshot()->size(), before - 1);
+    for (std::size_t i = 0; i < before - 1; ++i) CHECK_EQ(cropBoxHeight(i), 792.0);
+
+    // A stray tool callback after the tool closed is inert.
+    shell.editing->cropTool().apply();
+    for (std::size_t i = 0; i < before - 1; ++i) CHECK_EQ(cropBoxHeight(i), 792.0);
+
+    // The tool still works normally afterwards and crops the CURRENT page.
+    shell.editing->beginCrop();
+    CHECK(shell.editing->isCropping());
+    shell.editing->cropTool().setCropRect(Rect{100.0, 50.0, 400.0, 600.0});
+    shell.editing->cropTool().apply();
+    CHECK(!shell.editing->isCropping());
+    CHECK_EQ(cropBoxHeight(0), 600.0);
+}
+
 // --- Tabs and lifetimes ------------------------------------------------------
 
 RIVET_TEST(selectionSurvivesTabSwitchesAndClosePrunes) {
