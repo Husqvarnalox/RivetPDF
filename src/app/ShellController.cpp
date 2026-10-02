@@ -321,8 +321,16 @@ bool ShellController::canPerformFile(FileCommand command) const {
 void ShellController::requestCloseTab(std::size_t index) {
     cancelPrintForTab(index);
     DocumentTab* tab = workspace_.tab(index);
-    if (tab != nullptr && fileLifecycle_ != nullptr && !fileLifecycle_->confirmCloseTab(*tab)) {
-        return; // the user chose Cancel / Save (closes with the save)
+    if (tab != nullptr && fileLifecycle_ != nullptr) {
+        // The prompt is modal and the controller may close the tab itself
+        // (Don't Save) or run completions that shift/close other tabs: the
+        // index is only valid again through the id.
+        const TabId id = tab->id();
+        if (!fileLifecycle_->confirmCloseTab(*tab)) {
+            return; // the user chose Cancel / Save (closes with the save)
+        }
+        index = workspace_.indexOfTab(id);
+        if (index == DocumentWorkspace::kNoTab) return; // already closed
     }
     workspace_.closeTab(index);
 }
