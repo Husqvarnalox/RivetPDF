@@ -3,6 +3,7 @@ add_executable(rivet_app_tests
     TestShellWiring.cpp
     TestWorkspaceLifecycle.cpp
     TestUrlPolicy.cpp
+    TestAnnotationInteraction.cpp
     TestPageEditingController.cpp
     TestFileController.cpp
     # PDFium-ON round trips through the file lifecycle (early return
