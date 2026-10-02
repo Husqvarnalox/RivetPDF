@@ -16,6 +16,7 @@
 #include <vector>
 
 #include "PdfiumAnnotations.h"
+#include "PdfiumContent.h"
 #include "PdfiumCallGate.hpp"
 #include "PdfiumDisplayTransform.h"
 #include "PdfiumDocument.h"
@@ -204,6 +205,9 @@ struct ResolvedPage {
     // Annotation edits (validated against the source page's /Annots); null
     // or empty = the page's annotations are carried over unchanged.
     std::shared_ptr<const PdfPageAnnotationEdits> edits;
+    // Content edits (validated against the source page's object count and
+    // its regeneration probe); null or empty = the content is carried over.
+    PdfPageContentEditsPtr contentEdits;
 };
 
 // Resolves a request's document pointer: it must be a live PdfiumDocument
@@ -264,6 +268,7 @@ core::Result<std::vector<ResolvedPage>> resolvePages(const PdfiumEngine& engine,
         PdfPageView nativeView;
         PdfBox mediaBox;
         int annotCount = 0; // size of the page's /Annots array
+        int objectCount = 0; // number of top-level page objects
     };
     std::map<std::pair<const PdfiumDocument*, int>, PageFacts> facts;
 
@@ -304,7 +309,8 @@ core::Result<std::vector<ResolvedPage>> resolvePages(const PdfiumEngine& engine,
                                                        "pdf"));
             }
             known = facts.emplace(key, PageFacts{*native, internal::pageMediaBox(loaded.get(), *native),
-                                                 std::max(0, FPDFPage_GetAnnotCount(loaded.get()))})
+                                                 std::max(0, FPDFPage_GetAnnotCount(loaded.get())),
+                                                 std::max(0, FPDFPage_CountObjects(loaded.get()))})
                         .first;
         }
         const core::Status valid = internal::checkPageView(page.view, known->second.nativeView,
@@ -320,7 +326,23 @@ core::Result<std::vector<ResolvedPage>> resolvePages(const PdfiumEngine& engine,
                                                        edits.error().message));
             }
         }
-        resolved.push_back(ResolvedPage{*source, sourceIndex, page.view, page.annotationEdits});
+        if (page.contentEdits != nullptr && !page.contentEdits->empty()) {
+            const core::Status contentValid =
+                validate(*page.contentEdits, static_cast<std::size_t>(known->second.objectCount));
+            if (!contentValid.has_value()) {
+                return std::unexpected(invalidArgument("assembly page " + std::to_string(i) +
+                                                       ": " + contentValid.error().message));
+            }
+            // Pages whose content streams cannot be rewritten without loss
+            // (ADR-0017) refuse content edits instead of silently damaging.
+            const core::Status editable = (*source)->requireContentEditable(page.sourcePageIndex);
+            if (!editable.has_value()) {
+                return std::unexpected(invalidArgument("assembly page " + std::to_string(i) + ": " +
+                                                       editable.error().message));
+            }
+        }
+        resolved.push_back(
+            ResolvedPage{*source, sourceIndex, page.view, page.annotationEdits, page.contentEdits});
     }
     return resolved;
 }
@@ -477,6 +499,49 @@ core::Status applyAnnotations(FPDF_DOCUMENT working,
     return core::ok();
 }
 
+// Applies every page's content edits to the working document (pages are
+// already in final order with their views) and fills `report` (one entry per
+// page; an entry with empty `origins` = no content edits). The fonts Rivet
+// embeds are loaded once per document. /Annots is not touched. Caller holds
+// the gate.
+core::Status applyContent(FPDF_DOCUMENT working,
+                          const std::vector<ResolvedPage>& pages,
+                          std::vector<PdfAssembledPageContent>* report) {
+    if (report != nullptr) {
+        report->assign(pages.size(), PdfAssembledPageContent{});
+    }
+    // Closed (in its destructor) before `working` is, by every caller.
+    internal::FontCache fonts(working);
+    for (std::size_t i = 0; i < pages.size(); ++i) {
+        if (pages[i].contentEdits == nullptr || pages[i].contentEdits->empty()) {
+            continue;
+        }
+        internal::ScopedPage page(FPDF_LoadPage(working, static_cast<int>(i)));
+        if (page.get() == nullptr) {
+            const int lastError = static_cast<int>(FPDF_GetLastError());
+            return std::unexpected(core::makeError(core::ErrorCode::InvalidDocument,
+                                                   "PDFium failed to load assembled page " +
+                                                       std::to_string(i) + " (FPDF error " +
+                                                       std::to_string(lastError) + ")",
+                                                   "pdf"));
+        }
+        const int annotsBefore = FPDFPage_GetAnnotCount(page.get());
+        auto applied = internal::applyContentEdits(working, page.get(), *pages[i].contentEdits, fonts);
+        if (!applied.has_value()) {
+            return std::unexpected(applied.error());
+        }
+        if (FPDFPage_GetAnnotCount(page.get()) != annotsBefore) {
+            return std::unexpected(internalError("content editing changed the annotations of page " +
+                                                 std::to_string(i)));
+        }
+        if (report != nullptr) {
+            (*report)[i].origins = std::move(applied->origins);
+            (*report)[i].blockTags = std::move(applied->blockTags);
+        }
+    }
+    return core::ok();
+}
+
 // FPDF_FILEWRITE adapter forwarding to an IPdfByteSink. The first failure
 // is recorded and every later block is refused, so nothing after a failed
 // block ever reaches the sink.
@@ -546,7 +611,8 @@ core::Status assemblePreserveBase(const PdfiumDocument& base,
                                   const std::vector<ResolvedPage>& pages,
                                   ImportSources& sources,
                                   IPdfByteSink& sink,
-                                  std::vector<PdfAssembledPageAnnotations>* report) {
+                                  std::vector<PdfAssembledPageAnnotations>* report,
+                                  std::vector<PdfAssembledPageContent>* contentReport) {
     const std::size_t baseCount = base.info().pageCount;
     const std::size_t finalCount = pages.size();
 
@@ -644,6 +710,9 @@ core::Status assemblePreserveBase(const PdfiumDocument& base,
     if (auto viewed = applyViews(working.get(), pages); !viewed.has_value()) {
         return viewed;
     }
+    if (auto edited = applyContent(working.get(), pages, contentReport); !edited.has_value()) {
+        return edited;
+    }
     if (auto annotated = applyAnnotations(working.get(), pages, report); !annotated.has_value()) {
         return annotated;
     }
@@ -652,7 +721,8 @@ core::Status assemblePreserveBase(const PdfiumDocument& base,
 
 core::Status assembleFresh(const std::vector<ResolvedPage>& pages, ImportSources& sources,
                            IPdfByteSink& sink,
-                           std::vector<PdfAssembledPageAnnotations>* report) {
+                           std::vector<PdfAssembledPageAnnotations>* report,
+                           std::vector<PdfAssembledPageContent>* contentReport) {
     ScopedDocument working(FPDF_CreateNewDocument());
     if (working.get() == nullptr) {
         return std::unexpected(core::makeError(core::ErrorCode::OutOfMemory,
@@ -686,6 +756,9 @@ core::Status assembleFresh(const std::vector<ResolvedPage>& pages, ImportSources
     if (auto viewed = applyViews(working.get(), pages); !viewed.has_value()) {
         return viewed;
     }
+    if (auto edited = applyContent(working.get(), pages, contentReport); !edited.has_value()) {
+        return edited;
+    }
     if (auto annotated = applyAnnotations(working.get(), pages, report); !annotated.has_value()) {
         return annotated;
     }
@@ -699,7 +772,6 @@ core::Status assembleWithPdfium(const PdfiumEngine& engine,
                                 IPdfByteSink& sink,
                                 std::vector<PdfAssembledPageAnnotations>* annotationReport,
                                 std::vector<PdfAssembledPageContent>* contentReport) {
-    (void)contentReport;
     try {
         // Public entry operation: ONE gate acquisition for the whole
         // assembly (see the gate strategy at the top of this file). Every
@@ -716,11 +788,11 @@ core::Status assembleWithPdfium(const PdfiumEngine& engine,
                     if (!base.has_value()) {
                         return std::unexpected(base.error());
                     }
-                    return assemblePreserveBase(**base, *pages, sources, sink, annotationReport);
+                    return assemblePreserveBase(**base, *pages, sources, sink, annotationReport, contentReport);
                 }
                 case PdfAssemblyRequest::Mode::Fresh:
                     // `base` is ignored: a Fresh document has no base.
-                    return assembleFresh(*pages, sources, sink, annotationReport);
+                    return assembleFresh(*pages, sources, sink, annotationReport, contentReport);
             }
             return std::unexpected(invalidArgument("unknown assembly mode"));
         });

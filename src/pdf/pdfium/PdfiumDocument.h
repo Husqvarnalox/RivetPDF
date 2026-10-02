@@ -28,6 +28,9 @@ namespace rivet::pdf {
 
 class PdfiumEngine;
 class PdfiumFileSource;
+namespace internal {
+class ContentState;
+}
 
 // PDFium-backed PdfDocument. Constructed only by the PDFium backend
 // (PdfiumEngine::openDocument): it takes ownership of a document handle
@@ -99,6 +102,12 @@ public:
     const std::shared_ptr<PdfiumFileSource>& fileSource() const { return source_; }
     const std::string& openPassword() const { return password_; }
 
+    // Ok when page `pageIndex` passed the regeneration fidelity probe
+    // (ADR-0017), InvalidArgument (with the probe's reason) when its content
+    // streams cannot be rewritten without loss. Runs the extraction and the
+    // probe on first use (cached). CALLER HOLDS THE GATE; never acquires it.
+    core::Status requireContentEditable(std::size_t pageIndex) const;
+
 protected:
     core::Result<core::Bitmap> renderPageInView(std::size_t pageIndex,
                                                 const PdfPageView& view,
@@ -128,6 +137,11 @@ private:
                                                                   const PdfPageContentEditsPtr& content) const;
     core::Result<std::vector<PdfPageLink>> pageLinksImpl(std::size_t pageIndex,
                                                          const PdfPageView* view) const;
+
+    // The private, never-rendered reader document content extraction and
+    // materialization work from (created lazily, separate from the
+    // destructive annotation reader). Caller holds the gate.
+    core::Result<FPDF_DOCUMENT> contentReader() const;
 
     // Reads a UTF-16LE metadata string (e.g. "Title") and converts it to
     // UTF-8. Empty when the key is missing. Caller must hold the PDFium gate
@@ -162,6 +176,11 @@ private:
     // a page that was read before but has been evicted is read from a
     // freshly loaded reader (cheap: PDFium parses lazily).
     static constexpr std::size_t kAnnotationCacheCapacity = 64;
+    // Content editing (Phase 5): the content reader, the per-page source
+    // content + probe results and the materialized edited pages. Only touched
+    // under the gate; closed by the destructor under the gate.
+    mutable std::unique_ptr<internal::ContentState> content_;
+
     mutable FPDF_DOCUMENT annotationReader_ = nullptr;
     mutable std::unordered_map<std::size_t, PdfPageAnnotationsPtr> annotationCache_;
     mutable std::deque<std::size_t> annotationCacheOrder_;      // insertion order

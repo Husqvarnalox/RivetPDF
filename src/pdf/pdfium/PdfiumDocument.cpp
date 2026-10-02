@@ -11,6 +11,7 @@
 
 #include "PdfiumCallGate.hpp"
 #include "PdfiumAnnotations.h"
+#include "PdfiumContent.h"
 #include "PdfiumFileSource.h"
 #include "PdfiumStrings.h"
 #include "PdfiumTextPage.h"
@@ -139,7 +140,11 @@ PdfiumDocument::PdfiumDocument(FPDF_DOCUMENT document,
                                std::shared_ptr<PdfiumFileSource> source,
                                std::string password,
                                const PdfiumEngine* owner)
-    : document_(document), source_(std::move(source)), password_(std::move(password)), owner_(owner) {
+    : document_(document),
+      source_(std::move(source)),
+      password_(std::move(password)),
+      owner_(owner),
+      content_(std::make_unique<internal::ContentState>()) {
     info_.isEncrypted = isEncrypted;
     info_.pageCount = static_cast<std::size_t>(std::max(0, FPDF_GetPageCount(document_)));
     info_.title = metaText("Title");
@@ -153,18 +158,22 @@ PdfiumDocument::~PdfiumDocument() {
         secret[i] = '\0';
     }
 
-    if (document_ == nullptr && annotationReader_ == nullptr) {
+    if (document_ == nullptr && annotationReader_ == nullptr && content_ == nullptr) {
         return;
     }
     const FPDF_DOCUMENT handle = document_;
     const FPDF_DOCUMENT reader = annotationReader_;
+    internal::ContentState* const content = content_.get();
     document_ = nullptr;
     annotationReader_ = nullptr;
     // Public entry operation: one gate acquisition for the close. The gate is
     // a leaked singleton, so this remains valid during static teardown. The
     // file source (a member) is released only after this body, i.e. after
     // PDFium is done with it (both documents read through it).
-    globalPdfiumCallGate().invoke([handle, reader] {
+    globalPdfiumCallGate().invoke([handle, reader, content] {
+        if (content != nullptr) {
+            content->closeAll(); // materialized pages and the content reader
+        }
         if (reader != nullptr) {
             FPDF_CloseDocument(reader);
         }
@@ -270,7 +279,6 @@ core::Result<core::Bitmap> PdfiumDocument::renderPageImpl(std::size_t pageIndex,
                                                           const PdfPageContentEditsPtr& content,
                                                           const core::Rect& pageRectPoints,
                                                           double devicePixelsPerPoint) {
-    (void)content;
     // Public entry operation: one gate acquisition for the whole body. Every
     // step below (page load, dimension queries, bitmap fill, render) issues
     // FPDF_* calls that must not overlap with any other PDFium call.
@@ -294,8 +302,26 @@ core::Result<core::Bitmap> PdfiumDocument::renderPageImpl(std::size_t pageIndex,
                                                    "pdf"));
         }
 
-        ScopedPage page(FPDF_LoadPage(document_, static_cast<int>(pageIndex)));
-        if (page.get() == nullptr) {
+        // The page to draw: the stored one, or - with content edits - the
+        // materialized page (the SOURCE page with the edits applied on a
+        // scratch document; the live document is never touched).
+        std::optional<ScopedPage> loaded;
+        FPDF_PAGE pageHandle = nullptr;
+        if (content != nullptr && !content->empty()) {
+            const core::Result<FPDF_DOCUMENT> reader = contentReader();
+            if (!reader.has_value()) {
+                return std::unexpected(reader.error());
+            }
+            const auto entry = content_->materialized(pageIndex, content);
+            if (!entry.has_value()) {
+                return std::unexpected(entry.error());
+            }
+            pageHandle = (*entry)->page->page();
+        } else {
+            loaded.emplace(FPDF_LoadPage(document_, static_cast<int>(pageIndex)));
+            pageHandle = loaded->get();
+        }
+        if (pageHandle == nullptr) {
             const int lastError = static_cast<int>(FPDF_GetLastError());
             return std::unexpected(core::makeError(core::ErrorCode::InvalidDocument,
                                                    "PDFium failed to load page " +
@@ -306,7 +332,7 @@ core::Result<core::Bitmap> PdfiumDocument::renderPageImpl(std::size_t pageIndex,
 
         // Native geometry plus the requested view's (validated: quarter turn,
         // crop box within the media box).
-        const auto geometry = internal::resolvePageGeometry(page.get(), pageIndex, view);
+        const auto geometry = internal::resolvePageGeometry(pageHandle, pageIndex, view);
         if (!geometry.has_value()) {
             return std::unexpected(geometry.error());
         }
@@ -454,8 +480,8 @@ core::Result<core::Bitmap> PdfiumDocument::renderPageImpl(std::size_t pageIndex,
         // and restored by the guard before the page closes, all inside this
         // gate acquisition.
         {
-            HiddenAnnotationsGuard hidden(page.get(), hiddenAnnotations);
-            FPDF_RenderPageBitmapWithMatrix(fpdfBitmap.get(), page.get(), &matrix, &bitmapClip,
+            HiddenAnnotationsGuard hidden(pageHandle, hiddenAnnotations);
+            FPDF_RenderPageBitmapWithMatrix(fpdfBitmap.get(), pageHandle, &matrix, &bitmapClip,
                                             FPDF_ANNOT | FPDF_LCD_TEXT);
         }
 
@@ -523,14 +549,74 @@ core::Result<std::shared_ptr<const PdfTextPage>> PdfiumDocument::textPageInView(
 
 core::Result<PdfPageContentPtr> PdfiumDocument::pageContent(std::size_t pageIndex,
                                                             const PdfPageContentEditsPtr& edits) const {
-    (void)pageIndex;
-    (void)edits;
-    return std::unexpected(core::makeError(core::ErrorCode::NotAvailable, "not implemented yet", "pdf"));
+    return globalPdfiumCallGate().invoke([&]() -> core::Result<PdfPageContentPtr> {
+        if (pageIndex >= info_.pageCount) {
+            return std::unexpected(core::makeError(core::ErrorCode::InvalidArgument,
+                                                   "page index " + std::to_string(pageIndex) +
+                                                       " out of range (document has " +
+                                                       std::to_string(info_.pageCount) + " pages)",
+                                                   "pdf"));
+        }
+        try {
+            const core::Result<FPDF_DOCUMENT> reader = contentReader();
+            if (!reader.has_value()) {
+                return std::unexpected(reader.error());
+            }
+            if (edits == nullptr || edits->empty()) {
+                return content_->sourcePage(pageIndex);
+            }
+            const auto entry = content_->materialized(pageIndex, edits);
+            if (!entry.has_value()) {
+                return std::unexpected(entry.error());
+            }
+            return content_->editedContent(**entry);
+        } catch (const std::bad_alloc&) {
+            return std::unexpected(core::makeError(core::ErrorCode::OutOfMemory,
+                                                   "out of memory while reading the page content", "pdf"));
+        }
+    });
+}
+
+core::Result<FPDF_DOCUMENT> PdfiumDocument::contentReader() const {
+    if (content_->reader() == nullptr) {
+        // The same bytes the live document was opened from (shared file
+        // source), decrypted with the same password; never rendered.
+        FPDF_FILEACCESS access = source_->fileAccess();
+        const FPDF_DOCUMENT reader = FPDF_LoadCustomDocument(&access, password_.c_str());
+        if (reader == nullptr) {
+            const int lastError = static_cast<int>(FPDF_GetLastError());
+            return std::unexpected(core::makeError(core::ErrorCode::InvalidDocument,
+                                                   "could not reopen the document to read its content"
+                                                   " (FPDF error " + std::to_string(lastError) + ")",
+                                                   "pdf"));
+        }
+        content_->setReader(reader);
+    }
+    return content_->reader();
+}
+
+core::Status PdfiumDocument::requireContentEditable(std::size_t pageIndex) const {
+    if (pageIndex >= info_.pageCount) {
+        return std::unexpected(core::makeError(core::ErrorCode::InvalidArgument, "page index out of range", "pdf"));
+    }
+    const core::Result<FPDF_DOCUMENT> reader = contentReader();
+    if (!reader.has_value()) {
+        return std::unexpected(reader.error());
+    }
+    const auto source = content_->sourcePage(pageIndex);
+    if (!source.has_value()) {
+        return std::unexpected(source.error());
+    }
+    if (!(*source)->regenerationSafe) {
+        return std::unexpected(core::makeError(
+            core::ErrorCode::InvalidArgument,
+            "the page content cannot be edited safely: " + (*source)->regenerationIssue, "pdf"));
+    }
+    return core::ok();
 }
 
 core::Result<std::shared_ptr<const PdfTextPage>> PdfiumDocument::textPageImpl(
     std::size_t pageIndex, const PdfPageView* view, const PdfPageContentEditsPtr& content) const {
-    (void)content;
     // Public entry operation: ONE gate acquisition for the whole extraction.
     // extractTextPage never acquires the gate itself (documented in
     // PdfiumTextPage.h) - the page load, text-page load, per-char queries and
@@ -543,6 +629,18 @@ core::Result<std::shared_ptr<const PdfTextPage>> PdfiumDocument::textPageImpl(
                                                            " out of range (document has " +
                                                            std::to_string(info_.pageCount) + " pages)",
                                                        "pdf"));
+            }
+            if (content != nullptr && !content->empty()) {
+                // The text of the materialized (edited) page.
+                const core::Result<FPDF_DOCUMENT> reader = contentReader();
+                if (!reader.has_value()) {
+                    return std::unexpected(reader.error());
+                }
+                const auto entry = content_->materialized(pageIndex, content);
+                if (!entry.has_value()) {
+                    return std::unexpected(entry.error());
+                }
+                return extractTextPageFromLoaded((*entry)->page->page(), pageIndex, view);
             }
             return extractTextPage(document_, pageIndex, info_.pageCount, view);
         });
