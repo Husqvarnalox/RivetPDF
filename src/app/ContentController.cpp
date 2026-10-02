@@ -734,8 +734,8 @@ void ContentController::openEditorForNew(std::size_t pageIndex, core::Point topL
     editing.origin = core::Point{topLeft.x, topLeft.y + kBaselineFactor * editing.fontSize};
     editing.quad = {core::Point{topLeft.x, topLeft.y + editing.lineAdvance},
                     core::Point{topLeft.x + width, topLeft.y + editing.lineAdvance},
-                    core::Point{topLeft.x, topLeft.y},
-                    core::Point{topLeft.x + width, topLeft.y}};
+                    core::Point{topLeft.x + width, topLeft.y},
+                    core::Point{topLeft.x, topLeft.y}};
     editing_ = std::move(editing);
     showEditor();
 }
