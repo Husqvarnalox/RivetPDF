@@ -9,6 +9,12 @@ if(RIVET_WITH_PDFIUM)
     target_compile_definitions(rivet_perf_annotations PRIVATE
         RIVET_PERF_FIXTURE_DIR="${CMAKE_SOURCE_DIR}/tests/pdf/fixtures")
     rivet_set_target_warnings(rivet_perf_annotations)
+
+    # Content editing through the real engine (Phase 5).
+    add_executable(rivet_perf_content_pdfium PerfContentPdfium.cpp)
+    target_link_libraries(rivet_perf_content_pdfium PRIVATE rivet::editor rivet::pdfium)
+    target_include_directories(rivet_perf_content_pdfium PRIVATE "${CMAKE_SOURCE_DIR}/tests/pdf")
+    rivet_set_target_warnings(rivet_perf_content_pdfium)
 endif()
 
 # Content editing (Phase 5): PDFium-free, runs over the editor fakes. The
