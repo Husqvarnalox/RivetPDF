@@ -135,6 +135,7 @@ public:
     DocumentRenderer& renderer() { return renderer_; }
 
     PageId pageId(std::size_t index) const { return pageIds_[index]; }
+    SerialExecutor& executor() { return executor_; }
 
 private:
     TaskScheduler scheduler_{2};
@@ -453,5 +454,41 @@ RIVET_TEST(priorityOrderingRunsVisibleBeforeImpendingBeforePrefetch) {
         CHECK_EQ(order[1].second, std::uint32_t{1}); // Visible (page 0 tile 1)
         CHECK_EQ(order[2].first, std::size_t{2});    // Impending (page 2)
         CHECK_EQ(order[3].first, std::size_t{1});    // Prefetch (page 1)
+    }
+}
+
+// Regression: cancelAll() used to drop the already-scheduled (not yet started)
+// drain task from the executor while drainScheduled_ stayed true, so no later
+// request could post a new drain and the document never rendered again.
+RIVET_TEST(renderingResumesAfterCancelAllDroppedAScheduledDrain) {
+    RendererHarness h;
+    FakePdfDocument& fake = h.document();
+
+    // Occupy the executor so the drain task posted by requestRender stays
+    // queued-but-not-started, deterministically.
+    std::promise<void> started;
+    auto startedFuture = started.get_future();
+    std::promise<void> release;
+    auto releaseFuture = release.get_future().share();
+    h.executor().post([&started, releaseFuture] {
+        started.set_value();
+        (void)releaseFuture.wait_for(std::chrono::seconds(10));
+    });
+    CHECK(settled(startedFuture));
+
+    auto cancelledFuture = requestAsync(h.renderer(), makeRequest(h, 0, 0, 0));
+    h.renderer().cancelAll();
+    CHECK(cancelledFuture.wait_for(std::chrono::seconds(0)) == std::future_status::ready);
+    const RenderResult cancelled = cancelledFuture.get();
+    CHECK(!cancelled.has_value());
+    CHECK_EQ(cancelled.error().code, ErrorCode::Cancelled);
+
+    // A new request after the cancel must still be rendered.
+    auto freshFuture = requestAsync(h.renderer(), makeRequest(h, 0, 0, 1));
+    release.set_value();
+    CHECK(settled(freshFuture));
+    if (settled(freshFuture, std::chrono::seconds(0))) {
+        CHECK(freshFuture.get().has_value());
+        CHECK_EQ(fake.renderCalls.load(), 1);
     }
 }

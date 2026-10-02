@@ -139,9 +139,12 @@ std::shared_ptr<const core::Bitmap> DocumentRenderer::cachedTile(const render::T
 }
 
 void DocumentRenderer::cancelAll() {
-    // Drops queued-not-started tasks; the in-flight task keeps running.
-    executor_.cancelPending();
-
+    // Cancellation is expressed purely through pending_: queued entries are
+    // erased below, the in-flight one keeps running. The executor's queue is
+    // deliberately NOT cleared: a scheduled drain task dropped there would
+    // leave drainScheduled_ stuck at true and no later request could ever
+    // post a new drain. A surviving drain task finds no queued entries and
+    // exits immediately.
     std::vector<Callback> dropped;
     {
         std::lock_guard<std::mutex> lock(mutex_);
