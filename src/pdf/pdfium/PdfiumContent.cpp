@@ -514,7 +514,7 @@ struct ObjectRecord {
 
 } // namespace
 
-RegenerationProbe probeRegeneration(FPDF_DOCUMENT source, int pageIndex) {
+RegenerationProbe probeRegeneration(FPDF_DOCUMENT source, FPDF_DOCUMENT referenceDocument, int pageIndex) {
     const auto unsafe = [](std::string issue) { return RegenerationProbe{false, std::move(issue)}; };
     try {
         ScopedDocument scratch(FPDF_CreateNewDocument());
@@ -537,6 +537,15 @@ RegenerationProbe probeRegeneration(FPDF_DOCUMENT source, int pageIndex) {
             const int count = FPDFPage_CountObjects(page.get());
             if (count < 0 || static_cast<std::size_t>(count) > kMaxContentObjectsPerPage) {
                 return unsafe("page has too many objects");
+            }
+            {
+                // Edits are indexed against the page as the file stores it
+                // but applied to the imported copy: both must agree (an
+                // import that drops unreadable content would shift them).
+                ScopedPage stored(FPDF_LoadPage(referenceDocument, pageIndex));
+                if (stored.get() == nullptr || FPDFPage_CountObjects(stored.get()) != count) {
+                    return unsafe("importing the page changes its objects");
+                }
             }
             if (count == 0) {
                 return RegenerationProbe{};
@@ -569,7 +578,24 @@ RegenerationProbe probeRegeneration(FPDF_DOCUMENT source, int pageIndex) {
                 before.push_back(record);
                 handles.push_back(object);
             }
-            reference = renderForProbe(page.get());
+            {
+                ScopedPage original(FPDF_LoadPage(referenceDocument, pageIndex));
+                if (original.get() != nullptr) {
+                    // The page as the file stores it must have the objects
+                    // the scratch copy has: edits are indexed against the
+                    // stored page but applied to the imported one.
+                    if (FPDFPage_CountObjects(original.get()) != count) {
+                        return unsafe("importing the page changes its objects");
+                    }
+                    for (int i = 0; i < count; ++i) {
+                        const FPDF_PAGEOBJECT object = FPDFPage_GetObject(original.get(), i);
+                        if (object == nullptr || FPDFPageObj_GetType(object) != before[static_cast<std::size_t>(i)].type) {
+                            return unsafe("importing the page changes its objects");
+                        }
+                    }
+                    reference = renderForProbe(original.get());
+                }
+            }
             if (!reference.has_value()) {
                 return unsafe("fidelity probe could not render the page");
             }
@@ -1252,6 +1278,10 @@ void ContentState::closeAll() {
         FPDF_CloseDocument(reader_);
         reader_ = nullptr;
     }
+    if (probeReference_ != nullptr) {
+        FPDF_CloseDocument(probeReference_);
+        probeReference_ = nullptr;
+    }
 }
 
 core::Result<PdfPageContentPtr> ContentState::sourcePage(std::size_t pageIndex) {
@@ -1277,7 +1307,7 @@ core::Result<PdfPageContentPtr> ContentState::sourcePage(std::size_t pageIndex) 
         content.regenerationSafe = false;
         content.regenerationIssue = "page has too many objects";
     } else {
-        const RegenerationProbe probe = probeRegeneration(reader_, static_cast<int>(pageIndex));
+        const RegenerationProbe probe = probeRegeneration(reader_, probeReference_, static_cast<int>(pageIndex));
         content.regenerationSafe = probe.safe;
         content.regenerationIssue = probe.issue;
     }

@@ -590,7 +590,16 @@ core::Result<FPDF_DOCUMENT> PdfiumDocument::contentReader() const {
                                                    " (FPDF error " + std::to_string(lastError) + ")",
                                                    "pdf"));
         }
-        content_->setReader(reader);
+        // A second private copy the probe may render (the first is never
+        // rendered, so nothing is generated into it).
+        FPDF_FILEACCESS referenceAccess = source_->fileAccess();
+        const FPDF_DOCUMENT reference = FPDF_LoadCustomDocument(&referenceAccess, password_.c_str());
+        if (reference == nullptr) {
+            FPDF_CloseDocument(reader);
+            return std::unexpected(core::makeError(core::ErrorCode::InvalidDocument,
+                                                   "could not reopen the document to read its content", "pdf"));
+        }
+        content_->setReader(reader, reference);
     }
     return content_->reader();
 }

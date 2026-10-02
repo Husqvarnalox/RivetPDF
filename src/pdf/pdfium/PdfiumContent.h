@@ -74,9 +74,13 @@ struct RegenerationProbe {
 
 // The ADR-0017 fidelity probe for page `pageIndex` of `source` (a private,
 // never-rendered document): regenerates the content of a scratch copy and
-// compares structure and rendering. Never fails: a probe that cannot run
-// reports the page as unsafe.
-RegenerationProbe probeRegeneration(FPDF_DOCUMENT source, int pageIndex);
+// compares structure and rendering. `reference` is ANOTHER private copy of
+// the same file that may be rendered: the scratch copy lacks document-level
+// state (optional-content configuration, output intents, ...), so the
+// regenerated page is compared with the ORIGINAL page as the full document
+// shows it, which also catches content that would turn visible. Never fails:
+// a probe that cannot run reports the page as unsafe.
+RegenerationProbe probeRegeneration(FPDF_DOCUMENT source, FPDF_DOCUMENT reference, int pageIndex);
 
 // Applies `edits` to the loaded `page` of `document` (see PdfContent.hpp for
 // the semantics) and regenerates its content streams. `fonts` must belong to
@@ -132,7 +136,12 @@ public:
     void closeAll();
 
     FPDF_DOCUMENT reader() const { return reader_; }
-    void setReader(FPDF_DOCUMENT reader) { reader_ = reader; }
+    // The reader (never rendered) and the probe's reference copy (rendered
+    // by the probe), both private copies of the same file.
+    void setReader(FPDF_DOCUMENT reader, FPDF_DOCUMENT probeReference) {
+        reader_ = reader;
+        probeReference_ = probeReference;
+    }
 
     // The page as stored: extraction + probe, cached (bounded).
     core::Result<PdfPageContentPtr> sourcePage(std::size_t pageIndex);
@@ -160,6 +169,7 @@ private:
     static constexpr std::size_t kMaterializedByteBudget = 256u * 1024u * 1024u;
 
     FPDF_DOCUMENT reader_ = nullptr;
+    FPDF_DOCUMENT probeReference_ = nullptr;
     std::unordered_map<std::size_t, PdfPageContentPtr> source_;
     std::deque<std::size_t> sourceOrder_;
     std::list<Entry> entries_; // most recently used first
