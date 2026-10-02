@@ -516,7 +516,9 @@ UX notes:
   as false positives (`detachChild(nullptr)` after inlining; a devirtualised
   `make_shared<Bitmap>`), not undefined behaviour. They are fixed locally
   (an explicit null guard in `Widget::detachChild`, a plain `shared_ptr`
-  construction in the test); no warning is disabled globally.
+  construction in the test); no warning is disabled globally. GCC 13's
+  `-Wnull-dereference` inside `<streambuf>` for `istreambuf_iterator` is
+  likewise a false positive; tests read files with `read()`/`gcount()`.
 
 Features beyond this (annotations, forms, content editing, ...) are roadmap items in
 the README and are not yet part of the architecture described here. Page

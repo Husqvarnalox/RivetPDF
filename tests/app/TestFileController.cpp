@@ -612,9 +612,16 @@ RIVET_TEST(splitSurvivesTabCloseAndUsesItsSnapshot) {
 
 namespace {
 
+// Bulk read via read()/gcount(): GCC 13 reports a false-positive
+// -Wnull-dereference inside <streambuf> for istreambuf_iterator.
 std::string slurp(const fs::path& path) {
     std::ifstream in(path, std::ios::binary);
-    return std::string(std::istreambuf_iterator<char>(in), {});
+    std::string out;
+    char buffer[4096];
+    while (in.read(buffer, sizeof buffer) || in.gcount() > 0) {
+        out.append(buffer, static_cast<std::size_t>(in.gcount()));
+    }
+    return out;
 }
 
 // Destroys the controller on another thread (its destructor blocks while a
