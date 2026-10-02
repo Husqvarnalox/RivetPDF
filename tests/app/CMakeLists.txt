@@ -3,6 +3,7 @@ add_executable(rivet_app_tests
     TestShellWiring.cpp
     TestWorkspaceLifecycle.cpp
     TestUrlPolicy.cpp
+    TestAnnotationController.cpp
     TestAnnotationInteraction.cpp
     TestAnnotationPainter.cpp
     TestPageEditingController.cpp
