@@ -134,10 +134,15 @@ void FileController::requestSave(DocumentTab& tab, std::filesystem::path destina
 
     auto result = std::make_shared<std::optional<editor::DocumentWriteResult>>();
     editor::DocumentWriteJob captured = std::move(*job);
-    scheduler_.post([this, result, captured = std::move(captured), request, alive = alive_] mutable {
-        *result = editor::runDocumentWrite(engine_, captured);
-        if (context_.services.mainDispatcher != nullptr) {
-            context_.services.mainDispatcher->post(
+    // The worker touches only the engine, the dispatcher and the flag: the
+    // controller may be destroyed (quit) while it runs.
+    pdf::PdfEngine& engine = engine_;
+    core::IMainThreadDispatcher* dispatcher = context_.services.mainDispatcher;
+    scheduler_.post([this, &engine, dispatcher, result, captured = std::move(captured), request,
+                     alive = alive_] mutable {
+        *result = editor::runDocumentWrite(engine, captured);
+        if (dispatcher != nullptr) {
+            dispatcher->post(
                 [this, result, request, alive] {
                     if (!*alive) return;
                     handleSaveCompleted(result, request);
@@ -173,10 +178,13 @@ void FileController::startNextSave() {
     setStatus_("Saving…");
     auto result = std::make_shared<std::optional<editor::DocumentWriteResult>>();
     editor::DocumentWriteJob captured = std::move(*job);
-    scheduler_.post([this, result, captured = std::move(captured), request, alive = alive_] mutable {
-        *result = editor::runDocumentWrite(engine_, captured);
-        if (context_.services.mainDispatcher != nullptr) {
-            context_.services.mainDispatcher->post([this, result, request, alive] {
+    pdf::PdfEngine& engine = engine_;
+    core::IMainThreadDispatcher* dispatcher = context_.services.mainDispatcher;
+    scheduler_.post([this, &engine, dispatcher, result, captured = std::move(captured), request,
+                     alive = alive_] mutable {
+        *result = editor::runDocumentWrite(engine, captured);
+        if (dispatcher != nullptr) {
+            dispatcher->post([this, result, request, alive] {
                 if (!*alive) return;
                 handleSaveCompleted(result, request);
             });
@@ -279,10 +287,12 @@ void FileController::extract(DocumentTab& tab, std::span<const core::PageId> pag
     setStatus_("Exporting…");
     auto result = std::make_shared<std::optional<editor::DocumentWriteResult>>();
     editor::DocumentWriteJob captured = std::move(*job);
-    scheduler_.post([this, result, captured = std::move(captured), alive = alive_] mutable {
-        *result = editor::runDocumentWrite(engine_, captured);
-        if (context_.services.mainDispatcher != nullptr) {
-            context_.services.mainDispatcher->post([this, result, alive] {
+    pdf::PdfEngine& engine = engine_;
+    core::IMainThreadDispatcher* dispatcher = context_.services.mainDispatcher;
+    scheduler_.post([this, &engine, dispatcher, result, captured = std::move(captured), alive = alive_] mutable {
+        *result = editor::runDocumentWrite(engine, captured);
+        if (dispatcher != nullptr) {
+            dispatcher->post([this, result, alive] {
                 if (!*alive) return;
                 editor::DocumentWriteResult& write = **result;
                 if (write.written.has_value()) {
@@ -437,20 +447,22 @@ void FileController::startImport(DocumentTab& tab, std::optional<std::size_t> be
 
     auto result = std::make_shared<core::Result<std::vector<editor::PageSource>>>(
         std::unexpected(core::Error{core::ErrorCode::NotAvailable, "pending", "import"}));
-    scheduler_.post([this, result, sourcePath = std::move(sourcePath), tabId, generation, beforeIndex,
-                     alive = alive_] mutable {
+    pdf::PdfEngine& engine = engine_;
+    core::IMainThreadDispatcher* dispatcher = context_.services.mainDispatcher;
+    scheduler_.post([this, &engine, dispatcher, result, sourcePath = std::move(sourcePath), tabId, generation,
+                     beforeIndex, alive = alive_] mutable {
         // Worker: open the source and read its page metadata (PDFium calls
         // under the adapter's gate). The document stays alive through the
         // returned sources' shared pointers.
-        auto document = engine_.openDocument(sourcePath, {});
+        auto document = engine.openDocument(sourcePath, {});
         if (!document.has_value()) {
             *result = std::unexpected(std::move(document).error());
         } else {
             std::shared_ptr<pdf::PdfDocument> source{std::move(document.value())};
             *result = editor::PageModel::describeAllPages(source);
         }
-        if (context_.services.mainDispatcher != nullptr) {
-            context_.services.mainDispatcher->post(
+        if (dispatcher != nullptr) {
+            dispatcher->post(
                 [this, result, tabId, generation, beforeIndex, alive] {
                     if (!*alive) return;
                     handleImportCompleted(result, tabId, generation, beforeIndex);
