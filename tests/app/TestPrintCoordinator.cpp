@@ -73,12 +73,13 @@ public:
     const pdf::PdfDocumentInfo& info() const override { return inner_->info(); }
     core::Result<pdf::PdfPageInfo> pageInfo(std::size_t index) const override { return inner_->pageInfo(index); }
     core::Result<core::Bitmap> renderPage(std::size_t index, const core::Rect& rect, double scale) override {
-        return renderPageInView(index, pdf::PdfPageView{}, {}, rect, scale);
+        return renderPageInView(index, pdf::PdfPageView{}, {}, nullptr, rect, scale);
     }
 
 protected:
     core::Result<core::Bitmap> renderPageInView(std::size_t index, const pdf::PdfPageView&,
-                                                std::span<const std::uint32_t>, const core::Rect& rect,
+                                                std::span<const std::uint32_t>,
+                                                const pdf::PdfPageContentEditsPtr&, const core::Rect& rect,
                                                 double scale) override {
         ++stats_.renders;
         {
@@ -115,8 +116,9 @@ public:
     }
 
     core::Status assembleDocument(const pdf::PdfAssemblyRequest& request, pdf::IPdfByteSink& sink,
-                                  std::vector<pdf::PdfAssembledPageAnnotations>* report = nullptr) override {
-        return inner.assembleDocument(request, sink, report);
+                                  std::vector<pdf::PdfAssembledPageAnnotations>* report = nullptr,
+                                  std::vector<pdf::PdfAssembledPageContent>* contentReport = nullptr) override {
+        return inner.assembleDocument(request, sink, report, contentReport);
     }
 
     FakeWritableEngine inner;
