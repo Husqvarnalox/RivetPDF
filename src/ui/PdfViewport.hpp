@@ -166,7 +166,8 @@ public:
     void setCurrentPageChangedCallback(std::function<void(std::size_t)> onPageChanged);
 
     // Focus intent: the host owns focus routing; the viewport reports that a
-    // click wants keyboard focus (arrow keys etc.).
+    // press wants keyboard focus (arrow keys etc.). Fired for every Down,
+    // before any tool, layer or child handles it.
     void setOnFocusRequested(std::function<void()> onFocusRequested);
 
     // Installs the text interaction bridge (non-owning; may be null to

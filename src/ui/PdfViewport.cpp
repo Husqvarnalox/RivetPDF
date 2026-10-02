@@ -414,6 +414,12 @@ bool PdfViewport::onMouse(const PointerEvent& event) {
     // consume. Wheel scroll/pinch keeps navigating and never reaches either.
     if (event.type == PointerEventType::Scroll) return handlePointer(event);
 
+    // Every press on the viewport takes keyboard focus FIRST, whether the
+    // tool, the annotation layer, the scrollbars or the viewport itself
+    // handles it: a consumed press must not leave the keyboard with another
+    // widget (Delete after clicking an annotation would act on the sidebar).
+    if (event.type == PointerEventType::Down && onFocusRequested_) onFocusRequested_();
+
     if (activeTool_ != nullptr && activeTool_->onMouse(*this, event)) {
         event.accepted = true;
         return true;
@@ -544,11 +550,8 @@ bool PdfViewport::handlePointer(const PointerEvent& event) {
     }
 
     // Scrollbars (and later overlays) live in the children; route to them in
-    // topmost-first order. A press that falls through to the content asks the
-    // host for keyboard focus.
-    if (Widget::onMouse(event)) return true;
-    if (event.type == PointerEventType::Down && onFocusRequested_) onFocusRequested_();
-    return false;
+    // topmost-first order. (Keyboard focus was already requested by onMouse.)
+    return Widget::onMouse(event);
 }
 
 bool PdfViewport::onKey(const KeyEvent& event) {

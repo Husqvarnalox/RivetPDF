@@ -907,6 +907,46 @@ RIVET_TEST(layerEventOrderToolThenLayerThenViewportThenAfterMouse) {
     CHECK(log == (EventLog{"tool.mouse"}));
 }
 
+RIVET_TEST(everyPressRequestsKeyboardFocusEvenWhenAToolOrLayerConsumesIt) {
+    Fixture f;
+    EventLog log;
+    LoggingTool tool(log);
+    LoggingLayer layer(log);
+    int focusRequests = 0;
+    f.viewport.setOnFocusRequested([&] {
+        ++focusRequests;
+        log.push_back("focus");
+    });
+    f.viewport.setAnnotationLayer(&layer);
+
+    // Layer consumes: focus was requested before the layer saw the press.
+    layer.consumeMouse = true;
+    CHECK(f.viewport.onMouse(mouseAt(PointerEventType::Down, Point{100.0, 100.0})));
+    CHECK_EQ(focusRequests, 1);
+    CHECK(log == (EventLog{"focus", "layer.mouse"}));
+    f.viewport.onMouse(mouseAt(PointerEventType::Up, Point{100.0, 100.0}));
+
+    // Tool consumes.
+    log.clear();
+    focusRequests = 0;
+    f.viewport.setActiveTool(&tool);
+    tool.consume = true;
+    CHECK(f.viewport.onMouse(mouseAt(PointerEventType::Down, Point{100.0, 100.0})));
+    CHECK_EQ(focusRequests, 1);
+    CHECK(log == (EventLog{"focus", "tool.mouse"}));
+
+    // Nobody consumes: still exactly one request per press; moves and
+    // releases never ask for focus.
+    log.clear();
+    focusRequests = 0;
+    f.viewport.setActiveTool(nullptr);
+    layer.consumeMouse = false;
+    f.viewport.onMouse(mouseAt(PointerEventType::Down, Point{100.0, 100.0}));
+    f.viewport.onMouse(mouseAt(PointerEventType::Move, Point{110.0, 110.0}));
+    f.viewport.onMouse(mouseAt(PointerEventType::Up, Point{110.0, 110.0}));
+    CHECK_EQ(focusRequests, 1);
+}
+
 RIVET_TEST(layerNeverSeesWheelScrollOrPinch) {
     Fixture f;
     EventLog log;

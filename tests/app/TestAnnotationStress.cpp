@@ -188,6 +188,8 @@ struct BasicShell {
             },
             [] {},
         });
+        // As ShellController wires it: a press on the viewport takes the keyboard.
+        viewport->setOnFocusRequested([this] { context->setFocus(nullptr); });
         sidebar = std::make_unique<app::SidebarController>(*context, *root);
         root->addChild(std::move(vp));
         status = std::make_unique<app::StatusBarController>(*context, *root, "Ready");
@@ -1113,6 +1115,45 @@ RIVET_TEST(deleteAndBackspaceWhileCroppingKeepTheSelectedAnnotation) {
     CHECK(shell.editing->handleToolKey(keyEvent(ui::Key::Escape)));
     CHECK(!shell.editing->isCropping());
     CHECK(shell.viewport->onKey(keyEvent(ui::Key::Delete)));
+    CHECK_EQ(shell.countOn(0), 0u);
+}
+
+RIVET_TEST(deleteAfterClickingAnAnnotationDeletesTheAnnotationNotTheSelectedPages) {
+    PageShell shell(3);
+    CHECK(shell.open("clickfocus") != nullptr);
+    const core::AnnotationId id = createRect(shell, core::Rect{100.0, 100.0, 80.0, 40.0}, 0);
+    CHECK(id);
+
+    // The thumbnails hold keyboard focus with page 0 selected.
+    shell.editing->handleRowClicked(0, ui::PageThumbnailList::ClickGesture::Replace);
+    shell.context->setFocus(&shell.sidebar->thumbnails());
+    CHECK(shell.focused == &shell.sidebar->thumbnails());
+
+    // Click the annotation in the viewport (press + release).
+    const auto pageRect = shell.viewport->pageRectInViewport(0);
+    CHECK(pageRect.has_value());
+    const double zoom = shell.viewport->zoomFactor();
+    const auto view = shell.viewOf(id, 0);
+    CHECK(view.has_value());
+    // A hollow rectangle is hit on its outline: press on the left edge.
+    const core::Point center{pageRect->origin.x + zoom * (view->bounds.origin.x + 1.0),
+                             pageRect->origin.y + zoom * (view->bounds.origin.y + view->bounds.size.height / 2.0)};
+    ui::PointerEvent down;
+    down.type = ui::PointerEventType::Down;
+    down.position = center;
+    down.button = 1;
+    (void)shell.viewport->onMouse(down);
+    ui::PointerEvent up = down;
+    up.type = ui::PointerEventType::Up;
+    (void)shell.viewport->onMouse(up);
+    CHECK(shell.focused == nullptr);
+    CHECK(shell.annotations->selectedId() == std::optional<core::AnnotationId>{id});
+
+    // Delete is routed the way the shell does: focused widget, else viewport.
+    const ui::KeyEvent del = keyEvent(ui::Key::Delete);
+    const bool handled = shell.focused != nullptr ? shell.focused->onKey(del) : shell.viewport->onKey(del);
+    CHECK(handled);
+    CHECK_EQ(shell.session().pageCount(), 3u);
     CHECK_EQ(shell.countOn(0), 0u);
 }
 
