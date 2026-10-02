@@ -611,6 +611,11 @@ honestly:
 - **Undo/Redo menu titles** are static (do not show the command name).
 - **Outline snap-back**: after an edit the selection outline shows the
   previous geometry for one extraction round trip.
+- **Inline editor preview**: the editor lays the text out with the UI
+  font, so its line breaks can differ from the PDF's by a word; the commit
+  reflows with the block's PDF wrap width and font metrics.
+- **Annotate button**: it only shows the annotation bar; the content tool
+  (and its selection) ends when an annotation tool is chosen.
 
 Features beyond this (forms, ...) are roadmap items in the README and are
 not yet part of the architecture described here. Page labels,
