@@ -26,6 +26,9 @@ add_executable(rivet_editor_tests
     # Page operations x annotations through the real saver (PDFium-ON bodies).
     TestAnnotationPageOpsPdfium.cpp
     TestAnnotationConcurrency.cpp
+    # Content editing (Phase 5): geometry, text blocks, service, commands.
+    TestContentGeometry.cpp
+    TestTextBlocks.cpp
 )
 
 add_test(NAME editor COMMAND rivet_editor_tests)

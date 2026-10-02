@@ -2,6 +2,8 @@ add_library(rivet_editor STATIC
     AnnotationGeometry.cpp
     AnnotationService.cpp
     AnnotationCommands.cpp
+    ContentGeometry.cpp
+    TextBlocks.cpp
     PageCommands.cpp
     PageModel.cpp
     PageSelection.cpp
