@@ -14,12 +14,17 @@
 #include "render/ViewerState.hpp"
 #include "render/ZoomState.hpp"
 #include "ui/PdfViewport.hpp"
+#include "ui/ViewerTextBridge.hpp"
+#include "ui/ViewportTool.hpp"
 #include "ui/UiTypes.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <set>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -741,4 +746,309 @@ RIVET_TEST(presentationModeFlipsPagesAndRefits) {
     // Exiting restores fit mode None (manual zoom state preserved).
     f.viewport.setPresentationMode(false);
     CHECK(!f.viewport.presentationMode());
+}
+
+// ---- annotation layer slot --------------------------------------------------
+
+namespace {
+
+// Shared, ordered event log for tools, layers and the fake text bridge.
+using EventLog = std::vector<std::string>;
+
+class LoggingTool final : public rivet::ui::ViewportTool {
+public:
+    explicit LoggingTool(EventLog& log) : log_(log) {}
+    bool consume = false;
+
+    bool onMouse(rivet::ui::ViewportToolHost&, const PointerEvent&) override {
+        log_.push_back("tool.mouse");
+        return consume;
+    }
+    bool onKey(rivet::ui::ViewportToolHost&, const KeyEvent&) override {
+        log_.push_back("tool.key");
+        return consume;
+    }
+    void paint(const rivet::ui::ViewportToolHost&, rivet::ui::PaintContext&) const override {
+        log_.push_back("tool.paint");
+    }
+
+private:
+    EventLog& log_;
+};
+
+class LoggingLayer final : public rivet::ui::ViewportLayer {
+public:
+    explicit LoggingLayer(EventLog& log) : log_(log) {}
+    bool consumeMouse = false;
+    bool consumeKey = false;
+
+    // Paint-time observations (paint is const on the interface).
+    mutable std::vector<std::pair<std::size_t, Rect>> pageRects;
+    mutable std::vector<std::size_t> bitmapsAtPage;  // tiles painted when paintPage ran
+    mutable std::vector<std::size_t> overlaysAtPage; // overlays painted when paintPage ran
+    mutable std::size_t overlaysAtAbove = 0;
+
+    static constexpr rivet::ui::Color kOverlayColor{0.1, 0.2, 0.3, 0.4};
+
+    static std::size_t countOverlays(const FakePaintContext& context) {
+        std::size_t count = 0;
+        for (const auto& fill : context.fills) count += fill.color == kOverlayColor ? 1 : 0;
+        return count;
+    }
+
+    bool onMouse(rivet::ui::ViewportToolHost&, const PointerEvent&) override {
+        log_.push_back("layer.mouse");
+        return consumeMouse;
+    }
+    void afterMouse(rivet::ui::ViewportToolHost&, const PointerEvent&) override {
+        log_.push_back("layer.after");
+    }
+    bool onKey(rivet::ui::ViewportToolHost&, const KeyEvent&) override {
+        log_.push_back("layer.key");
+        return consumeKey;
+    }
+    void paintPage(const rivet::ui::ViewportToolHost&, std::size_t pageIndex,
+                   const Rect& pageRectInViewport, rivet::ui::PaintContext& context) const override {
+        const auto& fake = static_cast<const FakePaintContext&>(context);
+        pageRects.emplace_back(pageIndex, pageRectInViewport);
+        bitmapsAtPage.push_back(fake.bitmaps.size());
+        overlaysAtPage.push_back(countOverlays(fake));
+        log_.push_back("layer.page");
+    }
+    void paintAbove(const rivet::ui::ViewportToolHost&, rivet::ui::PaintContext& context) const override {
+        log_.push_back("layer.above");
+        overlaysAtAbove = countOverlays(static_cast<const FakePaintContext&>(context));
+    }
+
+private:
+    EventLog& log_;
+};
+
+// Text bridge that "hits" a character everywhere and shows one overlay rect
+// per page, so selection routing and overlay paint order are observable.
+class LoggingBridge final : public rivet::ui::IViewerTextBridge {
+public:
+    explicit LoggingBridge(EventLog& log) : log_(log) {}
+
+    void warmPage(std::size_t) override {}
+    std::optional<std::uint32_t> charIndexAtPoint(std::size_t, const Point&) override { return 0u; }
+    std::vector<rivet::ui::OverlayRect> overlayRects(std::size_t) override {
+        return {rivet::ui::OverlayRect{Rect{10.0, 10.0, 20.0, 20.0}, LoggingLayer::kOverlayColor}};
+    }
+    void selectionDragBegan(std::size_t, std::uint32_t, bool) override {
+        log_.push_back("bridge.began");
+    }
+    void selectionDragMoved(std::size_t, std::uint32_t) override {}
+    void selectionDragEnded() override { log_.push_back("bridge.ended"); }
+    void selectionCleared() override { log_.push_back("bridge.cleared"); }
+    std::optional<rivet::ui::ViewerLinkHit> linkAtPoint(std::size_t, const Point&) override {
+        return std::nullopt;
+    }
+    std::vector<Rect> linkRects(std::size_t) override { return {}; }
+    void linkActivated(const rivet::ui::ViewerLinkHit&) override {}
+
+private:
+    EventLog& log_;
+};
+
+PointerEvent mouseAt(PointerEventType type, Point position) {
+    PointerEvent event;
+    event.type = type;
+    event.position = position;
+    event.button = 1;
+    return event;
+}
+
+} // namespace
+
+RIVET_TEST(layerEventOrderToolThenLayerThenViewportThenAfterMouse) {
+    Fixture f;
+    EventLog log;
+    LoggingTool tool(log);
+    LoggingLayer layer(log);
+    LoggingBridge bridge(log);
+    f.viewport.setTextBridge(&bridge);
+    f.viewport.setActiveTool(&tool);
+    f.viewport.setAnnotationLayer(&layer);
+    CHECK(f.viewport.annotationLayer() == &layer);
+
+    // Tool consumes: the layer and the viewport never see the event.
+    tool.consume = true;
+    const PointerEvent down = mouseAt(PointerEventType::Down, Point{100.0, 100.0});
+    CHECK_EQ(f.viewport.onMouse(down), true);
+    CHECK(log == (EventLog{"tool.mouse"}));
+    log.clear();
+
+    // Layer consumes: the viewport's selection never starts, no afterMouse.
+    tool.consume = false;
+    layer.consumeMouse = true;
+    CHECK_EQ(f.viewport.onMouse(mouseAt(PointerEventType::Down, Point{100.0, 100.0})), true);
+    CHECK(log == (EventLog{"tool.mouse", "layer.mouse"}));
+    log.clear();
+
+    // Unconsumed: the viewport handles it (starts a text selection), then
+    // afterMouse runs.
+    layer.consumeMouse = false;
+    CHECK_EQ(f.viewport.onMouse(mouseAt(PointerEventType::Down, Point{100.0, 100.0})), true);
+    CHECK(log == (EventLog{"tool.mouse", "layer.mouse", "bridge.began", "layer.after"}));
+    log.clear();
+
+    // afterMouse also follows events the viewport did not handle at all.
+    f.viewport.onMouse(mouseAt(PointerEventType::Up, Point{100.0, 100.0}));
+    log.clear();
+    CHECK_EQ(f.viewport.onMouse(mouseAt(PointerEventType::Move, Point{700.0, 590.0})), false);
+    CHECK(log == (EventLog{"tool.mouse", "layer.mouse", "layer.after"}));
+
+    // Uninstalling stops the calls.
+    log.clear();
+    f.viewport.setAnnotationLayer(nullptr);
+    CHECK(f.viewport.annotationLayer() == nullptr);
+    f.viewport.onMouse(mouseAt(PointerEventType::Move, Point{700.0, 590.0}));
+    CHECK(log == (EventLog{"tool.mouse"}));
+}
+
+RIVET_TEST(layerNeverSeesWheelScrollOrPinch) {
+    Fixture f;
+    EventLog log;
+    LoggingLayer layer(log);
+    f.viewport.setAnnotationLayer(&layer);
+
+    PointerEvent scroll = scrollEvent(Point{0.0, 120.0}, false, false);
+    CHECK_EQ(f.viewport.onMouse(scroll), true);
+    CHECK(Point::nearlyEqual(f.viewport.scrollOffsetPoints(), Point{0.0, 120.0}, 1e-9));
+    PointerEvent pinch = scrollEvent(Point{0.0, -1.0}, true, false);
+    pinch.position = Point{400.0, 300.0};
+    CHECK_EQ(f.viewport.onMouse(pinch), true);
+    CHECK_NEAR(f.viewport.zoom().zoom(), 1.25, 1e-12);
+    CHECK(log.empty());
+
+    // A layer that would consume everything still cannot block the wheel.
+    layer.consumeMouse = true;
+    CHECK_EQ(f.viewport.onMouse(scrollEvent(Point{0.0, 10.0}, false, false)), true);
+    CHECK(log.empty());
+}
+
+RIVET_TEST(layerKeysComeAfterTheToolAndBeforeTheViewport) {
+    Fixture f;
+    EventLog log;
+    LoggingTool tool(log);
+    LoggingLayer layer(log);
+    f.viewport.setActiveTool(&tool);
+    f.viewport.setAnnotationLayer(&layer);
+
+    KeyEvent zoomIn;
+    zoomIn.key = Key::Plus;
+    // Neither consumes: the viewport zooms.
+    CHECK_EQ(f.viewport.onKey(zoomIn), true);
+    CHECK(log == (EventLog{"tool.key", "layer.key"}));
+    CHECK_NEAR(f.viewport.zoom().zoom(), 1.25, 1e-12);
+
+    // The layer consumes: the viewport does not zoom.
+    log.clear();
+    layer.consumeKey = true;
+    CHECK_EQ(f.viewport.onKey(zoomIn), true);
+    CHECK(log == (EventLog{"tool.key", "layer.key"}));
+    CHECK_NEAR(f.viewport.zoom().zoom(), 1.25, 1e-12);
+
+    // The tool consumes: the layer is skipped.
+    log.clear();
+    tool.consume = true;
+    CHECK_EQ(f.viewport.onKey(zoomIn), true);
+    CHECK(log == (EventLog{"tool.key"}));
+}
+
+RIVET_TEST(presentationModePaintsTheLayerButSendsItNoInput) {
+    Fixture f;
+    EventLog log;
+    LoggingLayer layer(log);
+    f.viewport.setAnnotationLayer(&layer);
+    f.viewport.setPresentationMode(true);
+
+    KeyEvent key;
+    key.key = Key::PageDown;
+    CHECK_EQ(f.viewport.onKey(key), true);
+    f.viewport.onMouse(mouseAt(PointerEventType::Down, Point{100.0, 100.0}));
+    f.viewport.onMouse(mouseAt(PointerEventType::Move, Point{100.0, 100.0}));
+    CHECK(log.empty());
+
+    FakePaintContext context;
+    f.viewport.paint(context);
+    CHECK(!layer.pageRects.empty());
+    CHECK(std::find(log.begin(), log.end(), "layer.above") != log.end());
+
+    // Leaving presentation restores the input routing.
+    f.viewport.setPresentationMode(false);
+    log.clear();
+    f.viewport.onMouse(mouseAt(PointerEventType::Move, Point{700.0, 590.0}));
+    CHECK(!log.empty());
+}
+
+RIVET_TEST(layerPaintOrderPageAfterTilesBeforeOverlaysAboveBeforeTool) {
+    Fixture f;
+    EventLog log;
+    LoggingTool tool(log);
+    LoggingLayer layer(log);
+    LoggingBridge bridge(log);
+    f.viewport.setTextBridge(&bridge);
+    f.viewport.setActiveTool(&tool);
+    f.viewport.setAnnotationLayer(&layer);
+    f.viewport.setScrollOffsetPoints(Point{0.0, 100.0});
+    f.source.insertTile(TileKey{DocumentId{1}, PageId{11}, physicalKeyFor(1.0, 1.0), 0, 0}, 512, 512);
+
+    FakePaintContext context;
+    f.viewport.paint(context);
+
+    // Page 0 is the only visible page at scroll y=100 (page 1 starts at 832).
+    CHECK_EQ(layer.pageRects.size(), std::size_t{1});
+    CHECK_EQ(layer.pageRects[0].first, std::size_t{0});
+    // The rect equals both the host's frame and where the tile was drawn.
+    CHECK(Rect::nearlyEqual(layer.pageRects[0].second, *f.viewport.pageRectInViewport(0), 1e-9));
+    CHECK_EQ(context.bitmaps.size(), std::size_t{1});
+    CHECK(Rect::nearlyEqual(context.bitmaps[0].dest,
+                            Rect{layer.pageRects[0].second.minX(), layer.pageRects[0].second.minY(),
+                                 512.0, 512.0},
+                            1e-9));
+    // Tiles were already painted, overlays not yet; chrome after overlays.
+    CHECK_EQ(layer.bitmapsAtPage[0], std::size_t{1});
+    CHECK_EQ(layer.overlaysAtPage[0], std::size_t{0});
+    CHECK_EQ(layer.overlaysAtAbove, std::size_t{1});
+    CHECK_EQ(LoggingLayer::countOverlays(context), std::size_t{1});
+    // Above-layer chrome precedes the active tool.
+    CHECK(log == (EventLog{"layer.page", "layer.above", "tool.paint"}));
+}
+
+RIVET_TEST(hostPageCountAndPageAtMapViewportPointsToPageDisplayPoints) {
+    PdfViewport empty;
+    empty.setFrame(Rect{0.0, 0.0, 800.0, 600.0});
+    CHECK_EQ(empty.pageCount(), std::size_t{0});
+    CHECK(!empty.pageAt(Point{10.0, 10.0}).has_value());
+
+    Fixture f;
+    CHECK_EQ(f.viewport.pageCount(), std::size_t{2});
+    // Zoom 1, no scroll: viewport (100, 100) is page-0 point (76, 76).
+    auto hit = f.viewport.pageAt(Point{100.0, 100.0});
+    CHECK(hit.has_value());
+    CHECK_EQ(hit->first, std::size_t{0});
+    CHECK(Point::nearlyEqual(hit->second, Point{76.0, 76.0}, 1e-9));
+    // The margin outside the page maps to nothing.
+    CHECK(!f.viewport.pageAt(Point{10.0, 10.0}).has_value());
+
+    // Zoom 2, scrolled to content (100, 700).
+    CHECK(f.viewport.zoom().setZoom(2.0));
+    f.viewport.setScrollOffsetPoints(Point{100.0, 700.0});
+    CHECK(Point::nearlyEqual(f.viewport.scrollOffsetPoints(), Point{100.0, 700.0}, 1e-9));
+    // Page 0 frame in viewport = {(24-100)*2, (24-700)*2, ...} = {-152, -1352}.
+    const auto onFirst = f.viewport.pageAt(Point{200.0, 100.0});
+    CHECK(onFirst.has_value());
+    CHECK_EQ(onFirst->first, std::size_t{0});
+    CHECK(Point::nearlyEqual(onFirst->second, Point{176.0, 726.0}, 1e-9));
+    // Page 1 frame in viewport = {60, 264, 800, 800}.
+    const auto onSecond = f.viewport.pageAt(Point{200.0, 300.0});
+    CHECK(onSecond.has_value());
+    CHECK_EQ(onSecond->first, std::size_t{1});
+    CHECK(Point::nearlyEqual(onSecond->second, Point{70.0, 18.0}, 1e-9));
+    // The gap between the pages (page 0 ends at y=232, page 1 starts at 264).
+    CHECK(!f.viewport.pageAt(Point{200.0, 248.0}).has_value());
+    // Consistent with pageRectInViewport.
+    CHECK(Rect::nearlyEqual(*f.viewport.pageRectInViewport(1), Rect{60.0, 264.0, 800.0, 800.0}, 1e-9));
 }

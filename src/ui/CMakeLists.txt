@@ -6,6 +6,7 @@ add_library(rivet_ui STATIC
     ScrollBar.cpp
     Sidebar.cpp
     TabStrip.cpp
+    TextArea.cpp
     TextField.cpp
     Toolbar.cpp
 )

@@ -2,6 +2,7 @@
 
 #include <CoreText/CoreText.h>
 
+#include <cmath>
 #include <map>
 #include <mutex>
 #include <string>
@@ -124,6 +125,22 @@ void drawLineAtOrigin(std::string_view text, const rivet::ui::Font& font,
     CFRelease(cfText);
 }
 
+// Adds the path's subpaths to the context's current path.
+void addPathToContext(CGContextRef context, const rivet::ui::Path& path) {
+    using Op = rivet::ui::PathSegment::Op;
+    for (const rivet::ui::PathSegment& segment : path.segments) {
+        switch (segment.op) {
+        case Op::MoveTo: CGContextMoveToPoint(context, segment.p.x, segment.p.y); break;
+        case Op::LineTo: CGContextAddLineToPoint(context, segment.p.x, segment.p.y); break;
+        case Op::CubicTo:
+            CGContextAddCurveToPoint(context, segment.c1.x, segment.c1.y, segment.c2.x,
+                                     segment.c2.y, segment.p.x, segment.p.y);
+            break;
+        case Op::Close: CGContextClosePath(context); break;
+        }
+    }
+}
+
 } // namespace
 
 MacosPaintContext::MacosPaintContext(CGContextRef context, double backingScale)
@@ -175,6 +192,44 @@ void MacosPaintContext::drawLine(core::Point from, core::Point to, const rivet::
     CGContextMoveToPoint(context_, from.x, from.y);
     CGContextAddLineToPoint(context_, to.x, to.y);
     CGContextStrokePath(context_);
+}
+
+void MacosPaintContext::strokeDashedRect(const core::Rect& rect, const rivet::ui::Color& color,
+                                         double strokeWidth, double dash) {
+    if (rect.isEmpty()) return;
+    CGContextSaveGState(context_);
+    applyStrokeColor(context_, color);
+    CGContextSetLineWidth(context_, strokeWidth);
+    if (dash > 0.0) {
+        const CGFloat lengths[] = {static_cast<CGFloat>(dash), static_cast<CGFloat>(dash)};
+        CGContextSetLineDash(context_, 0.0, lengths, 2);
+    }
+    CGContextStrokeRect(context_, toCGRect(rect));
+    CGContextRestoreGState(context_);
+}
+
+void MacosPaintContext::fillPath(const rivet::ui::Path& path, const rivet::ui::Color& color) {
+    if (path.empty()) return;
+    applyFillColor(context_, color);
+    CGContextBeginPath(context_);
+    addPathToContext(context_, path);
+    CGContextFillPath(context_); // nonzero winding
+}
+
+void MacosPaintContext::strokePath(const rivet::ui::Path& path, const rivet::ui::Color& color,
+                                   double strokeWidth, rivet::ui::LineCap cap,
+                                   rivet::ui::LineJoin join) {
+    if (path.empty()) return;
+    CGContextSaveGState(context_);
+    applyStrokeColor(context_, color);
+    CGContextSetLineWidth(context_, strokeWidth);
+    CGContextSetLineCap(context_, cap == rivet::ui::LineCap::Round ? kCGLineCapRound : kCGLineCapButt);
+    CGContextSetLineJoin(context_,
+                         join == rivet::ui::LineJoin::Round ? kCGLineJoinRound : kCGLineJoinMiter);
+    CGContextBeginPath(context_);
+    addPathToContext(context_, path);
+    CGContextStrokePath(context_);
+    CGContextRestoreGState(context_);
 }
 
 void MacosPaintContext::drawBitmap(const core::Bitmap& bitmap, const core::Rect& destLogicalRect) {
@@ -254,6 +309,37 @@ void MacosPaintContext::drawText(std::string_view text, const core::Rect& rect,
     CGContextSetTextMatrix(context_, CGAffineTransformIdentity);
     CGContextSetTextPosition(context_, 0.0, 0.0);
     drawLineAtOrigin(text, font, color, context_);
+    CGContextRestoreGState(context_);
+}
+
+void MacosPaintContext::drawTextInBox(std::string_view text, const core::Rect& box,
+                                      int quarterTurns, const rivet::ui::Font& font,
+                                      const rivet::ui::Color& color) {
+    if (text.empty() || box.isEmpty()) return;
+
+    rivet::ui::Font boldFont = font;
+    boldFont.weight = rivet::ui::Font::Weight::Bold;
+    const TextMetrics metrics = measureLine(text, boldFont);
+    const double lineHeight = metrics.ascent + metrics.descent;
+    if (metrics.width <= 0.0 || lineHeight <= 0.0) return;
+
+    const int turns = ((quarterTurns % 4) + 4) % 4;
+    const bool swapped = (turns % 2) != 0;
+    const double availWidth = (swapped ? box.size.height : box.size.width) * 0.9;
+    const double availHeight = (swapped ? box.size.width : box.size.height) * 0.9;
+    const double scale = std::fmin(availWidth / metrics.width, availHeight / lineHeight);
+    if (!(scale > 0.0)) return;
+
+    const core::Point center = box.center();
+    CGContextSaveGState(context_);
+    CGContextTranslateCTM(context_, center.x, center.y);
+    // In this y-down context a positive angle turns clockwise on screen.
+    CGContextRotateCTM(context_, static_cast<CGFloat>(turns) * (M_PI / 2.0));
+    CGContextScaleCTM(context_, scale, scale);
+    drawText(text,
+             core::Rect{core::Point{-metrics.width / 2.0, -lineHeight / 2.0},
+                        core::Size{metrics.width, lineHeight}},
+             boldFont, color, rivet::ui::TextAlign::Left);
     CGContextRestoreGState(context_);
 }
 
