@@ -434,10 +434,14 @@ struct ContentService::Impl {
             // Not loaded for the CURRENT edits: keep showing the previous
             // objects (no flicker while the backend re-extracts) but refuse
             // edits (loaded = false).
-            auto stale = std::make_shared<PageContentView>();
+            // (Copy-constructed rather than assigned into a fresh view: GCC's
+            // -Wnull-dereference misfires on the inlined vector assignment.)
+            std::shared_ptr<PageContentView> stale;
             if (const auto it = resolved.find(pageId); it != resolved.end() && it->second.result != nullptr &&
                 it->second.view == entry->view) {
-                *stale = *it->second.result;
+                stale = std::make_shared<PageContentView>(*it->second.result);
+            } else {
+                stale = std::make_shared<PageContentView>();
             }
             stale->loaded = false;
             result = std::move(stale);

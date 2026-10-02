@@ -8,6 +8,8 @@
 
 #include <cmath>
 #include <set>
+#include <string>
+#include <utility>
 
 // Content edit commands over the fake backend: copy-on-write edits, identity
 // rules, display/user space mapping, failure paths, undo/redo and revision
@@ -23,6 +25,23 @@ using core::Point;
 using core::Rect;
 
 namespace {
+// Patches built field by field: GCC's -Wmissing-field-initializers rejects
+// designated initializers that leave the other optionals out.
+TextBlockPatch textPatch(std::string text) {
+    TextBlockPatch patch;
+    patch.text = std::move(text);
+    return patch;
+}
+TextBlockPatch sizePatch(double fontSize) {
+    TextBlockPatch patch;
+    patch.fontSize = fontSize;
+    return patch;
+}
+TextBlockPatch wrapPatch(double wrapWidth) {
+    TextBlockPatch patch;
+    patch.wrapWidth = wrapWidth;
+    return patch;
+}
 
 // Loads page 0 with the sample content.
 void sample(ContentFixture& f, std::size_t page = 0) {
@@ -249,9 +268,9 @@ RIVET_TEST(ContentCommands_identity_factories_accept_a_stale_view_after_an_edit)
     // A retype followed by a second retype and a move on the stale view
     // address the SAME edit (the replaced block's tag is its id), never a
     // duplicate block nor transforms on the replaced members.
-    CHECK(f.run(editTextBlock(*f.session, f.id(0), block, TextBlockPatch{.text = "first"})));
+    CHECK(f.run(editTextBlock(*f.session, f.id(0), block, textPatch("first"))));
     CHECK(!f.content(0)->loaded);
-    CHECK(f.run(editTextBlock(*f.session, f.id(0), block, TextBlockPatch{.text = "second"})));
+    CHECK(f.run(editTextBlock(*f.session, f.id(0), block, textPatch("second"))));
     CHECK(f.run(moveContent(*f.session, f.id(0), {block}, Point{3, 0})));
     CHECK_EQ(editsOf(f).textBlocks.size(), std::size_t{1});
     if (!editsOf(f).textBlocks.empty()) {
@@ -271,7 +290,7 @@ RIVET_TEST(ContentCommands_identity_factories_accept_a_stale_view_after_an_edit)
     CHECK(hasError(moveContent(*f.session, f.id(0), {image}, Point{1, 1}), ErrorCode::NotFound));
     CHECK(hasError(replaceImage(*f.session, f.id(0), image, makeBgraImage()), ErrorCode::NotFound));
     CHECK(f.run(deleteContent(*f.session, f.id(0), {block})));
-    CHECK(hasError(editTextBlock(*f.session, f.id(0), block, TextBlockPatch{.text = "z"}), ErrorCode::NotFound));
+    CHECK(hasError(editTextBlock(*f.session, f.id(0), block, textPatch("z")), ErrorCode::NotFound));
     CHECK(hasError(moveContent(*f.session, f.id(0), {block}, Point{1, 1}), ErrorCode::NotFound));
     CHECK(f.load(0));
     CHECK(f.content(0)->loaded);
@@ -290,7 +309,7 @@ RIVET_TEST(ContentCommands_locked_session_refuses_every_factory) {
     check(deleteContent(*f.session, f.id(0), {image}));
     check(resizeContent(*f.session, f.id(0), image, Rect{Point{0, 0}, core::Size{10, 10}}));
     check(replaceImage(*f.session, f.id(0), image, makeBgraImage()));
-    check(editTextBlock(*f.session, f.id(0), f.content(0)->blocks[0].id, TextBlockPatch{.text = "x"}));
+    check(editTextBlock(*f.session, f.id(0), f.content(0)->blocks[0].id, textPatch("x")));
     check(addTextBlock(*f.session, f.id(0), newText("x")));
     check(bringToFront(*f.session, f.id(0), image));
     f.session->setEditingLocked(false);
@@ -449,7 +468,7 @@ RIVET_TEST(ContentCommands_edit_text_block_replaces_in_place_and_keeps_the_block
     ContentFixture f;
     sample(f);
     const TextBlockView before = f.content(0)->blocks[0];
-    auto edit = editTextBlock(*f.session, f.id(0), before.id, TextBlockPatch{.text = "Hello brave world"});
+    auto edit = editTextBlock(*f.session, f.id(0), before.id, textPatch("Hello brave world"));
     CHECK(edit.has_value());
     if (!edit) return;
     CHECK_EQ(edit->ids.size(), std::size_t{1});
@@ -492,10 +511,10 @@ RIVET_TEST(ContentCommands_editing_an_edited_block_updates_the_same_edit) {
     ContentFixture f;
     sample(f);
     const ObjectId block = f.content(0)->blocks[0].id;
-    CHECK(f.run(editTextBlock(*f.session, f.id(0), block, TextBlockPatch{.text = "One"})));
+    CHECK(f.run(editTextBlock(*f.session, f.id(0), block, textPatch("One"))));
     CHECK(f.load(0));
     CHECK(f.run(editTextBlock(*f.session, f.id(0), block,
-                              TextBlockPatch{.text = "Two", .fontSize = 24.0, .color = pdf::PdfColor{1, 0, 0}})));
+                              [] { TextBlockPatch p = textPatch("Two"); p.fontSize = 24.0; p.color = pdf::PdfColor{1, 0, 0}; return p; }())));
     const auto& edits = editsOf(f);
     CHECK_EQ(edits.textBlocks.size(), std::size_t{1});
     const pdf::PdfTextBlockEdit& tb = edits.textBlocks[0];
@@ -520,7 +539,7 @@ RIVET_TEST(ContentCommands_edit_multi_line_block_keeps_wrap_width_and_advance) {
     CHECK(f.load(0));
     const TextBlockView block = f.content(0)->blocks[0];
     CHECK_EQ(block.lines.size(), std::size_t{3});
-    CHECK(f.run(editTextBlock(*f.session, f.id(0), block.id, TextBlockPatch{.text = "A\nB\nC\nD"})));
+    CHECK(f.run(editTextBlock(*f.session, f.id(0), block.id, textPatch("A\nB\nC\nD"))));
     const pdf::PdfTextBlockEdit& tb = editsOf(f).textBlocks[0];
     CHECK_EQ(tb.members.size(), std::size_t{6});
     CHECK_GT(tb.wrapWidth, 60.0);
@@ -539,7 +558,7 @@ RIVET_TEST(ContentCommands_edit_after_move_bakes_the_move_into_the_placement) {
     const ObjectId block = f.content(0)->blocks[0].id;
     CHECK(f.run(moveContent(*f.session, f.id(0), {block}, Point{10.0, 30.0})));
     CHECK(f.load(0));
-    CHECK(f.run(editTextBlock(*f.session, f.id(0), block, TextBlockPatch{.text = "Moved"})));
+    CHECK(f.run(editTextBlock(*f.session, f.id(0), block, textPatch("Moved"))));
     const auto& edits = editsOf(f);
     // The members are replaced: their transforms are gone.
     CHECK(edits.objects.empty());
@@ -552,7 +571,7 @@ RIVET_TEST(ContentCommands_moving_an_edited_block_changes_its_placement) {
     ContentFixture f;
     sample(f);
     const ObjectId block = f.content(0)->blocks[0].id;
-    CHECK(f.run(editTextBlock(*f.session, f.id(0), block, TextBlockPatch{.text = "Edited"})));
+    CHECK(f.run(editTextBlock(*f.session, f.id(0), block, textPatch("Edited"))));
     CHECK(f.load(0));
     CHECK(f.run(moveContent(*f.session, f.id(0), {block}, Point{5.0, -10.0})));
     const auto& edits = editsOf(f);
@@ -569,7 +588,7 @@ RIVET_TEST(ContentCommands_delete_edited_block_removes_the_edit_and_the_replaced
     ContentFixture f;
     sample(f);
     const ObjectId block = f.content(0)->blocks[0].id;
-    CHECK(f.run(editTextBlock(*f.session, f.id(0), block, TextBlockPatch{.text = "Edited"})));
+    CHECK(f.run(editTextBlock(*f.session, f.id(0), block, textPatch("Edited"))));
     CHECK(f.load(0));
     CHECK(f.run(deleteContent(*f.session, f.id(0), {block})));
     const auto& edits = editsOf(f);
@@ -584,7 +603,7 @@ RIVET_TEST(ContentCommands_delete_edited_block_removes_the_edit_and_the_replaced
 RIVET_TEST(ContentCommands_emptying_a_block_deletes_it) {
     ContentFixture f;
     sample(f);
-    auto edit = editTextBlock(*f.session, f.id(0), f.content(0)->blocks[0].id, TextBlockPatch{.text = ""});
+    auto edit = editTextBlock(*f.session, f.id(0), f.content(0)->blocks[0].id, textPatch(""));
     CHECK(edit.has_value());
     if (!edit) return;
     CHECK_EQ(std::string(edit->command->name()), std::string("Delete"));
@@ -614,29 +633,29 @@ RIVET_TEST(ContentCommands_edit_text_failure_paths) {
     const ObjectId glyphs = view->blocks[3].id;
 
     CHECK(hasError(editTextBlock(*f.session, f.id(0), plain, TextBlockPatch{}), ErrorCode::InvalidArgument));
-    CHECK(hasError(editTextBlock(*f.session, f.id(0), ObjectId{999999}, TextBlockPatch{.text = "x"}),
+    CHECK(hasError(editTextBlock(*f.session, f.id(0), ObjectId{999999}, textPatch("x")),
                    ErrorCode::NotFound));
-    CHECK(hasError(editTextBlock(*f.session, f.id(0), hidden, TextBlockPatch{.text = "x"}), ErrorCode::Unsupported));
-    CHECK(hasError(editTextBlock(*f.session, f.id(0), glyphs, TextBlockPatch{.text = "x"}), ErrorCode::Unsupported));
-    CHECK(hasError(editTextBlock(*f.session, f.id(0), plain, TextBlockPatch{.fontSize = 0.5}),
+    CHECK(hasError(editTextBlock(*f.session, f.id(0), hidden, textPatch("x")), ErrorCode::Unsupported));
+    CHECK(hasError(editTextBlock(*f.session, f.id(0), glyphs, textPatch("x")), ErrorCode::Unsupported));
+    CHECK(hasError(editTextBlock(*f.session, f.id(0), plain, sizePatch(0.5)),
                    ErrorCode::InvalidArgument));
-    CHECK(hasError(editTextBlock(*f.session, f.id(0), plain, TextBlockPatch{.fontSize = 900.0}),
+    CHECK(hasError(editTextBlock(*f.session, f.id(0), plain, sizePatch(900.0)),
                    ErrorCode::InvalidArgument));
-    CHECK(hasError(editTextBlock(*f.session, f.id(0), plain, TextBlockPatch{.wrapWidth = -1.0}),
+    CHECK(hasError(editTextBlock(*f.session, f.id(0), plain, wrapPatch(-1.0)),
                    ErrorCode::InvalidArgument));
     CHECK(hasError(editTextBlock(*f.session, f.id(0), plain,
-                                 TextBlockPatch{.text = std::string(pdf::kMaxTextBlockBytes + 1, 'a')}),
+                                 textPatch(std::string(pdf::kMaxTextBlockBytes + 1, 'a'))),
                    ErrorCode::InvalidArgument));
     // Existing text keeps its font family.
-    CHECK(hasError(editTextBlock(*f.session, f.id(0), plain, TextBlockPatch{.font = pdf::PdfBundledFont::MonoBold}),
+    CHECK(hasError(editTextBlock(*f.session, f.id(0), plain, [] { TextBlockPatch p; p.font = pdf::PdfBundledFont::MonoBold; return p; }()),
                    ErrorCode::Unsupported));
     // Glyphs no bundled face has, written through a subset font: refused.
-    CHECK(hasError(editTextBlock(*f.session, f.id(0), subset, TextBlockPatch{.text = "\xE6\x97\xA5\xE6\x9C\xAC"}),
+    CHECK(hasError(editTextBlock(*f.session, f.id(0), subset, textPatch("\xE6\x97\xA5\xE6\x9C\xAC")),
                    ErrorCode::InvalidArgument));
     // The same text in a full embedded font is left to the backend.
-    CHECK(editTextBlock(*f.session, f.id(0), plain, TextBlockPatch{.text = "\xE6\x97\xA5\xE6\x9C\xAC"}).has_value());
+    CHECK(editTextBlock(*f.session, f.id(0), plain, textPatch("\xE6\x97\xA5\xE6\x9C\xAC")).has_value());
     // Ordinary Latin / Cyrillic text through the subset font is fine.
-    CHECK(editTextBlock(*f.session, f.id(0), subset, TextBlockPatch{.text = "\xD0\x9F\xD1\x80\xD0\xB8\xD0\xB2\xD0\xB5\xD1\x82"})
+    CHECK(editTextBlock(*f.session, f.id(0), subset, textPatch("\xD0\x9F\xD1\x80\xD0\xB8\xD0\xB2\xD0\xB5\xD1\x82"))
               .has_value());
     CHECK(f.entry(0).contentEdits == nullptr);
 }
@@ -648,7 +667,7 @@ RIVET_TEST(ContentCommands_edit_rotated_text_keeps_the_rotation_in_the_placement
     content.objects.push_back(makeTextObject(200, 300, 12, "Rotated", 50, angle));
     f.setContent(0, std::move(content));
     CHECK(f.load(0));
-    CHECK(f.run(editTextBlock(*f.session, f.id(0), f.objectId(0, 0), TextBlockPatch{.text = "Turned"})));
+    CHECK(f.run(editTextBlock(*f.session, f.id(0), f.objectId(0, 0), textPatch("Turned"))));
     const pdf::PdfTextBlockEdit& tb = editsOf(f).textBlocks.at(0);
     CHECK_NEAR(tb.placement.a, std::cos(angle), 1e-9);
     CHECK_NEAR(tb.placement.b, std::sin(angle), 1e-9);

@@ -22,6 +22,13 @@ using namespace rivet::editor;
 using namespace rivet::test;
 
 namespace {
+// Patches built field by field: GCC's -Wmissing-field-initializers rejects
+// designated initializers that leave the other optionals out.
+TextBlockPatch textPatch(std::string text) {
+    TextBlockPatch patch;
+    patch.text = std::move(text);
+    return patch;
+}
 
 using Clock = std::chrono::steady_clock;
 
@@ -117,7 +124,7 @@ void probe(std::size_t n) {
     }
     if (static_cast<bool>(firstBlock)) {
         t = Clock::now();
-        auto edit = editTextBlock(*f.session, f.id(0), firstBlock, TextBlockPatch{.text = std::string("Edited text")});
+        auto edit = editTextBlock(*f.session, f.id(0), firstBlock, textPatch(std::string("Edited text")));
         row(n, "editTextBlock (build)", msSince(t));
         if (edit) {
             (void)f.session->execute(std::move(edit->command));

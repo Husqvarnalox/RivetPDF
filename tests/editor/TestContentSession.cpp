@@ -15,6 +15,8 @@
 #include <chrono>
 #include <filesystem>
 #include <set>
+#include <string>
+#include <utility>
 
 // Content edits through the session: the render / text / link pipelines see
 // the edits and their revisions, the save pipeline passes them to the
@@ -30,6 +32,13 @@ using core::Point;
 using core::Rect;
 
 namespace {
+// Patches built field by field: GCC's -Wmissing-field-initializers rejects
+// designated initializers that leave the other optionals out.
+TextBlockPatch textPatch(std::string text) {
+    TextBlockPatch patch;
+    patch.text = std::move(text);
+    return patch;
+}
 
 namespace fs = std::filesystem;
 
@@ -97,8 +106,10 @@ struct SaveFixture {
     // The report of a page-0 write: `origins` for page 0, empty for the rest.
     void reportPage0(std::vector<pdf::PdfContentOrigin> origins, std::vector<std::uint64_t> tags) {
         std::vector<pdf::PdfAssembledPageContent> report(f.session->pageCount());
-        report[0].origins = std::move(origins);
-        report[0].blockTags = std::move(tags);
+        // at(): GCC's -Wnull-dereference misfires on operator[] of a vector
+        // whose size it cannot see.
+        report.at(0).origins = std::move(origins);
+        report.at(0).blockTags = std::move(tags);
         f.engine.contentReportOverride = std::move(report);
     }
 };
@@ -356,7 +367,7 @@ RIVET_TEST(ContentSession_created_blocks_keep_their_id_across_a_save) {
         CHECK_EQ(found->text, std::string("Added"));
     }
     // And it can be edited again.
-    CHECK(f.run(editTextBlock(*f.session, f.id(0), block, TextBlockPatch{.text = "Again"})));
+    CHECK(f.run(editTextBlock(*f.session, f.id(0), block, textPatch("Again"))));
     CHECK_EQ(f.entry(0).contentEdits->textBlocks[0].tag, tag);
 }
 

@@ -250,9 +250,16 @@ void PdfViewport::documentLayoutChanged(std::optional<std::size_t> anchorIndex, 
 
 void PdfViewport::setAnnotationLayer(ViewportLayer* layer) {
     if (annotationLayer_ == layer) return;
-    if (annotationLayer_ != nullptr) std::erase(layers_, annotationLayer_);
+    // Rebuilt rather than erase + insert-at-front: GCC 13's
+    // -Wnull-dereference misfires on vector::insert's reallocating path.
+    std::vector<ViewportLayer*> layers;
+    layers.reserve(layers_.size() + 1);
+    if (layer != nullptr) layers.push_back(layer);
+    for (ViewportLayer* existing : layers_) {
+        if (existing != annotationLayer_) layers.push_back(existing);
+    }
+    layers_ = std::move(layers);
     annotationLayer_ = layer;
-    if (layer != nullptr) layers_.insert(layers_.begin(), layer);
     // Selection/link interactions in flight belong to the old routing.
     selecting_ = false;
     linkPressed_ = false;
