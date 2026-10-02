@@ -150,6 +150,9 @@ void FileController::requestSave(DocumentTab& tab, std::filesystem::path destina
         editor::makeSaveJob(*tab.session(), request.destination);
     if (!job.has_value()) {
         setStatus_("Could not prepare the save: " + describeFailure(job.error()));
+        // Whoever waits for this save (a deferred quit) must learn that it
+        // will never complete, or the quit would hang forever.
+        saveSettled(request.tab, false);
         return;
     }
     // The model cannot change under the in-flight save: the snapshot that is

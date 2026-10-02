@@ -1127,3 +1127,38 @@ RIVET_TEST(splitJobsRefuseToReplaceFilesThatAppearBeforeTheCommit) {
     CHECK_EQ(rivet::test::fakeFileMarkers(shell.dir("p_1-2.pdf")).size(), 2u);
     CHECK((listDir(shell.dir.dir()) == std::vector<std::string>{"doc.pdf", "p_1-2.pdf", "p_3-4.pdf"}));
 }
+
+// A save whose job cannot even be prepared (here: the session has no
+// destination path) must still settle, or a deferred quit waits forever.
+RIVET_TEST(quitAbortsWhenTheSaveJobCannotBePrepared) {
+    Shell shell;
+    DocumentTab* tab = shell.open("doc.pdf");
+    shell.rotateFirst(*tab);
+    tab->session()->setPath({}); // makeSaveJob rejects an empty destination
+
+    shell.alerts.saveAnswers.push_back(rivet::platform::SaveChangesChoice::Save);
+    bool replied = false;
+    bool proceed = true;
+    shell.files->handleQuitRequest([&](bool decision) {
+        replied = true;
+        proceed = decision;
+    });
+    CHECK(replied); // settled synchronously: no save was ever started
+    CHECK(!proceed);
+    CHECK(shell.hasStatus("Could not prepare the save"));
+    CHECK(tab->session()->isDirty());
+    CHECK(!tab->session()->isEditingLocked());
+    CHECK(!shell.files->isSavingAnything());
+}
+
+RIVET_TEST(closeTabSaveThatCannotBePreparedKeepsTabOpen) {
+    Shell shell;
+    DocumentTab* tab = shell.open("doc.pdf");
+    shell.rotateFirst(*tab);
+    tab->session()->setPath({});
+
+    shell.alerts.saveAnswers.push_back(rivet::platform::SaveChangesChoice::Save);
+    CHECK(!shell.files->confirmCloseTab(*tab));
+    CHECK_EQ(shell.workspace.tabCount(), 1u);
+    CHECK(tab->session()->isDirty());
+}
