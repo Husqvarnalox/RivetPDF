@@ -42,7 +42,8 @@ std::array<core::Point, 2> arrowHeadWings(core::Point start, core::Point end, do
 
 // Ramer-Douglas-Peucker simplification: keeps the first and last point and
 // every point needed so no removed point is farther than `tolerance` from the
-// simplified polyline. Iterative (safe for long strokes).
+// simplified polyline. Iterative (safe for long strokes); long strokes are
+// simplified in windows of 1024 points so adversarial input stays near-linear.
 std::vector<core::Point> reduceStroke(std::span<const core::Point> points, double tolerance);
 
 // --- User <-> display mapping -------------------------------------------------

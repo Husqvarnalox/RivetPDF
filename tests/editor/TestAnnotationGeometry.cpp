@@ -130,6 +130,19 @@ RIVET_TEST(annotationGeometryReduceStroke) {
     std::vector<Point> huge;
     for (int i = 0; i < 50000; ++i) huge.push_back({static_cast<double>(i), (i % 2 == 0) ? 0.0 : 3.0});
     CHECK(geometry::reduceStroke(huge, 1.0).size() >= 2);
+
+    // Windowed reduction keeps the error bound across window seams.
+    std::vector<Point> longWave;
+    for (int i = 0; i < 5000; ++i) longWave.push_back({i * 0.25, 10.0 * std::sin(i / 40.0)});
+    const auto longSimple = geometry::reduceStroke(longWave, tolerance);
+    CHECK(longSimple.size() < longWave.size() / 4);
+    std::size_t next = 0;
+    for (const Point& p : longWave) {
+        // The output preserves order: test against the segment spanning p.
+        while (next + 1 < longSimple.size() && longSimple[next + 1].x < p.x) ++next;
+        const std::size_t to = std::min(next + 1, longSimple.size() - 1);
+        CHECK(geometry::distanceToSegment(p, longSimple[next], longSimple[to]) <= tolerance + 1e-9);
+    }
 }
 
 RIVET_TEST(annotationGeometryUserDisplayRoundTrip) {

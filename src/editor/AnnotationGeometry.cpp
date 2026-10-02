@@ -156,8 +156,17 @@ std::vector<core::Point> reduceStroke(std::span<const core::Point> points, doubl
     std::vector<bool> keep(n, false);
     keep[0] = true;
     keep[n - 1] = true;
+    // Ramer-Douglas-Peucker is O(n^2) when every split is unbalanced (e.g. a
+    // zigzag). Simplifying fixed windows that share their (kept) endpoints
+    // bounds the cost to O(n * kWindow) at the price of a few extra points;
+    // the tolerance guarantee holds per window and therefore overall.
+    constexpr std::size_t kWindow = 1024;
     std::vector<std::pair<std::size_t, std::size_t>> stack;
-    stack.emplace_back(0, n - 1);
+    for (std::size_t first = 0; first < n - 1; first += kWindow) {
+        const std::size_t last = std::min(first + kWindow, n - 1);
+        keep[last] = true;
+        stack.emplace_back(first, last);
+    }
     while (!stack.empty()) {
         const auto [first, last] = stack.back();
         stack.pop_back();
