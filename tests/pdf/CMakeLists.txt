@@ -21,6 +21,9 @@ add_executable(rivet_pdf_tests
     # View-aware reads and document assembly round trips (page editing
     # foundation): PDFium-ON bodies only.
     TestPdfPageEditing.cpp
+    # Assembly imports from private copies, never from rendered live
+    # documents (no leaked generated /AP): PDFium-ON bodies only.
+    TestPdfiumAssemblyPurity.cpp
     # PDFium annotation adapter (read, render-hide, assembly edits, round
     # trips against annots.pdf): PDFium-ON bodies only.
     TestPdfiumAnnotations.cpp

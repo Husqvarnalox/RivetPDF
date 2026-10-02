@@ -37,7 +37,9 @@
 // each page before copying it, so a failure midway leaves half-imported
 // pages behind. All edits therefore happen on a private working
 // FPDF_DOCUMENT that is closed (RAII) whatever happens; the live documents
-// are only READ (FPDF_LoadPage for validation, and as import sources).
+// are only READ (FPDF_LoadPage for validation); pages are imported from
+// private copies of them (see ImportSources), because PDFium mutates a
+// document that is rendered.
 //
 // PreserveBase (Save):
 //   1. working = FPDF_LoadCustomDocument over the base's shared file source
@@ -53,8 +55,10 @@
 //      one source (fonts, images) are copied once. A source page index is
 //      imported at most once per call (a further copy starts another call
 //      for the same source), so every copy owns its annotation objects.
-//      Duplicates of base pages are imported from the live base document
-//      (read-only).
+//      Import sources are never the live documents: each one (the base
+//      included, for duplicates of its pages) is a private copy reopened
+//      from the source's file bytes, at most once per assembly and closed
+//      at its end (see ImportSources).
 //   4. One FPDF_MovePages(working, finalIndices, M, 0) brings the final
 //      order to the front (skipped when it already is), then FPDFPage_Delete
 //      removes the leftovers from the end backwards.
@@ -160,6 +164,25 @@ public:
 
 private:
     FPDF_DOCUMENT document_;
+};
+
+// A private FPDF_DOCUMENT opened from the exact bytes a live document was
+// opened from (same shared file source, same password). PDFium keeps the
+// FPDF_FILEACCESS pointer for the document's lifetime, so it is stored here
+// next to the handle (declared first = destroyed last).
+class PrivateCopy {
+public:
+    explicit PrivateCopy(const PdfiumDocument& source)
+        : access_(source.fileSource()->fileAccess()),
+          document_(FPDF_LoadCustomDocument(&access_, source.openPassword().c_str())) {}
+    PrivateCopy(const PrivateCopy&) = delete;
+    PrivateCopy& operator=(const PrivateCopy&) = delete;
+
+    FPDF_DOCUMENT get() const { return document_.get(); }
+
+private:
+    FPDF_FILEACCESS access_;
+    ScopedDocument document_;
 };
 
 // Page counts and indices cross the PDFium API as int.
@@ -302,13 +325,66 @@ core::Result<std::vector<ResolvedPage>> resolvePages(const PdfiumEngine& engine,
     return resolved;
 }
 
-// Imports `indices` of `source` into `working` at `insertAt`. Caller holds
-// the gate.
+core::Status verifyPageCount(FPDF_DOCUMENT working, std::size_t expected, const char* step);
+
+// Opens a private copy of `source` and verifies its page count against the
+// live document. Caller holds the gate.
+core::Result<std::unique_ptr<PrivateCopy>> openPrivateCopy(const PdfiumDocument& source,
+                                                           const char* purpose) {
+    auto copy = std::make_unique<PrivateCopy>(source);
+    if (copy->get() == nullptr) {
+        const core::Error cause = pdfiumLoadError(static_cast<int>(FPDF_GetLastError()),
+                                                  !source.openPassword().empty());
+        return std::unexpected(core::makeError(
+            cause.code, std::string("could not reopen the ") + purpose + " document: " + cause.message,
+            "pdf"));
+    }
+    if (auto counted = verifyPageCount(copy->get(), source.info().pageCount, "reopening");
+        !counted.has_value()) {
+        return std::unexpected(counted.error());
+    }
+    return copy;
+}
+
+// Import sources of one assembly: every document pages are imported FROM is
+// a private, never-rendered copy opened (lazily, at most once per assembly)
+// from the live document's file bytes. The live documents are what the UI
+// renders, and PDFium mutates a document at render time (generated /AP
+// streams, adjusted popup/Note /Rect, toggled /F flags); importing from them
+// would leak those render artifacts into saved or extracted output. Copies
+// are closed with the object, after the assembly. Caller holds the gate.
+class ImportSources {
+public:
+    core::Result<FPDF_DOCUMENT> documentFor(const PdfiumDocument& live) {
+        const auto it = copies_.find(&live);
+        if (it != copies_.end()) {
+            return it->second->get();
+        }
+        auto copy = openPrivateCopy(live, "page source");
+        if (!copy.has_value()) {
+            return std::unexpected(copy.error());
+        }
+        const FPDF_DOCUMENT handle = (*copy)->get();
+        copies_.emplace(&live, std::move(*copy));
+        return handle;
+    }
+
+private:
+    std::map<const PdfiumDocument*, std::unique_ptr<PrivateCopy>> copies_;
+};
+
+// Imports `indices` of `source` (its private copy) into `working` at
+// `insertAt`. Caller holds the gate.
 core::Status importPages(FPDF_DOCUMENT working,
+                         ImportSources& sources,
                          const PdfiumDocument& source,
                          const std::vector<int>& indices,
                          int insertAt) {
-    if (FPDF_ImportPagesByIndex(working, source.handle(), indices.data(),
+    const auto copy = sources.documentFor(source);
+    if (!copy.has_value()) {
+        return std::unexpected(copy.error());
+    }
+    if (FPDF_ImportPagesByIndex(working, *copy, indices.data(),
                                 static_cast<unsigned long>(indices.size()), insertAt) == 0) {
         return std::unexpected(core::makeError(core::ErrorCode::InvalidDocument,
                                                "PDFium failed to import " + std::to_string(indices.size()) +
@@ -468,6 +544,7 @@ core::Status verifyPageCount(FPDF_DOCUMENT working, std::size_t expected, const 
 
 core::Status assemblePreserveBase(const PdfiumDocument& base,
                                   const std::vector<ResolvedPage>& pages,
+                                  ImportSources& sources,
                                   IPdfByteSink& sink,
                                   std::vector<PdfAssembledPageAnnotations>* report) {
     const std::size_t baseCount = base.info().pageCount;
@@ -476,18 +553,11 @@ core::Status assemblePreserveBase(const PdfiumDocument& base,
     // A private working copy of the exact bytes the live base was opened
     // from (same inode via the shared source), decrypted with the same
     // password.
-    FPDF_FILEACCESS access = base.fileSource()->fileAccess();
-    ScopedDocument working(FPDF_LoadCustomDocument(&access, base.openPassword().c_str()));
-    if (working.get() == nullptr) {
-        const core::Error cause = pdfiumLoadError(static_cast<int>(FPDF_GetLastError()),
-                                                  !base.openPassword().empty());
-        return std::unexpected(core::makeError(cause.code,
-                                               "could not reopen the base document: " + cause.message,
-                                               "pdf"));
+    auto workingCopy = openPrivateCopy(base, "base");
+    if (!workingCopy.has_value()) {
+        return std::unexpected(workingCopy.error());
     }
-    if (auto counted = verifyPageCount(working.get(), baseCount, "reopening"); !counted.has_value()) {
-        return counted;
-    }
+    const PrivateCopy& working = **workingCopy;
 
     // workingIndex[i]: where final page i lives in the working document
     // before the move. First occurrences of base pages stay in place.
@@ -535,7 +605,7 @@ core::Status assemblePreserveBase(const PdfiumDocument& base,
         if (total + group.sourceIndices.size() > kMaxPages) {
             return std::unexpected(invalidArgument("too many pages in the assembly request"));
         }
-        if (auto imported = importPages(working.get(), *group.source, group.sourceIndices,
+        if (auto imported = importPages(working.get(), sources, *group.source, group.sourceIndices,
                                         static_cast<int>(total));
             !imported.has_value()) {
             return imported;
@@ -580,7 +650,8 @@ core::Status assemblePreserveBase(const PdfiumDocument& base,
     return saveTo(working.get(), sink);
 }
 
-core::Status assembleFresh(const std::vector<ResolvedPage>& pages, IPdfByteSink& sink,
+core::Status assembleFresh(const std::vector<ResolvedPage>& pages, ImportSources& sources,
+                           IPdfByteSink& sink,
                            std::vector<PdfAssembledPageAnnotations>* report) {
     ScopedDocument working(FPDF_CreateNewDocument());
     if (working.get() == nullptr) {
@@ -600,7 +671,7 @@ core::Status assembleFresh(const std::vector<ResolvedPage>& pages, IPdfByteSink&
             indices.push_back(pages[runEnd].sourceIndex);
             ++runEnd;
         }
-        if (auto imported = importPages(working.get(), *pages[runStart].source, indices,
+        if (auto imported = importPages(working.get(), sources, *pages[runStart].source, indices,
                                         static_cast<int>(inserted));
             !imported.has_value()) {
             return imported;
@@ -636,17 +707,18 @@ core::Status assembleWithPdfium(const PdfiumEngine& engine,
             if (!pages.has_value()) {
                 return std::unexpected(pages.error());
             }
+            ImportSources sources; // closed after the assembly, whatever happens
             switch (request.mode) {
                 case PdfAssemblyRequest::Mode::PreserveBase: {
                     const auto base = ownedDocument(engine, request.base, "base");
                     if (!base.has_value()) {
                         return std::unexpected(base.error());
                     }
-                    return assemblePreserveBase(**base, *pages, sink, annotationReport);
+                    return assemblePreserveBase(**base, *pages, sources, sink, annotationReport);
                 }
                 case PdfAssemblyRequest::Mode::Fresh:
                     // `base` is ignored: a Fresh document has no base.
-                    return assembleFresh(*pages, sink, annotationReport);
+                    return assembleFresh(*pages, sources, sink, annotationReport);
             }
             return std::unexpected(invalidArgument("unknown assembly mode"));
         });
