@@ -18,29 +18,6 @@ using core::ObjectId;
 using core::PageId;
 using core::Point;
 
-namespace {
-
-// Page 0 of the fixtures below (user space, y up; the page is 612 x 792, so
-// display y = 792 - user y):
-//   0 image   (100,500)-(200,600)
-//   1 image   (150,550)-(250,650)   overlaps 0 and is above it
-//   2,3 text  "Hello" "world" at (72,700)  -> one block
-//   4 unknown (400,100)-(450,150)   read-only
-pdf::PdfPageContent samplePage() {
-    pdf::PdfPageContent content;
-    content.objects.push_back(makeImageObject(100, 500, 200, 600));
-    content.objects.push_back(makeImageObject(150, 550, 250, 650));
-    addTextLine(content, 700.0);
-    pdf::PdfContentObject unknown = makeImageObject(400, 100, 450, 150);
-    unknown.type = pdf::PdfContentObjectType::Unknown;
-    content.objects.push_back(unknown);
-    return content;
-}
-
-Point disp(double x, double userY) { return Point{x, 792.0 - userY}; }
-
-} // namespace
-
 RIVET_TEST(ContentService_loads_lazily_and_resolves_display_space) {
     ContentFixture f;
     f.setContent(0, samplePage());

@@ -30,6 +30,8 @@ add_executable(rivet_editor_tests
     TestContentGeometry.cpp
     TestTextBlocks.cpp
     TestContentService.cpp
+    TestContentCommands.cpp
+    TestContentSession.cpp
 )
 
 add_test(NAME editor COMMAND rivet_editor_tests)

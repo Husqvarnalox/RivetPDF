@@ -74,6 +74,26 @@ inline void addTextLine(pdf::PdfPageContent& content, double y, double size = 12
     content.objects.push_back(makeTextObject(x + 34.0, y, size, "world", 33.0));
 }
 
+// Page 0 of the fixtures below (user space, y up; the page is 612 x 792, so
+// display y = 792 - user y):
+//   0 image   (100,500)-(200,600)
+//   1 image   (150,550)-(250,650)   overlaps 0 and is above it
+//   2,3 text  "Hello" "world" at (72,700)  -> one block
+//   4 unknown (400,100)-(450,150)   read-only
+inline pdf::PdfPageContent samplePage() {
+    pdf::PdfPageContent content;
+    content.objects.push_back(makeImageObject(100, 500, 200, 600));
+    content.objects.push_back(makeImageObject(150, 550, 250, 650));
+    addTextLine(content, 700.0);
+    pdf::PdfContentObject unknown = makeImageObject(400, 100, 450, 150);
+    unknown.type = pdf::PdfContentObjectType::Unknown;
+    content.objects.push_back(unknown);
+    return content;
+}
+
+inline core::Point disp(double x, double userY) { return core::Point{x, 792.0 - userY}; }
+
+
 inline std::shared_ptr<const pdf::PdfImageData> makeBgraImage(std::uint32_t width = 4, std::uint32_t height = 2) {
     auto image = std::make_shared<pdf::PdfImageData>();
     image->format = pdf::PdfImageData::Format::Bgra;

@@ -43,13 +43,11 @@ public:
     std::string_view name() const override { return name_; }
     bool execute() override;
     bool undo() override;
-    std::optional<core::Error> failure() const override { return failure_; }
 
 private:
     bool apply(bool forward);
     std::string name_;
     std::vector<Swap> swaps_;
-    std::optional<core::Error> failure_;
 };
 
 struct ContentEdit {
