@@ -114,6 +114,20 @@ void ShellController::buildWidgets() {
         if (annotateButton_ != nullptr) annotateButton_->setActive(annotationBar_->visible());
     });
 
+    // Content editing (Edit / Add Text tools) and its properties strip. The
+    // tools share one tool state with the annotation tools.
+    content_ = std::make_unique<ContentController>(*context_, *root_, *annotations_, scheduler_,
+                                                   createEditorContentBackend());
+    contentBar_ = std::make_unique<ContentBarController>(*context_, *root_, *content_);
+    const auto syncContentButtons = [this] {
+        if (editButton_ != nullptr) editButton_->setActive(content_->tool() == ContentTool::SelectObject);
+        if (addTextButton_ != nullptr) addTextButton_->setActive(content_->tool() == ContentTool::AddText);
+    };
+    content_->setOnStateChanged([this, syncContentButtons] {
+        syncContentButtons();
+        contentBar_->refresh();
+    });
+
     // File lifecycle (save/save-as/import/merge/extract, dirty close/quit).
     fileLifecycle_ = std::make_unique<FileController>(
         *engine_, *context_, scheduler_, [this](std::string text) { setStatus(std::move(text)); },
@@ -187,6 +201,18 @@ void ShellController::buildToolbar() {
     annotateButton->setFrame(core::Rect{0.0, 0.0, 84.0, 28.0});
     toolbar_->addItem(std::move(annotateButton));
 
+    auto editButton = std::make_unique<ui::Button>("Edit");
+    editButton_ = editButton.get();
+    editButton->setOnClick([this] { performContent(ContentCommand::ToolEdit); });
+    editButton->setFrame(core::Rect{0.0, 0.0, 52.0, 28.0});
+    toolbar_->addItem(std::move(editButton));
+
+    auto addTextButton = std::make_unique<ui::Button>("Add Text");
+    addTextButton_ = addTextButton.get();
+    addTextButton->setOnClick([this] { performContent(ContentCommand::ToolAddText); });
+    addTextButton->setFrame(core::Rect{0.0, 0.0, 76.0, 28.0});
+    toolbar_->addItem(std::move(addTextButton));
+
     auto printButton = std::make_unique<ui::Button>("Print");
     printButton->setOnClick([this] { handlePrintRequest(); });
     printButton->setFrame(core::Rect{0.0, 0.0, 60.0, 28.0});
@@ -205,18 +231,23 @@ void ShellController::layoutShell() {
         sidebar_->layout(kHiddenFrame);
         statusBar_->layout(kHiddenFrame);
         if (annotationBar_ != nullptr) annotationBar_->layout(kHiddenFrame);
+        if (contentBar_ != nullptr) contentBar_->layout(kHiddenFrame);
         viewport_->setFrame(core::Rect{0.0, 0.0, width, height});
     } else {
         const double top = kTabStripHeight;
         const double statusHeight = StatusBarController::kHeight;
         const double barHeight = annotationBar_ != nullptr ? annotationBar_->height() : 0.0;
-        const double middleTop = top + kToolbarHeight + barHeight;
+        const double contentBarHeight = contentBar_ != nullptr ? contentBar_->height() : 0.0;
+        const double middleTop = top + kToolbarHeight + barHeight + contentBarHeight;
         const double middleHeight = std::max(0.0, height - middleTop - statusHeight);
         const double sidebarWidth = SidebarController::kWidth;
         tabStrip_->setFrame(core::Rect{0.0, 0.0, width, kTabStripHeight});
         toolbar_->setFrame(core::Rect{0.0, top, width, kToolbarHeight});
         if (annotationBar_ != nullptr) {
             annotationBar_->layout(core::Rect{0.0, top + kToolbarHeight, width, barHeight});
+        }
+        if (contentBar_ != nullptr) {
+            contentBar_->layout(core::Rect{0.0, top + kToolbarHeight + barHeight, width, contentBarHeight});
         }
         sidebar_->layout(core::Rect{0.0, middleTop, sidebarWidth, middleHeight});
         statusBar_->layout(core::Rect{0.0, height - statusHeight, width, statusHeight});
@@ -227,6 +258,7 @@ void ShellController::layoutShell() {
     searchBar_->layout(viewport_->frame());
     passwordPrompt_->layout(viewport_->frame());
     if (annotations_ != nullptr) annotations_->layout(viewport_->frame());
+    if (content_ != nullptr) content_->layout(viewport_->frame());
 }
 
 void ShellController::refreshTabStrip() {
@@ -255,6 +287,7 @@ void ShellController::bindActiveTab() {
         sidebar_->bindTab(nullptr);
         pageEditing_->bindTab(nullptr);
         annotations_->bindTab(nullptr);
+        content_->bindTab(nullptr);
         if (tab == nullptr) {
             setStatus("No document open");
             setZoomDisplay(viewport_->zoom().zoom());
@@ -280,6 +313,7 @@ void ShellController::bindActiveTab() {
     sidebar_->bindTab(tab);
     pageEditing_->bindTab(tab);
     annotations_->bindTab(tab);
+    content_->bindTab(tab);
 
     // First bind of a fresh tab: open fit-to-width (Phase 1 behavior). The
     // mode stays active (resizes recompute the zoom) until the user zooms.
@@ -348,6 +382,14 @@ bool ShellController::canPerformAnnotation(AnnotationCommand command) const {
     return annotations_ != nullptr && annotations_->canPerform(command);
 }
 
+void ShellController::performContent(ContentCommand command) {
+    if (content_ != nullptr) content_->perform(command);
+}
+
+bool ShellController::canPerformContent(ContentCommand command) const {
+    return content_ != nullptr && content_->canPerform(command);
+}
+
 void ShellController::performFile(FileCommand command) {
     if (fileLifecycle_ != nullptr) fileLifecycle_->perform(command);
 }
@@ -400,6 +442,10 @@ bool ShellController::handleKeyEvent(const ui::KeyEvent& event) {
     // Keys of the active viewport tool (Enter/Esc while cropping) run before
     // the shell's own Escape priorities.
     if (pageEditing_ != nullptr && pageEditing_->handleToolKey(event)) return true;
+
+    // Escape: the content tools first (inline editor, a running gesture, the
+    // selection), then the find bar / presentation mode below.
+    if (event.key == ui::Key::Escape && content_ != nullptr && content_->handleEscape()) return true;
 
     // Escape closes the search bar / exits presentation mode; otherwise it
     // blurs the focused widget.

@@ -4,6 +4,7 @@
 #import "MacosExternalUrlOpener.h"
 #import "MacosPrintService.h"
 #import "MacosFileDialog.h"
+#import "MacosImageDecoder.h"
 #import "MacosLifecycle.h"
 #import "MacosMainThreadDispatcher.h"
 #import "RivetContentView.h"
@@ -32,6 +33,7 @@
 - (IBAction)openDocument:(id)sender;
 - (IBAction)pageEdit:(id)sender;
 - (IBAction)annotationCommand:(id)sender;
+- (IBAction)contentCommand:(id)sender;
 @end
 
 @implementation RivetAppBridge
@@ -50,6 +52,12 @@
     if (item == nullptr) return;
     shell->performAnnotation(static_cast<rivet::app::AnnotationCommand>(item.tag));
 }
+- (IBAction)contentCommand:(id)sender {
+    if (shell == nullptr) return;
+    NSMenuItem* item = sender;
+    if (item == nullptr) return;
+    shell->performContent(static_cast<rivet::app::ContentCommand>(item.tag));
+}
 - (IBAction)fileCommand:(id)sender {
     if (shell == nullptr) return;
     NSMenuItem* item = sender;
@@ -64,6 +72,9 @@
     }
     if (item.action == @selector(annotationCommand:)) {
         return shell->canPerformAnnotation(static_cast<rivet::app::AnnotationCommand>(item.tag)) ? YES : NO;
+    }
+    if (item.action == @selector(contentCommand:)) {
+        return shell->canPerformContent(static_cast<rivet::app::ContentCommand>(item.tag)) ? YES : NO;
     }
     if (item.action == @selector(fileCommand:)) {
         return shell->canPerformFile(static_cast<rivet::app::FileCommand>(item.tag)) ? YES : NO;
@@ -193,6 +204,38 @@ int main(int argc, char** argv) {
         }
         [pageMenuItem setSubmenu:pageMenu];
 
+        // Content > the content-editing tools and selection commands (ADR-0014/
+        // 0015); tags are ContentCommand values. Cmd+Shift+E / Cmd+Shift+T are
+        // free (Cmd+E / Cmd+T are not used).
+        NSMenuItem* contentMenuItem = [[NSMenuItem alloc] init];
+        [menuBar addItem:contentMenuItem];
+        NSMenu* contentMenu = [[NSMenu alloc] initWithTitle:@"Content"];
+        const struct {
+            NSString* title;
+            NSString* key;
+            rivet::app::ContentCommand command;
+            bool separatorBefore;
+        } contentItems[] = {
+            {@"Edit Objects", @"E", rivet::app::ContentCommand::ToolEdit, false},
+            {@"Add Text", @"T", rivet::app::ContentCommand::ToolAddText, false},
+            {@"Edit Text", @"", rivet::app::ContentCommand::EditText, true},
+            {@"Replace Image…", @"", rivet::app::ContentCommand::ReplaceImage, false},
+            {@"Bring to Front", @"", rivet::app::ContentCommand::BringToFront, false},
+            {@"Delete Object", @"", rivet::app::ContentCommand::DeleteObject, false},
+        };
+        for (const auto& entry : contentItems) {
+            if (entry.separatorBefore) [contentMenu addItem:[NSMenuItem separatorItem]];
+            NSMenuItem* item = [contentMenu addItemWithTitle:entry.title
+                                                      action:@selector(contentCommand:)
+                                               keyEquivalent:entry.key];
+            if (entry.key.length > 0) {
+                item.keyEquivalentModifierMask = NSEventModifierFlagCommand | NSEventModifierFlagShift;
+            }
+            item.tag = static_cast<NSInteger>(entry.command);
+            [item setTarget:bridge];
+        }
+        [contentMenuItem setSubmenu:contentMenu];
+
         // Annotate > tools (no single-letter shortcuts: they would clash with
         // typing) and annotation commands; tags are AnnotationCommand values.
         NSMenuItem* annotateMenuItem = [[NSMenuItem alloc] init];
@@ -251,6 +294,7 @@ int main(int argc, char** argv) {
         // Services must outlive the app shell and the run loop.
         const auto dispatcher = std::make_unique<rivet::platform::MacosMainThreadDispatcher>();
         const auto fileDialog = std::make_unique<rivet::platform::MacosFileDialog>();
+        const auto imageDecoder = std::make_unique<rivet::platform::MacosImageDecoder>();
         const auto clipboard = std::make_unique<rivet::platform::MacosClipboard>();
         const auto urlOpener = std::make_unique<rivet::platform::MacosExternalUrlOpener>();
         const auto printService = std::make_unique<rivet::platform::MacosPrintService>();
@@ -267,6 +311,7 @@ int main(int argc, char** argv) {
         services.redrawSink = [contentView redrawSink];
         services.mainDispatcher = dispatcher.get();
         services.fileDialog = fileDialog.get();
+        services.imageDecoder = imageDecoder.get();
         services.clipboard = clipboard.get();
         services.urlOpener = urlOpener.get();
         services.printService = printService.get();

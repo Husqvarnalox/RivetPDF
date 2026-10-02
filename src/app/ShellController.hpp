@@ -3,6 +3,8 @@
 
 #include "app/AnnotationBarController.hpp"
 #include "app/AnnotationController.hpp"
+#include "app/ContentBarController.hpp"
+#include "app/ContentController.hpp"
 #include "app/DocumentWorkspace.hpp"
 #include "app/FileController.hpp"
 #include "app/PageEditingController.hpp"
@@ -85,6 +87,12 @@ public:
     void performAnnotation(AnnotationCommand command);
     bool canPerformAnnotation(AnnotationCommand command) const;
 
+    // Content editing (Edit / Add Text tools, selection commands) for platform
+    // menus; same validation pattern. A tool command also reveals the
+    // properties bar (it shows while a content tool is active).
+    void performContent(ContentCommand command);
+    bool canPerformContent(ContentCommand command) const;
+
     // File lifecycle for platform menus (same validation pattern).
     void performFile(FileCommand command);
     bool canPerformFile(FileCommand command) const;
@@ -147,6 +155,8 @@ private:
     ui::TabStrip* tabStrip_ = nullptr;
     ui::Toolbar* toolbar_ = nullptr;
     ui::Button* annotateButton_ = nullptr;
+    ui::Button* editButton_ = nullptr;
+    ui::Button* addTextButton_ = nullptr;
     ui::PdfViewport* viewport_ = nullptr;
     TextLabel* overlayLabel_ = nullptr; // loading / error state over the viewport
     TextLabel* zoomLabel_ = nullptr;
@@ -166,6 +176,10 @@ private:
     std::unique_ptr<FileController> fileLifecycle_;
     std::unique_ptr<AnnotationController> annotations_;
     std::unique_ptr<AnnotationBarController> annotationBar_;
+    // Declared after annotations_: destroyed before it (the content tool
+    // suspends the annotation layer and uninstalls itself on destruction).
+    std::unique_ptr<ContentController> content_;
+    std::unique_ptr<ContentBarController> contentBar_;
 
     // Print flow (panel -> worker spool -> platform print). Declared last:
     // destroyed first, while the sessions its worker borrows are alive.
