@@ -4,8 +4,10 @@ if(RIVET_WITH_PDFIUM)
     # PDFium-specific implementation lives in rivet_pdfium.
     add_library(rivet_pdf STATIC
         PdfAnnotation.cpp
+        PdfContent.cpp
         PdfPageGeometry.cpp
         PdfText.cpp
+        PdfTextLayout.cpp
     )
     add_library(rivet::pdf ALIAS rivet_pdf)
     target_link_libraries(rivet_pdf PUBLIC rivet::core)
@@ -15,9 +17,11 @@ if(RIVET_WITH_PDFIUM)
 else()
     add_library(rivet_pdf STATIC
         PdfAnnotation.cpp
+        PdfContent.cpp
         PdfPageGeometry.cpp
         PdfSystem_null.cpp
         PdfText.cpp
+        PdfTextLayout.cpp
     )
     add_library(rivet::pdf ALIAS rivet_pdf)
     target_link_libraries(rivet_pdf PUBLIC rivet::core)

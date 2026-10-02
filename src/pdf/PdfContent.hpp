@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 #pragma once
 
+#include "core/Error.hpp"
 #include "core/geometry/Matrix.hpp"
 #include "pdf/PdfAnnotation.hpp"
 #include "pdf/PdfPageGeometry.hpp"
