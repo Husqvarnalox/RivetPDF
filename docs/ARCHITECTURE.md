@@ -24,6 +24,9 @@ Key decisions are recorded in `docs/adr/`:
 | [ADR-0008](adr/ADR-0008-page-model-and-stable-page-identity.md) | Page model, stable page identity, assembled saves |
 | [ADR-0009](adr/ADR-0009-background-save-rebase-and-file-lifecycle.md) | Background save, editing lock, rebase, dirty close/quit |
 | [ADR-0010](adr/ADR-0010-atomic-save-replacement.md) | Atomic save by temp file + rename |
+| [ADR-0011](adr/ADR-0011-annotation-model-identity-and-rendering.md) | Annotation model, identity and rendering split |
+| [ADR-0012](adr/ADR-0012-annotation-persistence.md) | Annotation persistence through the page assembly |
+| [ADR-0013](adr/ADR-0013-annotation-tools-and-interaction.md) | Annotation tools, interaction and on-screen rendering |
 
 ---
 
@@ -420,7 +423,35 @@ The crop tool (`app::CropTool`, a `ui::ViewportTool`) edits one page's crop box 
 
 ---
 
-## 13. Directory layout
+## 13. Annotations
+
+Full rationale: [ADR-0011](adr/ADR-0011-annotation-model-identity-and-rendering.md) (model, identity, rendering split), [ADR-0012](adr/ADR-0012-annotation-persistence.md) (persistence), [ADR-0013](adr/ADR-0013-annotation-tools-and-interaction.md) (tools and interaction).
+
+```text
+ pdf:     PdfAnnotationData (user space) + limits + buildAppearance (one description for overlay and /AP)
+ pdfium:  annotations(page) from a private reader document (bounded cache) | render with hidden indices
+          | assembly annotationEdits {removeIndices, create} -> report {createdIndices, annotsCount}
+ editor:  PageEntry.annotations (immutable PageAnnotationState) + rasterRevision
+          AnnotationService (lazy originals, LRU, id registry, display-space views, hitTest)
+          AnnotationCommands (factories in display space -> AnnotationStateCommand on the one CommandStack)
+ ui:      ViewportLayer slot in PdfViewport, Path/fillPath/strokePath/drawTextInBox, TextArea
+ app:     AnnotationInteraction (pure state machine) -> AnnotationController -> commands
+          AnnotationLayer (events/paint) + AnnotationPainter + note editor
+```
+
+- **Identity**: `core::AnnotationId`, minted by the editor and never reused. Originals get ids from a registry keyed by `(PageId, /Annots index)`; created annotations get theirs when the command is built, so redo and undo restore the same ids. Duplicate and import mint fresh ids; a save re-keys the registry from the writer's report and keeps every id.
+- **Storage and coordinates**: data lives in the source page's PDF user space (like the crop box), so rotate/crop never rewrite annotations. Everything above the editor is display space of the page's current view; all conversions go through `pdf/PdfPageGeometry` wrapped by `editor/AnnotationGeometry`.
+- **Page state**: `PageEntry::annotations` is a shared immutable `{suppressed /Annots indices, overlay items}` (null = untouched). Commands swap state pointers (undo is O(changed pages)). `rasterRevision` (tiles) changes with rotate/crop and when the suppressed set changes; text and links stay on `contentRevision`, so annotation edits never invalidate text or the selection, and pure overlay edits invalidate no tiles at all.
+- **Rendering split**: untouched originals (including all unsupported kinds) are drawn by the PDFium raster with their own appearances. Created/edited annotations are drawn by Rivet as a vector overlay from the same `buildAppearance` description the writer saves. Suppressed originals are hidden from the raster by setting the Hidden flag for one gated render and restoring it. Nothing is drawn twice; after a save the written annotations stay overlay-drawn and suppressed, so the rebased raster is unchanged and no tile flush happens.
+- **Loading**: originals load lazily per page on a worker under the PDFium call gate, delivered on the main thread with alive/generation guards; cached in a bounded LRU (128 pages in the service, 64 in the PDFium reader). The cache holds only originals, so eviction never loses an edit.
+- **Persistence**: the snapshot's states become per-page `annotationEdits` applied after the view on the private working document (remove suppressed indices descending, append created ones with generated `/AP`, verify the count). Editing an existing annotation is remove + re-create. Unsupported annotations are never rewritten. Save goes through the Phase 3 pipeline (background, atomic, editing lock, rebase).
+- **Interaction**: one tool state per shell (Select, markup, Note, Ink, shapes, Stamp); the annotation layer sits between the crop tool and the viewport's own handling. Markup is created from the text selection (one annotation per page, one undo step). Selection is single and per tab; move/resize are previewed and committed as one command. Esc: gesture → note editor → selection → Select tool.
+- **Safety**: no actions run on annotation clicks (no JavaScript, Launch, attachments; links keep their explicit-click path). Contents and authors are untrusted, never logged, capped; per-page item, quad, ink stroke/point and length limits make over-limit annotations opaque and refuse creation past them.
+- **Page operations**: reorder/rotate keep states; crop keeps annotations outside the crop (hidden by the clip, back on reset - nothing is silently destroyed); duplicate copies with fresh ids; delete + undo restores state, ids and revisions; import carries originals through the page import.
+
+---
+
+## 14. Directory layout
 
 ```text
 rivet/
@@ -439,11 +470,11 @@ rivet/
 │   ├── render/               # rivet_render
 │   ├── pdf/                  # rivet_pdf (interfaces, page geometry, assembly contracts, null engine)
 │   │   └── pdfium/           # rivet_pdfium (only with RIVET_WITH_PDFIUM=ON); FPDF_* confined here
-│   ├── editor/               # rivet_editor (page model, commands, session, saver, render/text/link services)
+│   ├── editor/               # rivet_editor (page model, commands, session, saver, render/text/link/annotation services)
 │   ├── ui/                   # rivet_ui
 │   ├── platform/             # rivet_platform (abstraction headers)
 │   │   └── macos/            # rivet_platform_macos (AppKit host, CoreGraphics PaintContext, rivet executable)
-│   └── app/                  # rivet_app (shell, workspace, controllers, crop tool)
+│   └── app/                  # rivet_app (shell, workspace, controllers, crop tool, annotation tools)
 ├── tests/
 │   ├── harness/              # RivetTest.h, TestMain.cpp (internal micro-harness)
 │   ├── core/  render/  pdf/  editor/  ui/  app/  platform/
@@ -456,7 +487,7 @@ incrementally during development.
 
 ---
 
-## 14. Planned evolution
+## 15. Planned evolution
 
 Within the approved scope, the architecture leaves room for:
 
@@ -472,7 +503,7 @@ architectural requirements:
   will need incremental/lazy metadata loading behind the same `PageLayout`
   interface.
 
-Features beyond this (annotations, forms, content editing, ...) are roadmap items in
+Features beyond this (forms, content editing, ...) are roadmap items in
 the README and are not yet part of the architecture described here. Page
 labels, outline/bookmarks, links, text selection/search and the workspace
-model landed in Phase 2 (2026-09-25); page editing and the file lifecycle in Phase 3.
+model landed in Phase 2 (2026-09-25); page editing and the file lifecycle in Phase 3; annotations (section 13) are developed on the Phase 4 branch.
