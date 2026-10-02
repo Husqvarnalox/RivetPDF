@@ -219,6 +219,64 @@ RIVET_TEST(ContentCommands_factories_refuse_until_the_page_content_is_loaded) {
     CHECK(moveContent(*f.session, f.id(0), {f.objectId(0, 0)}, Point{1, 1}).has_value());
 }
 
+RIVET_TEST(ContentCommands_identity_factories_accept_a_stale_view_after_an_edit) {
+    // After an edit the resolved view is stale (`loaded` = false) until the
+    // backend re-extracts. Key-repeat nudges, back-to-back drags, deletes,
+    // retypes and Add Text must still go through (identities and the edits
+    // are current); resizing reads geometry and waits for the fresh view.
+    ContentFixture f;
+    sample(f);
+    const ObjectId image = f.objectId(0, 1);
+    const ObjectId block = f.content(0)->blocks[0].id;
+    CHECK(f.run(moveContent(*f.session, f.id(0), {image}, Point{10, 0})));
+    CHECK(!f.content(0)->loaded);
+    CHECK(!f.content(0)->objects.empty());
+
+    // Moves compose on the stale view.
+    CHECK(f.run(moveContent(*f.session, f.id(0), {image}, Point{5, 7})));
+    const pdf::PdfObjectEdit* edit = objectEditAt(editsOf(f), 1);
+    CHECK(edit != nullptr && edit->transform.has_value());
+    if (edit != nullptr && edit->transform) {
+        CHECK_NEAR(edit->transform->tx, 15.0, 1e-9);
+        CHECK_NEAR(edit->transform->ty, -7.0, 1e-9);
+    }
+    // Resize needs fresh geometry.
+    CHECK(hasError(resizeContent(*f.session, f.id(0), image, Rect{Point{0, 0}, core::Size{10, 10}}),
+                   ErrorCode::NotAvailable));
+    CHECK(f.load(0));
+    CHECK(resizeContent(*f.session, f.id(0), image, Rect{Point{0, 0}, core::Size{10, 10}}).has_value());
+
+    // A retype followed by a second retype and a move on the stale view
+    // address the SAME edit (the replaced block's tag is its id), never a
+    // duplicate block nor transforms on the replaced members.
+    CHECK(f.run(editTextBlock(*f.session, f.id(0), block, TextBlockPatch{.text = "first"})));
+    CHECK(!f.content(0)->loaded);
+    CHECK(f.run(editTextBlock(*f.session, f.id(0), block, TextBlockPatch{.text = "second"})));
+    CHECK(f.run(moveContent(*f.session, f.id(0), {block}, Point{3, 0})));
+    CHECK_EQ(editsOf(f).textBlocks.size(), std::size_t{1});
+    if (!editsOf(f).textBlocks.empty()) {
+        CHECK_EQ(editsOf(f).textBlocks[0].text, std::string("second"));
+        CHECK_EQ(editsOf(f).textBlocks[0].tag, block.value());
+        CHECK_NEAR(editsOf(f).textBlocks[0].placement.tx, 75.0, 1e-9); // 72 + 3 (see the placement test)
+    }
+    for (const std::uint32_t member : editsOf(f).textBlocks[0].members) {
+        const pdf::PdfObjectEdit* memberEdit = objectEditAt(editsOf(f), member);
+        CHECK(memberEdit == nullptr || !memberEdit->transform.has_value());
+    }
+    CHECK(f.run(addTextBlock(*f.session, f.id(0), newText("x"))));
+    CHECK_EQ(editsOf(f).textBlocks.size(), std::size_t{2});
+
+    // A deleted object still shown by the stale view cannot be edited again.
+    CHECK(f.run(deleteContent(*f.session, f.id(0), {image})));
+    CHECK(hasError(moveContent(*f.session, f.id(0), {image}, Point{1, 1}), ErrorCode::NotFound));
+    CHECK(hasError(replaceImage(*f.session, f.id(0), image, makeBgraImage()), ErrorCode::NotFound));
+    CHECK(f.run(deleteContent(*f.session, f.id(0), {block})));
+    CHECK(hasError(editTextBlock(*f.session, f.id(0), block, TextBlockPatch{.text = "z"}), ErrorCode::NotFound));
+    CHECK(hasError(moveContent(*f.session, f.id(0), {block}, Point{1, 1}), ErrorCode::NotFound));
+    CHECK(f.load(0));
+    CHECK(f.content(0)->loaded);
+}
+
 RIVET_TEST(ContentCommands_locked_session_refuses_every_factory) {
     ContentFixture f;
     sample(f);

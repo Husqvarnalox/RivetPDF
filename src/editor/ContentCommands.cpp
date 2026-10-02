@@ -50,7 +50,13 @@ core::Matrix rigidPartOf(const core::Matrix& m) {
 // copy, validates and finishes it into a command.
 class PageEditor {
 public:
-    static core::Result<PageEditor> open(DocumentSession& session, core::PageId page) {
+    // `requireFreshGeometry`: the factory reads object geometry from the
+    // resolved view, so the view must be extracted for the CURRENT edits.
+    // Other factories only need identities (registry) and the edits
+    // themselves, so they accept the previous view while the backend
+    // re-extracts after an edit (key-repeat nudges, back-to-back drags).
+    static core::Result<PageEditor> open(DocumentSession& session, core::PageId page,
+                                         bool requireFreshGeometry = false) {
         if (session.isEditingLocked()) {
             return std::unexpected(unsupported(session.editingLockReason().empty()
                                                    ? std::string("the document cannot be edited right now")
@@ -61,7 +67,8 @@ public:
         editor.entry_ = editor.snapshot_->find(page);
         if (editor.entry_ == nullptr) return std::unexpected(notFound("page is not in the document"));
         editor.content_ = session.contentService().content(page);
-        if (editor.content_ == nullptr || !editor.content_->loaded) {
+        if (editor.content_ == nullptr || (!editor.content_->loaded && requireFreshGeometry) ||
+            (!editor.content_->loaded && editor.content_->objects.empty())) {
             return std::unexpected(notAvailable("the page content is still loading"));
         }
         if (editor.content_->truncated) {
@@ -109,14 +116,14 @@ public:
         std::set<std::uint64_t> blockTags;
     };
 
-    core::Result<Targets> collect(const std::vector<core::ObjectId>& ids, ContentCapability need) const {
+    core::Result<Targets> collect(const std::vector<core::ObjectId>& ids, ContentCapability need) {
         if (ids.empty()) return std::unexpected(invalid("nothing selected"));
         Targets targets;
         for (const core::ObjectId id : ids) {
             if (const TextBlockView* b = block(id)) {
                 if (b->capability < need) return std::unexpected(unsupported(b->capabilityReason));
-                if (b->tag != 0) {
-                    targets.blockTags.insert(b->tag);
+                if (const std::uint64_t tag = tagOf(*b); tag != 0) {
+                    targets.blockTags.insert(tag);
                     continue;
                 }
                 for (const TextBlockLine& line : b->lines) {
@@ -125,6 +132,9 @@ public:
                         if (o == nullptr || o->source.origin.kind != pdf::PdfContentOrigin::Kind::Source) {
                             return std::unexpected(invalid("the text block has no source objects"));
                         }
+                        if (isRemoved(o->source.origin.sourceIndex)) {
+                            return std::unexpected(notFound("the text block was deleted"));
+                        }
                         targets.sourceIndices.insert(o->source.origin.sourceIndex);
                     }
                 }
@@ -132,15 +142,18 @@ public:
             }
             const ContentObjectView* o = object(id);
             if (o == nullptr) return std::unexpected(notFound("object is not on the page"));
-            if (const TextBlockView* owner = blockOf(*o); owner != nullptr && owner->tag != 0) {
-                if (owner->capability < need) return std::unexpected(unsupported(owner->capabilityReason));
-                targets.blockTags.insert(owner->tag);
-                continue;
+            if (const TextBlockView* owner = blockOf(*o); owner != nullptr) {
+                if (const std::uint64_t tag = tagOf(*owner); tag != 0) {
+                    if (owner->capability < need) return std::unexpected(unsupported(owner->capabilityReason));
+                    targets.blockTags.insert(tag);
+                    continue;
+                }
             }
             if (o->capability < need) return std::unexpected(unsupported(o->capabilityReason));
             if (o->source.origin.kind != pdf::PdfContentOrigin::Kind::Source) {
                 return std::unexpected(invalid("the object has no source object"));
             }
+            if (isRemoved(o->source.origin.sourceIndex)) return std::unexpected(notFound("the object was deleted"));
             targets.sourceIndices.insert(o->source.origin.sourceIndex);
         }
         return targets;
@@ -173,6 +186,22 @@ public:
             if (block.tag == tag) return &block;
         }
         return nullptr;
+    }
+
+    // The edit tag a block is addressed by. A view resolved before the
+    // latest edit (stale, see open()) still shows a replaced source block
+    // without its tag; the tag of a replaced block IS the block's id.
+    std::uint64_t tagOf(const TextBlockView& block) {
+        if (block.tag != 0) return block.tag;
+        return textBlock(block.id.value()) != nullptr ? block.id.value() : 0;
+    }
+
+    // A source object already deleted by the current edits (a stale view
+    // still shows it).
+    bool isRemoved(std::uint32_t index) const {
+        const auto it = std::find_if(work_.objects.begin(), work_.objects.end(),
+                                     [index](const pdf::PdfObjectEdit& edit) { return edit.sourceIndex == index; });
+        return it != work_.objects.end() && it->remove;
     }
 
     // Drops no-op object edits, validates against the source page and builds
@@ -307,7 +336,7 @@ core::Result<ContentEdit> resizeContent(DocumentSession& session, core::PageId p
         displayBounds.size.height < kMinResizedExtent) {
         return std::unexpected(invalid("the new size is out of range"));
     }
-    auto editor = PageEditor::open(session, page);
+    auto editor = PageEditor::open(session, page, /*requireFreshGeometry=*/true);
     if (!editor) return std::unexpected(editor.error());
     const ContentObjectView* object = editor->object(id);
     if (object == nullptr) return std::unexpected(notFound("object is not on the page"));
@@ -321,6 +350,7 @@ core::Result<ContentEdit> resizeContent(DocumentSession& session, core::PageId p
     if (object->source.origin.kind != pdf::PdfContentOrigin::Kind::Source) {
         return std::unexpected(invalid("the object has no source object"));
     }
+    if (editor->isRemoved(object->source.origin.sourceIndex)) return std::unexpected(notFound("the object was deleted"));
     const auto transform = geometry::userTransformForDisplayRects(editor->view(), object->bounds, displayBounds);
     if (!transform.has_value()) return std::unexpected(invalid("the object cannot be resized"));
     pdf::PdfObjectEdit& edit = editor->objectEdit(object->source.origin.sourceIndex);
@@ -342,6 +372,7 @@ core::Result<ContentEdit> replaceImage(DocumentSession& session, core::PageId pa
     if (object->source.origin.kind != pdf::PdfContentOrigin::Kind::Source) {
         return std::unexpected(invalid("the object has no source object"));
     }
+    if (editor->isRemoved(object->source.origin.sourceIndex)) return std::unexpected(notFound("the object was deleted"));
     editor->objectEdit(object->source.origin.sourceIndex).replaceImage = std::move(image);
     return editor->finish("Replace Image", {id});
 }
@@ -361,8 +392,9 @@ core::Result<ContentEdit> editTextBlock(DocumentSession& session, core::PageId p
     if (block == nullptr) return std::unexpected(notFound("text block is not on the page"));
     if (block->capability < ContentCapability::Replaceable) return std::unexpected(unsupported(block->capabilityReason));
 
-    pdf::PdfTextBlockEdit* existing = block->tag != 0 ? editor->textBlock(block->tag) : nullptr;
-    if (block->tag != 0 && existing == nullptr) return std::unexpected(invalid("the text block has no edit"));
+    const std::uint64_t tag = editor->tagOf(*block);
+    pdf::PdfTextBlockEdit* existing = tag != 0 ? editor->textBlock(tag) : nullptr;
+    if (tag != 0 && existing == nullptr) return std::unexpected(invalid("the text block has no edit"));
 
     pdf::PdfTextBlockEdit edit;
     if (existing != nullptr) {
@@ -378,6 +410,9 @@ core::Result<ContentEdit> editTextBlock(DocumentSession& session, core::PageId p
                 const ContentObjectView* o = editor->object(member);
                 if (o == nullptr || o->source.origin.kind != pdf::PdfContentOrigin::Kind::Source) {
                     return std::unexpected(invalid("the text block has no source objects"));
+                }
+                if (editor->isRemoved(o->source.origin.sourceIndex)) {
+                    return std::unexpected(notFound("the text block was deleted"));
                 }
                 members.insert(o->source.origin.sourceIndex);
             }
@@ -472,12 +507,13 @@ core::Result<ContentEdit> bringToFront(DocumentSession& session, core::PageId pa
         if (object == nullptr) return std::unexpected(notFound("object is not on the page"));
         block = editor->blockOf(*object);
     }
-    if (block == nullptr || block->tag == 0) {
+    const std::uint64_t tag = block == nullptr ? 0 : editor->tagOf(*block);
+    if (tag == 0) {
         return std::unexpected(notAvailable("only text added with Rivet can be brought to the front"));
     }
     auto& blocks = editor->work().textBlocks;
     const auto it = std::find_if(blocks.begin(), blocks.end(),
-                                 [&](const pdf::PdfTextBlockEdit& edit) { return edit.tag == block->tag; });
+                                 [&](const pdf::PdfTextBlockEdit& edit) { return edit.tag == tag; });
     if (it == blocks.end() || !it->members.empty()) {
         return std::unexpected(notAvailable("only text added with Rivet can be brought to the front"));
     }
