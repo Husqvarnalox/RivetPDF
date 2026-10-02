@@ -397,13 +397,13 @@ Full rationale: [ADR-0009](adr/ADR-0009-background-save-rebase-and-file-lifecycl
 - **Editing lock**: while a save is in flight `DocumentSession::execute/undo/redo` refuse, so the written snapshot is exactly the state that is marked saved and rebased. Viewing, selection, search, print and extract keep working.
 - **Atomic replacement**: temp file in the destination directory then `rename(2)`; any failure leaves the destination intact and no temp file ([ADR-0010](adr/ADR-0010-atomic-save-replacement.md)). Saving over the document's own path is supported because the live document reads through its own open descriptor (`PdfiumFileSource`).
 - **Rebase**: the session switches to the freshly written file with identical ids/order; previous documents are released once in-flight jobs drop their snapshots.
-- **Operation identity**: `FileController` addresses async completions by `(TabId, generation)`; `TabId`s are never reused and a generation is minted per operation. A completion applies only while its tab is alive and Ready (imports also only while the generation is registered). A completion for a closed tab is dropped (the file was still written atomically). A heap-owned `alive_` flag guards completions against a destroyed controller.
+- **Operation identity**: `FileController` addresses async completions by `(TabId, generation)`; `TabId`s are never reused and a generation is minted per operation. A completion applies only while its tab is alive and Ready (imports also only while the generation is registered). A completion for a closed tab is dropped (the file was still written atomically). A heap-owned `alive_` flag guards completions against a destroyed controller. **Modals re-resolve**: the main-thread dispatcher is drained while a modal (alert, save/open panel) runs, so a completion can close a tab during the prompt; every flow therefore keeps a `TabId`, never a `DocumentTab*`, across a modal and re-resolves it afterwards (a vanished or no-longer-Ready tab ends the flow). **Worker fence**: every worker task holds a `core::AsyncScope` token; `~FileController` cancels the scope (writers poll it through `DocumentWriteControl::cancelled`, aborting before the commit) and waits for active tasks, so no worker outlives the controller.
 - **One save at a time** per shell: interactive saves during a save are reported; quit-lifecycle saves are queued and chained.
 - **Dirty only cleared on success**: `markSaved()` runs only in the success path; a failed save unlocks editing and leaves the document dirty.
 - **Import / Merge**: open panel; a worker opens the source and reads its page metadata; an `InsertPagesCommand` inserts all pages (new ids, native views) before the current page, after it, or appended, as one undo step. Encrypted sources are rejected.
 - **Extract**: save panel; a worker assembles a `Fresh` document from the selected pages in model order. The source model and its dirty state are not affected; document-level structure (outline, metadata, forms, labels, encryption) is not carried over.
-- **Split by ranges** (`FileCommand::Split`): an export that reuses the Extract pipeline and never touches the source (not dirty, model, selection, history unchanged). Flow: `IAlertService::promptForText` for the ranges (default implementation returns nullopt; NSAlert + text field on macOS) -> `editor::parsePageRanges` (1-based inclusive, separated by commas/whitespace/newlines; rejects empty, 0, negative, garbage, `end < start`, out of range, overflow and overlapping ranges, with specific messages) -> save panel (its path supplies the output directory and base name) -> `editor::splitOutputPaths` (`<stem>_<a>-<b>.pdf`, `<stem>_<a>.pdf` for one page; one trailing `.pdf`, any case, is stripped so `.pdf.pdf` never occurs) -> **collision check**: if any output already exists nothing is written and the split is reported and aborted (never overwrites) -> one `makeExtractJob` per range, all captured up front on the main thread from one model snapshot -> ONE worker task runs them sequentially with `runDocumentWrite`. **Partial-success semantics**: the first failure stops the run; outputs already written remain, the failing output leaves nothing under its final name (atomic write) and the status names it and the "N of M files written" count; there is no cross-file transaction. **Close/quit**: like Extract, closing the tab does not stop a split (jobs own their snapshots); destroying the `FileController` (quit) sets `alive_ = false`, which the worker polls through `DocumentWriteControl::cancelled` (so the current output aborts before its commit and later ones never start), and the completion is dropped; quit does not wait for it.
-- **Dirty close/quit**: a dirty tab prompts Save / Don't Save / Cancel; several dirty tabs use the platform review prompt. "Save" on a tab close closes the tab when its save settles; window close with "Save" performs the saves and leaves the window open; quit defers the platform reply until every accepted save settled. With no alert service the answer is Cancel (nothing is discarded silently). Known gap (recorded in ADR-0009): a save that *fails* still runs the deferred close/quit bookkeeping.
+- **Split by ranges** (`FileCommand::Split`): an export that reuses the Extract pipeline and never touches the source (not dirty, model, selection, history unchanged). Flow: `IAlertService::promptForText` for the ranges (default implementation returns nullopt; NSAlert + text field on macOS) -> `editor::parsePageRanges` (1-based inclusive, separated by commas/whitespace/newlines; rejects empty, 0, negative, garbage, `end < start`, out of range, overflow and overlapping ranges, with specific messages) -> save panel (its path supplies the output directory and base name) -> `editor::splitOutputPaths` (`<stem>_<a>-<b>.pdf`, `<stem>_<a>.pdf` for one page; one trailing `.pdf`, any case, is stripped so `.pdf.pdf` never occurs) -> **collision check**: if any output already exists nothing is written and the split is reported and aborted (never overwrites); each output is also committed with `overwriteExisting = false` (`renamex_np(RENAME_EXCL)` on macOS, best-effort re-check elsewhere), so a file that appears after the check is not replaced either -> one `makeExtractJob` per range, all captured up front on the main thread from one model snapshot -> ONE worker task runs them sequentially with `runDocumentWrite`. **Partial-success semantics**: the first failure stops the run; outputs already written remain, the failing output leaves nothing under its final name (atomic write) and the status names it and the "N of M files written" count; there is no cross-file transaction. **Close/quit**: like Extract, closing the tab does not stop a split (jobs own their snapshots); destroying the `FileController` (quit) cancels the worker scope, which the worker polls through `DocumentWriteControl::cancelled` (the current output aborts before its commit and later ones never start); the destructor waits for the worker to return and the completion is dropped.
+- **Dirty close/quit**: a dirty tab prompts Save / Don't Save / Cancel; several dirty tabs use the platform review prompt. "Save" on a tab close closes the tab when its save settles; window close with "Save" performs the saves and leaves the window open; quit defers the platform reply until every accepted save settled. With no alert service the answer is Cancel (nothing is discarded silently). A save that *fails* keeps the tab open and aborts the quit. "Don't Save" closes exactly the tab it was asked about (the tab is re-resolved by id after the prompt).
 
 ---
 
@@ -461,7 +461,7 @@ incrementally during development.
 Within the approved scope, the architecture leaves room for:
 
 - **Multi-document tabs** - one `DocumentSession` per open document, each with its own `SerialExecutor` and revision counter. No new machinery is required: `TileKey` already includes `DocumentId`, the shared `TaskScheduler` already multiplexes executors, and one cache can serve all sessions. Session lifetime follows tab lifetime.
-- **Page editing** - landed in Phase 3 (sections 10-12, [ADR-0008](adr/ADR-0008-page-model-and-stable-page-identity.md), [ADR-0009](adr/ADR-0009-background-save-rebase-and-file-lifecycle.md)). Content editing (text/objects) is expected to be the hardest part and will be developed gradually on the same command foundation.
+- **Page editing** - landed in Phase 3, now closed (sections 10-12, [ADR-0008](adr/ADR-0008-page-model-and-stable-page-identity.md), [ADR-0009](adr/ADR-0009-background-save-rebase-and-file-lifecycle.md)). Content editing (text/objects) is expected to be the hardest part and will be developed gradually on the same command foundation.
 
 Known limitations of the current foundation, recorded as future
 architectural requirements:
@@ -471,6 +471,52 @@ architectural requirements:
   microseconds per page for small documents, but a thousands-page document
   will need incremental/lazy metadata loading behind the same `PageLayout`
   interface.
+
+### Phase 3 status: CLOSED (2026-10-02)
+
+Page editing (reorder, rotate, delete, duplicate, crop, import/merge,
+extract, split by ranges, undo/redo) and the file lifecycle (background
+save/Save As, atomic replacement, dirty close/quit prompts) are complete.
+The Phase 3 quality gate (manual QA, perf probes, correctness review) found
+no open P0/P1 issues. The following P2 items are known and deferred:
+
+- **Window-close Review with 2+ "Save" answers**: the second interactive
+  save is refused ("A save is already in progress") because window-close
+  saves are not queued like quit saves; the tab stays dirty (no data loss).
+- **Close/discard and printing**: `saveSettled` / `discardAndClose` do not
+  call `cancelPrintForTab`; a print of a closing tab still runs off its own
+  snapshot.
+- **Import insertion index**: `beforeIndex` is captured when the import
+  starts and can be stale if pages are added or removed before the worker
+  completes (pages still land in a valid position, clamped).
+- **`rebaseOnto` failure path** does not restore `info_` / `baseLabels_` /
+  `path_`; only reachable if reopening the just-written file fails.
+- **Non-interactive save job-build failure** does not call `saveSettled`;
+  not reachable today (job building only fails for an unavailable engine).
+- **Status bar** "N pages" is not refreshed after a delete until the next
+  page change.
+- **Sidebar wheel scroll** uses raw deltas (slow with a mouse wheel); the
+  outline "No outline" placeholder is drawn flush against the left edge.
+- **Split save panel** asks to "Replace" the base name (e.g. `report.pdf`)
+  although only suffixed outputs are written and the base file is never
+  touched.
+- **Linux no-replace** for split outputs is a best-effort re-check (no
+  portable atomic rename-without-replace); macOS uses `RENAME_EXCL`.
+- **Quit waits for export/split workers**: the worker scope is cancelled
+  cooperatively, so quit is delayed by at most the current output's write.
+- **ShellController tab-close re-resolve** is covered by the FileController
+  contract tests, not by a ShellController-level test.
+
+UX notes:
+
+- **Duplicate -> Undo -> Redo selection**: after redo the selection lands
+  deterministically on the page after the original (no stale `PageId`), not
+  on the re-created duplicate. Cosmetic; candidate for UX polish.
+- **GCC 16 `-Wnull-dereference` / `-Warray-bounds`** in tests were analysed
+  as false positives (`detachChild(nullptr)` after inlining; a devirtualised
+  `make_shared<Bitmap>`), not undefined behaviour. They are fixed locally
+  (an explicit null guard in `Widget::detachChild`, a plain `shared_ptr`
+  construction in the test); no warning is disabled globally.
 
 Features beyond this (annotations, forms, content editing, ...) are roadmap items in
 the README and are not yet part of the architecture described here. Page
