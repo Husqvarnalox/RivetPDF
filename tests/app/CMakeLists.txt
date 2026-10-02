@@ -7,6 +7,10 @@ add_executable(rivet_app_tests
     TestAnnotationStress.cpp
     TestAnnotationInteraction.cpp
     TestAnnotationPainter.cpp
+    TestContentInteraction.cpp
+    TestContentController.cpp
+    TestContentLayer.cpp
+    TestContentBarController.cpp
     TestPageEditingController.cpp
     TestFileController.cpp
     TestSearchRestart.cpp
