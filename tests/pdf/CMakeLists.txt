@@ -16,6 +16,8 @@ add_executable(rivet_pdf_tests
     TestPdfNavigation.cpp
     # Engine-independent page-view geometry: runs in both build modes.
     TestPdfPageGeometry.cpp
+    # Engine-independent annotation data, validation and appearance builder.
+    TestPdfAnnotation.cpp
     # View-aware reads and document assembly round trips (page editing
     # foundation): PDFium-ON bodies only.
     TestPdfPageEditing.cpp

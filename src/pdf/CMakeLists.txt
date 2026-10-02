@@ -3,6 +3,7 @@ if(RIVET_WITH_PDFIUM)
     # geometry (views, box mapping), which are engine-independent; the
     # PDFium-specific implementation lives in rivet_pdfium.
     add_library(rivet_pdf STATIC
+        PdfAnnotation.cpp
         PdfPageGeometry.cpp
         PdfText.cpp
     )
@@ -13,6 +14,7 @@ if(RIVET_WITH_PDFIUM)
     add_subdirectory(pdfium)
 else()
     add_library(rivet_pdf STATIC
+        PdfAnnotation.cpp
         PdfPageGeometry.cpp
         PdfSystem_null.cpp
         PdfText.cpp
