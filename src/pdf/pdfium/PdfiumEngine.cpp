@@ -127,8 +127,7 @@ core::Result<std::unique_ptr<PdfDocument>> PdfiumEngine::reopenWithCredentialsOf
 
 core::Status PdfiumEngine::assembleDocument(const PdfAssemblyRequest& request, IPdfByteSink& sink,
                                            std::vector<PdfAssembledPageAnnotations>* annotationReport) {
-    (void)annotationReport; // TODO(phase4-A): annotation edits
-    return assembleWithPdfium(*this, request, sink);
+    return assembleWithPdfium(*this, request, sink, annotationReport);
 }
 
 } // namespace rivet::pdf
