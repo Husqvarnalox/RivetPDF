@@ -12,10 +12,12 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <deque>
 #include <memory>
 #include <span>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 // PDFium public headers. Allowed here only: this file lives inside
@@ -149,9 +151,15 @@ private:
     // which is never rendered. Created lazily; created, used and closed only
     // under the PDFium gate (the destructor closes it there), which also
     // serializes access to the mutable members. Reading destroys what it
-    // reads, so each page is read exactly once and the result cached.
+    // reads, so a page is never read twice from the same reader instance:
+    // results are cached (bounded FIFO, kAnnotationCacheCapacity pages) and
+    // a page that was read before but has been evicted is read from a
+    // freshly loaded reader (cheap: PDFium parses lazily).
+    static constexpr std::size_t kAnnotationCacheCapacity = 64;
     mutable FPDF_DOCUMENT annotationReader_ = nullptr;
     mutable std::unordered_map<std::size_t, PdfPageAnnotationsPtr> annotationCache_;
+    mutable std::deque<std::size_t> annotationCacheOrder_;      // insertion order
+    mutable std::unordered_set<std::size_t> annotationReaderReadPages_; // read from the current reader
 };
 
 } // namespace rivet::pdf

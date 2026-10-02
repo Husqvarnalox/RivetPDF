@@ -473,6 +473,13 @@ core::Result<PdfPageAnnotationsPtr> PdfiumDocument::annotations(std::size_t page
         if (const auto cached = annotationCache_.find(pageIndex); cached != annotationCache_.end()) {
             return cached->second;
         }
+        if (annotationReader_ != nullptr && annotationReaderReadPages_.contains(pageIndex)) {
+            // Read before and evicted since: this reader's copy of the page
+            // was altered by the read, start over from the file.
+            FPDF_CloseDocument(annotationReader_);
+            annotationReader_ = nullptr;
+            annotationReaderReadPages_.clear();
+        }
         if (annotationReader_ == nullptr) {
             // The same bytes the live document was opened from (shared file
             // source), decrypted with the same password.
@@ -487,11 +494,17 @@ core::Result<PdfPageAnnotationsPtr> PdfiumDocument::annotations(std::size_t page
             }
         }
         auto read = internal::readPageAnnotations(annotationReader_, pageIndex);
+        annotationReaderReadPages_.insert(pageIndex); // even a failed read may have altered it
         if (!read.has_value()) {
             return std::unexpected(read.error());
         }
         PdfPageAnnotationsPtr result = std::make_shared<const PdfPageAnnotations>(std::move(*read));
+        if (annotationCache_.size() >= kAnnotationCacheCapacity && !annotationCacheOrder_.empty()) {
+            annotationCache_.erase(annotationCacheOrder_.front());
+            annotationCacheOrder_.pop_front();
+        }
         annotationCache_.emplace(pageIndex, result);
+        annotationCacheOrder_.push_back(pageIndex);
         return result;
     });
 }
