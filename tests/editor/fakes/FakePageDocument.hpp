@@ -168,6 +168,8 @@ public:
     mutable std::atomic<int> renders{0};
     mutable std::atomic<int> extractions{0};
     mutable std::atomic<int> linkLoads{0};
+    // Held by a test to block pageLinks() calls (after linkLoads is bumped).
+    mutable std::mutex linkGate;
     mutable std::atomic<int> annotationLoads{0};
 
 protected:
@@ -202,6 +204,7 @@ protected:
     core::Result<std::vector<pdf::PdfPageLink>> pageLinksInView(std::size_t pageIndex,
                                                                 const pdf::PdfPageView&) const override {
         ++linkLoads;
+        { std::lock_guard<std::mutex> gate(linkGate); } // tests hold it to park a link load
         std::lock_guard<std::mutex> lock(mutex_);
         const auto it = links_.find(pageIndex);
         if (it == links_.end()) return std::vector<pdf::PdfPageLink>{};

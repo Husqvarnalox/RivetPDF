@@ -38,11 +38,33 @@ std::uint64_t LinkService::generation() const {
 }
 
 void LinkService::resetForNewBase() {
-    std::lock_guard<std::mutex> lock(mutex_);
-    ++generation_;
-    cache_.clear();
-    lru_.clear();
-    outline_.reset();
+    std::vector<LinksCallback> orphaned;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        ++generation_;
+        cache_.clear();
+        lru_.clear();
+        outline_.reset();
+        // Pending entries belong to the previous base: loads already queued
+        // see the bumped generation and bail out without touching pending_,
+        // so a post-reset request for the same (page, revision) gets its own
+        // entry and load. Waiters of the old entries get an empty result
+        // (exactly-once delivery) instead of links of a replaced document.
+        for (auto& [key, callbacks] : pending_) {
+            orphaned.insert(orphaned.end(), std::make_move_iterator(callbacks.begin()),
+                            std::make_move_iterator(callbacks.end()));
+        }
+        pending_.clear();
+    }
+    if (orphaned.empty()) return;
+    if (dispatcher_ == nullptr) {
+        for (auto& callback : orphaned) callback({});
+        return;
+    }
+    dispatcher_->post([alive = alive_, orphaned = std::move(orphaned)]() mutable {
+        if (!alive->load(std::memory_order_acquire)) return;
+        for (auto& callback : orphaned) callback({});
+    });
 }
 
 void LinkService::put(core::PageId pageId, std::uint64_t contentRevision, std::vector<pdf::PdfPageLink> links,
@@ -112,6 +134,9 @@ void LinkService::scheduleLoad(const PageEntry& entry) {
         std::vector<LinksCallback> callbacks;
         {
             std::lock_guard<std::mutex> lock(mutex_);
+            // Scheduled before a rebase: the entry (and any pending_ slot with
+            // this key) now belongs to the new base's own load.
+            if (generation != generation_) return;
             const auto it = pending_.find({entry.id, entry.contentRevision});
             if (it == pending_.end()) return;
             callbacks = std::move(it->second);
@@ -126,6 +151,9 @@ void LinkService::scheduleLoad(const PageEntry& entry) {
                         .value_or(std::vector<pdf::PdfPageLink>{});
             put(entry.id, entry.contentRevision, links, generation);
         }
+        // A rebase during the load: these links describe a replaced document.
+        // Waiters still get exactly one (empty) delivery.
+        if (generation != this->generation()) links.clear();
 
         if (callbacks.empty()) return;
         if (dispatcher_ != nullptr) {

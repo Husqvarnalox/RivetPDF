@@ -76,9 +76,10 @@ public:
     // The session switched to a new base document (DocumentSession::
     // rebaseOnto): drops every cached link and the outline, whose
     // destinations index the previous documents' pages. Loads already
-    // running finish against the previous documents; their results are
-    // still delivered to waiting callbacks but never cached (generation
-    // check). Main thread.
+    // queued or running are invalidated by a generation counter: they neither
+    // cache nor deliver; callbacks still waiting on them receive an empty
+    // result (dispatcher or inline) so delivery stays exactly-once. Main
+    // thread.
     void resetForNewBase();
 
     // Document outline, loaded ONCE on this service's worker stream (the

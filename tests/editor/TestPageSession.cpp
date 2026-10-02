@@ -349,6 +349,36 @@ RIVET_TEST(linkDestinationsResolveThroughSession) {
     CHECK(f.session->linkService().cachedLinks(f.id(0)).empty());
 }
 
+RIVET_TEST(linkLoadStartedBeforeRebaseDeliversNothingStale) {
+    Fixture f;
+    rivet::pdf::PdfPageLink link;
+    link.kind = rivet::pdf::PdfPageLink::Kind::Internal;
+    link.rects.push_back(Rect{0, 0, 10, 10});
+    f.document->setLinks(0, {link});
+
+    // Park the first load inside pageLinks(), then rebase under it.
+    std::unique_lock<std::mutex> gate(f.document->linkGate);
+    std::promise<std::vector<rivet::pdf::PdfPageLink>> first;
+    auto firstFuture = first.get_future();
+    f.session->linkService().requestPageLinks(f.id(0), [&first](auto links) { first.set_value(std::move(links)); });
+    CHECK(waitFor([&] { return f.document->linkLoads.load() == 1; }));
+    f.session->linkService().resetForNewBase();
+    gate.unlock();
+
+    CHECK(firstFuture.wait_for(std::chrono::seconds(5)) == std::future_status::ready);
+    CHECK(firstFuture.get().empty());
+    // The stale result was never cached...
+    CHECK(f.session->linkService().cachedLinks(f.id(0)).empty());
+
+    // ...and a request after the rebase loads and delivers fresh links.
+    std::promise<std::vector<rivet::pdf::PdfPageLink>> second;
+    auto secondFuture = second.get_future();
+    f.session->linkService().requestPageLinks(f.id(0), [&second](auto links) { second.set_value(std::move(links)); });
+    CHECK(secondFuture.wait_for(std::chrono::seconds(5)) == std::future_status::ready);
+    CHECK_EQ(secondFuture.get().size(), std::size_t{1});
+    CHECK_EQ(f.session->linkService().cachedLinks(f.id(0)).size(), std::size_t{1});
+}
+
 RIVET_TEST(workerJobsUseSnapshotsWhileMainThreadEdits) {
     // TSan target: search walks, text extraction, link loading and renders
     // run on workers while this (main) thread keeps mutating the model.
