@@ -5,6 +5,11 @@ add_library(rivet_app STATIC
     AnnotationInteraction.cpp
     AnnotationLayer.cpp
     AnnotationPainter.cpp
+    ContentBackend.cpp
+    ContentBarController.cpp
+    ContentController.cpp
+    ContentInteraction.cpp
+    ContentLayer.cpp
     CropTool.cpp
     FileController.cpp
     PageEditingController.cpp
