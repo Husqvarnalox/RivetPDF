@@ -92,6 +92,9 @@ public:
     // The style the toolbar shows: the selected annotation's, else the
     // current tool's default.
     editor::AnnotationStyle displayedStyle() const;
+    // The tool whose style controls the toolbar addresses: the selected
+    // annotation's kind, else the current tool (Select when neither applies).
+    AnnotationTool styleTool() const;
     pdf::PdfStampName displayedStampName() const;
     // With a selection these restyle it (one undo step); otherwise they
     // update the current tool's default. The stamp name only ever updates the

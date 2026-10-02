@@ -31,6 +31,7 @@
 }
 - (IBAction)openDocument:(id)sender;
 - (IBAction)pageEdit:(id)sender;
+- (IBAction)annotationCommand:(id)sender;
 @end
 
 @implementation RivetAppBridge
@@ -43,6 +44,12 @@
     if (item == nullptr) return;
     shell->performPageEdit(static_cast<rivet::app::PageEditCommand>(item.tag));
 }
+- (IBAction)annotationCommand:(id)sender {
+    if (shell == nullptr) return;
+    NSMenuItem* item = sender;
+    if (item == nullptr) return;
+    shell->performAnnotation(static_cast<rivet::app::AnnotationCommand>(item.tag));
+}
 - (IBAction)fileCommand:(id)sender {
     if (shell == nullptr) return;
     NSMenuItem* item = sender;
@@ -54,6 +61,9 @@
     if (shell == nullptr) return NO;
     if (item.action == @selector(pageEdit:)) {
         return shell->canPerformPageEdit(static_cast<rivet::app::PageEditCommand>(item.tag)) ? YES : NO;
+    }
+    if (item.action == @selector(annotationCommand:)) {
+        return shell->canPerformAnnotation(static_cast<rivet::app::AnnotationCommand>(item.tag)) ? YES : NO;
     }
     if (item.action == @selector(fileCommand:)) {
         return shell->canPerformFile(static_cast<rivet::app::FileCommand>(item.tag)) ? YES : NO;
@@ -182,6 +192,45 @@ int main(int argc, char** argv) {
             [item setTarget:bridge];
         }
         [pageMenuItem setSubmenu:pageMenu];
+
+        // Annotate > tools (no single-letter shortcuts: they would clash with
+        // typing) and annotation commands; tags are AnnotationCommand values.
+        NSMenuItem* annotateMenuItem = [[NSMenuItem alloc] init];
+        [menuBar addItem:annotateMenuItem];
+        NSMenu* annotateMenu = [[NSMenu alloc] initWithTitle:@"Annotate"];
+        const std::pair<NSString*, rivet::app::AnnotationCommand> toolItems[] = {
+            {@"Select Tool", rivet::app::AnnotationCommand::ToolSelect},
+            {@"Highlight", rivet::app::AnnotationCommand::ToolHighlight},
+            {@"Underline", rivet::app::AnnotationCommand::ToolUnderline},
+            {@"Strike Out", rivet::app::AnnotationCommand::ToolStrikeOut},
+            {@"Note", rivet::app::AnnotationCommand::ToolNote},
+            {@"Ink", rivet::app::AnnotationCommand::ToolInk},
+            {@"Rectangle", rivet::app::AnnotationCommand::ToolRectangle},
+            {@"Ellipse", rivet::app::AnnotationCommand::ToolEllipse},
+            {@"Line", rivet::app::AnnotationCommand::ToolLine},
+            {@"Arrow", rivet::app::AnnotationCommand::ToolArrow},
+            {@"Stamp", rivet::app::AnnotationCommand::ToolStamp},
+        };
+        for (const auto& [title, command] : toolItems) {
+            NSMenuItem* item = [annotateMenu addItemWithTitle:title
+                                                       action:@selector(annotationCommand:)
+                                                keyEquivalent:@""];
+            item.tag = static_cast<NSInteger>(command);
+            [item setTarget:bridge];
+        }
+        [annotateMenu addItem:[NSMenuItem separatorItem]];
+        const std::pair<NSString*, rivet::app::AnnotationCommand> actionItems[] = {
+            {@"Edit Note", rivet::app::AnnotationCommand::EditNote},
+            {@"Delete Annotation", rivet::app::AnnotationCommand::DeleteAnnotation},
+        };
+        for (const auto& [title, command] : actionItems) {
+            NSMenuItem* item = [annotateMenu addItemWithTitle:title
+                                                       action:@selector(annotationCommand:)
+                                                keyEquivalent:@""];
+            item.tag = static_cast<NSInteger>(command);
+            [item setTarget:bridge];
+        }
+        [annotateMenuItem setSubmenu:annotateMenu];
 
         [NSApp setMainMenu:menuBar];
 

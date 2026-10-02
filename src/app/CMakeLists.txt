@@ -1,5 +1,6 @@
 add_library(rivet_app STATIC
     DocumentWorkspace.cpp
+    AnnotationBarController.cpp
     AnnotationController.cpp
     AnnotationInteraction.cpp
     AnnotationLayer.cpp

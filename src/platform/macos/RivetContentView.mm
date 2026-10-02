@@ -39,16 +39,23 @@ rivet::ui::KeyEvent makeKeyEvent(NSEvent* event) {
     case 48: result.key = rivet::ui::Key::Tab; break;
     case 51: result.key = rivet::ui::Key::Backspace; break;
     case 117: result.key = rivet::ui::Key::Delete; break;
-    case 49: result.key = rivet::ui::Key::Space; break;
+    case 49: // Space keeps its dedicated key but also carries the typed text
+        result.key = rivet::ui::Key::Space;
+        result.text = " ";
+        break;
     default: {
         NSString* characters = event.characters;
         if (characters.length == 0) break; // stays Key::Unknown
         const std::string text = characters.UTF8String;
         // '=' is the unshifted '+' on US layouts; both zoom in.
+        // The dedicated keys keep driving the zoom shortcuts; `text` carries
+        // the typed character so text fields and the note editor receive it.
         if (text == "=" || text == "+") {
             result.key = rivet::ui::Key::Plus;
+            result.text = text;
         } else if (text == "-") {
             result.key = rivet::ui::Key::Minus;
+            result.text = text;
         } else {
             result.key = rivet::ui::Key::Character;
             result.text = text;

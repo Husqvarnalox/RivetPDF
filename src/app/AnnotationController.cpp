@@ -148,6 +148,17 @@ editor::AnnotationStyle AnnotationController::displayedStyle() const {
     return styles_[static_cast<std::size_t>(interaction_.tool())].style;
 }
 
+AnnotationTool AnnotationController::styleTool() const {
+    if (const std::optional<Resolved> selected = resolveSelected(); selected.has_value()) {
+        for (std::size_t i = 0; i < kAnnotationToolCount; ++i) {
+            const AnnotationTool candidate = static_cast<AnnotationTool>(i);
+            if (annotationKindForTool(candidate) == selected->view.kind) return candidate;
+        }
+        return AnnotationTool::Select; // a kind no tool creates (e.g. an original link/popup)
+    }
+    return interaction_.tool();
+}
+
 pdf::PdfStampName AnnotationController::displayedStampName() const {
     if (const std::optional<Resolved> selected = resolveSelected();
         selected.has_value() && selected->view.kind == pdf::PdfAnnotationKind::Stamp) {

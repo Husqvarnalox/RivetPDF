@@ -8,6 +8,7 @@
 
 #include "fakes/FakePageDocument.hpp"
 
+#include "app/AnnotationBarController.hpp"
 #include "app/AnnotationController.hpp"
 #include "app/DocumentWorkspace.hpp"
 #include "app/ShellContext.hpp"
@@ -678,4 +679,88 @@ RIVET_TEST(controllerBindTabEndsGesturesAndPaintsNothingWithoutADocument) {
     CHECK(c.interaction().gestureActive());
     c.bindTab(shell.tab());
     CHECK(!c.interaction().gestureActive());
+}
+
+namespace {
+
+void click(ui::Button& button) {
+    const core::Point center{button.frame().size.width / 2.0, button.frame().size.height / 2.0};
+    ui::PointerEvent down{ui::PointerEventType::Down, center, 1, {}, {}, false};
+    ui::PointerEvent up = down;
+    up.type = ui::PointerEventType::Up;
+    (void)button.onMouse(down);
+    (void)button.onMouse(up);
+}
+
+} // namespace
+
+RIVET_TEST(annotationBarShowsToolsAndOnlyTheStyleControlsThatApply) {
+    Shell shell;
+    CHECK(shell.open("bar") != nullptr);
+    app::AnnotationBarController bar(*shell.context, *shell.root, *shell.annotations);
+    bar.layout(core::Rect{0.0, 0.0, 1600.0, app::AnnotationBarController::kHeight});
+    CHECK(!bar.visible());
+    CHECK_EQ(bar.height(), 0.0);
+    bar.setVisible(true);
+    CHECK_EQ(bar.height(), app::AnnotationBarController::kHeight);
+    bar.layout(core::Rect{0.0, 0.0, 1600.0, app::AnnotationBarController::kHeight});
+
+    // Select with nothing selected: tools only.
+    CHECK(bar.controlShown(bar.toolButton(AnnotationTool::Ink)));
+    CHECK(bar.toolButton(AnnotationTool::Select).active());
+
+    click(bar.toolButton(AnnotationTool::Rectangle));
+    CHECK(shell.annotations->tool() == AnnotationTool::Rectangle);
+    CHECK(bar.toolButton(AnnotationTool::Rectangle).active());
+    CHECK(!bar.toolButton(AnnotationTool::Select).active());
+    // The swatch / opacity / width / fill controls are the last children.
+    const auto& children = bar.strip().children();
+    std::size_t shown = 0;
+    for (const auto& child : children) {
+        if (!child->frame().isEmpty()) ++shown;
+    }
+    CHECK_EQ(shown, std::size_t{11 + 6 + 4 + 4 + 1}); // tools, swatches, opacity, widths, fill
+
+    click(bar.toolButton(AnnotationTool::Highlight));
+    shown = 0;
+    for (const auto& child : children) {
+        if (!child->frame().isEmpty()) ++shown;
+    }
+    CHECK_EQ(shown, std::size_t{11 + 6 + 4}); // no width, no fill
+
+    click(bar.toolButton(AnnotationTool::Stamp));
+    shown = 0;
+    for (const auto& child : children) {
+        if (!child->frame().isEmpty()) ++shown;
+    }
+    CHECK_EQ(shown, std::size_t{11 + 6 + 1}); // colors + the stamp name
+
+    // Hiding returns to the Select tool.
+    bar.setVisible(false);
+    CHECK(shell.annotations->tool() == AnnotationTool::Select);
+}
+
+RIVET_TEST(annotationBarSwatchRestylesTheSelectionAndMarksTheCurrentColor) {
+    Shell shell;
+    CHECK(shell.open("bar-style") != nullptr);
+    app::AnnotationBarController bar(*shell.context, *shell.root, *shell.annotations);
+    bar.setVisible(true);
+    bar.layout(core::Rect{0.0, 0.0, 1600.0, app::AnnotationBarController::kHeight});
+    const core::AnnotationId id = createRect(shell);
+    CHECK(id);
+    bar.refresh();
+    // Select tool + a selected rectangle: the style controls address it.
+    const auto& children = bar.strip().children();
+    ui::Button* blueSwatch = nullptr;
+    std::size_t swatchIndex = 0;
+    for (const auto& child : children) {
+        auto* button = static_cast<ui::Button*>(child.get());
+        if (!button->swatch().has_value()) continue;
+        if (swatchIndex++ == 3) blueSwatch = button;
+    }
+    CHECK(blueSwatch != nullptr);
+    CHECK(!blueSwatch->frame().isEmpty());
+    click(*blueSwatch);
+    CHECK(shell.viewOf(id, 0)->style.color == app::kPresetColors[3]);
+    CHECK(blueSwatch->active());
 }

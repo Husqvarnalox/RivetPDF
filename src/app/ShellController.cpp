@@ -106,6 +106,14 @@ void ShellController::buildWidgets() {
     // Page editing over the active tab (selection, thumbnails, crop tool).
     pageEditing_ = std::make_unique<PageEditingController>(*context_, *sidebar_, *statusBar_);
 
+    // Annotation tools (above the viewport and the find bar: the note editor
+    // floats over them) and their strip under the main toolbar.
+    annotations_ = std::make_unique<AnnotationController>(*context_, *root_);
+    annotationBar_ = std::make_unique<AnnotationBarController>(*context_, *root_, *annotations_);
+    annotationBar_->setOnVisibilityChanged([this] {
+        if (annotateButton_ != nullptr) annotateButton_->setActive(annotationBar_->visible());
+    });
+
     // File lifecycle (save/save-as/import/merge/extract, dirty close/quit).
     fileLifecycle_ = std::make_unique<FileController>(
         *engine_, *context_, scheduler_, [this](std::string text) { setStatus(std::move(text)); },
@@ -171,6 +179,14 @@ void ShellController::buildToolbar() {
     fitPage->setFrame(core::Rect{0.0, 0.0, 56.0, 28.0});
     toolbar_->addItem(std::move(fitPage));
 
+    auto annotateButton = std::make_unique<ui::Button>("Annotate");
+    annotateButton_ = annotateButton.get();
+    annotateButton->setOnClick([this] {
+        if (annotationBar_ != nullptr) annotationBar_->toggle();
+    });
+    annotateButton->setFrame(core::Rect{0.0, 0.0, 84.0, 28.0});
+    toolbar_->addItem(std::move(annotateButton));
+
     auto printButton = std::make_unique<ui::Button>("Print");
     printButton->setOnClick([this] { handlePrintRequest(); });
     printButton->setFrame(core::Rect{0.0, 0.0, 60.0, 28.0});
@@ -188,23 +204,29 @@ void ShellController::layoutShell() {
         toolbar_->setFrame(kHiddenFrame);
         sidebar_->layout(kHiddenFrame);
         statusBar_->layout(kHiddenFrame);
+        if (annotationBar_ != nullptr) annotationBar_->layout(kHiddenFrame);
         viewport_->setFrame(core::Rect{0.0, 0.0, width, height});
     } else {
         const double top = kTabStripHeight;
         const double statusHeight = StatusBarController::kHeight;
-        const double middleHeight = std::max(0.0, height - top - kToolbarHeight - statusHeight);
+        const double barHeight = annotationBar_ != nullptr ? annotationBar_->height() : 0.0;
+        const double middleTop = top + kToolbarHeight + barHeight;
+        const double middleHeight = std::max(0.0, height - middleTop - statusHeight);
         const double sidebarWidth = SidebarController::kWidth;
         tabStrip_->setFrame(core::Rect{0.0, 0.0, width, kTabStripHeight});
         toolbar_->setFrame(core::Rect{0.0, top, width, kToolbarHeight});
-        sidebar_->layout(core::Rect{0.0, top + kToolbarHeight, sidebarWidth, middleHeight});
+        if (annotationBar_ != nullptr) {
+            annotationBar_->layout(core::Rect{0.0, top + kToolbarHeight, width, barHeight});
+        }
+        sidebar_->layout(core::Rect{0.0, middleTop, sidebarWidth, middleHeight});
         statusBar_->layout(core::Rect{0.0, height - statusHeight, width, statusHeight});
-        viewport_->setFrame(core::Rect{sidebarWidth, top + kToolbarHeight,
-                                       std::max(0.0, width - sidebarWidth), middleHeight});
+        viewport_->setFrame(core::Rect{sidebarWidth, middleTop, std::max(0.0, width - sidebarWidth), middleHeight});
     }
     // Everything over the viewport follows its frame.
     overlayLabel_->setFrame(viewport_->frame());
     searchBar_->layout(viewport_->frame());
     passwordPrompt_->layout(viewport_->frame());
+    if (annotations_ != nullptr) annotations_->layout(viewport_->frame());
 }
 
 void ShellController::refreshTabStrip() {
@@ -232,6 +254,7 @@ void ShellController::bindActiveTab() {
         viewport_->clearDocument();
         sidebar_->bindTab(nullptr);
         pageEditing_->bindTab(nullptr);
+        annotations_->bindTab(nullptr);
         if (tab == nullptr) {
             setStatus("No document open");
             setZoomDisplay(viewport_->zoom().zoom());
@@ -256,6 +279,7 @@ void ShellController::bindActiveTab() {
     // Thumbnails, page labels, outline and the restored current page.
     sidebar_->bindTab(tab);
     pageEditing_->bindTab(tab);
+    annotations_->bindTab(tab);
 
     // First bind of a fresh tab: open fit-to-width (Phase 1 behavior). The
     // mode stays active (resizes recompute the zoom) until the user zooms.
@@ -308,6 +332,20 @@ void ShellController::performPageEdit(PageEditCommand command) {
 
 bool ShellController::canPerformPageEdit(PageEditCommand command) const {
     return pageEditing_ != nullptr && pageEditing_->canPerform(command);
+}
+
+void ShellController::performAnnotation(AnnotationCommand command) {
+    if (annotations_ == nullptr) return;
+    // A tool chosen from the menu reveals the strip that shows it.
+    if (static_cast<std::size_t>(command) < kAnnotationToolCount && annotationBar_ != nullptr &&
+        command != AnnotationCommand::ToolSelect && readyActiveTab() != nullptr) {
+        annotationBar_->setVisible(true);
+    }
+    annotations_->perform(command);
+}
+
+bool ShellController::canPerformAnnotation(AnnotationCommand command) const {
+    return annotations_ != nullptr && annotations_->canPerform(command);
 }
 
 void ShellController::performFile(FileCommand command) {
