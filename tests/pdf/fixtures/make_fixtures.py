@@ -109,6 +109,40 @@ timestamps, MediaBox on every page dictionary):
                            100..130 x 570..600 (display 0..30 x 0..30) and
                            "OFFSET" (24 pt) at user (120, 400).
 
+Annotation fixture (read/write/preservation tests; no compression, no
+timestamps; every page MediaBox 0 0 612 792 with an empty content stream, so
+the page is plain white and annotations are the only ink):
+
+  annots.pdf     3 pages.
+                   page 1 (/Rotate 0): /Annots (direct array), in order -
+                     0 Highlight   Rect [100 700 300 720], 1 quad, /C [1 1 0],
+                                   /CA 0.5, /Contents "Highlighted", AP
+                     1 Underline   Rect [100 660 300 680], /C [0 .5 0], NO /AP
+                     2 StrikeOut   Rect [100 620 300 640], /C [1 0 0], AP
+                     3 Text note   Rect [400 700 420 720], /C [1 .8 0], AP,
+                                   /Contents "Привет, мир" (UTF-16BE with
+                                   BOM), /T (Tester), /NM (note-1), /Popup 4
+                     4 Popup       /Parent 3, Rect [430 600 600 700]
+                     5 Ink         2 strokes (3 points each), /C [0 0 1],
+                                   /BS << /W 2 >>, AP stroked at 2
+                     6 Square      Rect [300 500 400 560], /C [0 .5 0],
+                                   /IC [.8 1 .8], /Border [0 0 3], AP
+                     7 Circle      Rect [420 500 520 560], /C [1 0 1],
+                                   /BS << /W 4 >>, AP stroked at 4
+                     8 Line        third-party /Subtype /Line with /L and
+                                   /LE [/None /OpenArrow]: must stay Other
+                     9 Stamp       /Name /Approved, Rect [100 300 250 350],
+                                   /C [0 .6 0], AP
+                    10 FreeText    /DA + AP: unsupported, must stay Other
+                    11 Squiggly    Rect [100 250 300 270], 1 quad, AP:
+                                   unsupported, must stay Other
+                   page 2 (/Rotate 90): /Annots is an INDIRECT array object
+                     (so two imported copies of the page would share it
+                     without per-copy import groups), one Square
+                     Rect [100 100 200 160], /C [1 0 0], /Border [0 0 2].
+                   page 3 (/CropBox [100 100 500 700]): one Square
+                     Rect [150 150 250 250], /C [0 0 1], /Border [0 0 2].
+
 The committed .pdf files ARE the fixtures; tests never run this script. It
 exists only so the bytes can be regenerated and audited.
 """
@@ -463,6 +497,94 @@ def cropbox_pdf() -> bytes:
     ])
 
 
+# ---------------- annotation fixture ----------------
+
+
+def annots_pdf() -> bytes:
+    objects: list[bytes] = [b""] * 9  # 1 catalog, 2 pages, 3-5 pages, 6-8 content, 9 page-2 /Annots
+
+    def add(obj: bytes) -> int:
+        objects.append(obj)
+        return len(objects)
+
+    def stream(content: bytes, bbox: tuple[float, float, float, float]) -> int:
+        dict_ = b"<< /Type /XObject /Subtype /Form /BBox [%s] /Length %d >>" % (
+            b" ".join(b"%g" % v for v in bbox), len(content))
+        return add(dict_ + b"\nstream\n" + content + b"\nendstream")
+
+    def box(rect: tuple[float, float, float, float]) -> bytes:
+        return b"[" + b" ".join(b"%g" % v for v in rect) + b"]"
+
+    def quad(rect: tuple[float, float, float, float]) -> bytes:
+        l, b, r, t = rect  # PDFium/Acrobat order: TL TR BL BR
+        return b"[%g %g %g %g %g %g %g %g]" % (l, t, r, t, l, b, r, b)
+
+    def annot(subtype: bytes, rect, extra: bytes, ap: int | None, flags: int = 4) -> int:
+        entry = b"<< /Type /Annot /Subtype /" + subtype + b" /Rect " + box(rect) + b" /F %d " % flags + extra
+        if ap is not None:
+            entry += b" /AP << /N %d 0 R >>" % ap
+        return add(entry + b" >>")
+
+    annots1: list[int] = []
+
+    r = (100, 700, 300, 720)
+    annots1.append(annot(b"Highlight", r, b"/QuadPoints " + quad(r) + b" /C [1 1 0] /CA 0.5 /Contents (Highlighted)",
+                         stream(b"1 1 0 rg 100 700 200 20 re f", r)))
+    r = (100, 660, 300, 680)
+    annots1.append(annot(b"Underline", r, b"/QuadPoints " + quad(r) + b" /C [0 0.5 0]", None))
+    r = (100, 620, 300, 640)
+    annots1.append(annot(b"StrikeOut", r, b"/QuadPoints " + quad(r) + b" /C [1 0 0]",
+                         stream(b"1 0 0 RG 1 w 100 630 m 300 630 l S", r)))
+    r = (400, 700, 420, 720)
+    note_ap = stream(b"1 0.8 0 rg 400 700 20 20 re f", r)
+    note_num = len(objects) + 1
+    contents = "\ufeffПривет, мир".encode("utf-16-be").hex().upper().encode()
+    annots1.append(annot(b"Text", r, b"/C [1 0.8 0] /Contents <" + contents + b"> /T (Tester) /NM (note-1) "
+                         b"/Popup %d 0 R" % (note_num + 1), note_ap))
+    annots1.append(add(b"<< /Type /Annot /Subtype /Popup /Parent %d 0 R /Rect [430 600 600 700] /F 0 /Open false >>"
+                       % note_num))
+    r = (99, 499, 221, 561)
+    annots1.append(annot(b"Ink", r, b"/InkList [[100 500 130 540 160 560] [180 560 200 520 220 500]] "
+                         b"/C [0 0 1] /BS << /W 2 >>",
+                         stream(b"0 0 1 RG 2 w 100 500 m 130 540 l 160 560 l S 180 560 m 200 520 l 220 500 l S", r)))
+    r = (300, 500, 400, 560)
+    annots1.append(annot(b"Square", r, b"/C [0 0.5 0] /IC [0.8 1 0.8] /Border [0 0 3]",
+                         stream(b"0.8 1 0.8 rg 0 0.5 0 RG 3 w 301.5 501.5 97 57 re B", r)))
+    r = (420, 500, 520, 560)
+    annots1.append(annot(b"Circle", r, b"/C [1 0 1] /BS << /W 4 >>",
+                         stream(b"1 0 1 RG 4 w 422 502 m 518 502 l 518 558 l 422 558 l h S", r)))
+    r = (95, 395, 305, 455)
+    annots1.append(annot(b"Line", r, b"/L [100 400 300 450] /LE [/None /OpenArrow] /C [0 0 0]",
+                         stream(b"0 0 0 RG 1 w 100 400 m 300 450 l S", r)))
+    r = (100, 300, 250, 350)
+    annots1.append(annot(b"Stamp", r, b"/Name /Approved /C [0 0.6 0] /NM (stamp-1)",
+                         stream(b"0 0.6 0 RG 3 w 102 302 146 46 re S", r)))
+    r = (300, 300, 450, 350)
+    annots1.append(annot(b"FreeText", r, b"/DA (0 0 0 rg /Helv 12 Tf) /Contents (Free)",
+                         stream(b"0.9 0.9 0.9 rg 300 300 150 50 re f", r)))
+    r = (100, 250, 300, 270)
+    annots1.append(annot(b"Squiggly", r, b"/QuadPoints " + quad(r) + b" /C [0 0 0]",
+                         stream(b"0 0 0 RG 1 w 100 252 m 300 252 l S", r)))
+
+    r = (100, 100, 200, 160)
+    sq2 = annot(b"Square", r, b"/C [1 0 0] /Border [0 0 2]", stream(b"1 0 0 RG 2 w 101 101 98 58 re S", r))
+    objects[8] = b"[%d 0 R]" % sq2
+    r = (150, 150, 250, 250)
+    sq3 = annot(b"Square", r, b"/C [0 0 1] /Border [0 0 2]", stream(b"0 0 1 RG 2 w 151 151 98 98 re S", r))
+
+    empty = b"<< /Length 0 >>\nstream\n\nendstream"
+    objects[0] = b"<< /Type /Catalog /Pages 2 0 R >>"
+    objects[1] = b"<< /Type /Pages /Kids [3 0 R 4 0 R 5 0 R] /Count 3 >>"
+    objects[2] = (b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << >> /Contents 6 0 R /Rotate 0 "
+                  b"/Annots [" + b" ".join(b"%d 0 R" % n for n in annots1) + b"] >>")
+    objects[3] = (b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << >> /Contents 7 0 R "
+                  b"/Rotate 90 /Annots 9 0 R >>")
+    objects[4] = (b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /CropBox [100 100 500 700] "
+                  b"/Resources << >> /Contents 8 0 R /Annots [%d 0 R] >>" % sq3)
+    objects[5] = objects[6] = objects[7] = empty
+    return build_pdf(objects)
+
+
 def main() -> None:
     # corners.pdf / rot90 / rot180 / rot270: one content stream, varying /Rotate
     # on the (inherited) Pages node.
@@ -619,6 +741,9 @@ def main() -> None:
     write("markers-5.pdf", markers_pdf())
     write("import-3.pdf", import_pdf())
     write("cropbox.pdf", cropbox_pdf())
+
+    # Annotation fixture (see the module docstring).
+    write("annots.pdf", annots_pdf())
 
 
 if __name__ == "__main__":

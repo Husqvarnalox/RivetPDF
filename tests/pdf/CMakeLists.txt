@@ -21,6 +21,9 @@ add_executable(rivet_pdf_tests
     # View-aware reads and document assembly round trips (page editing
     # foundation): PDFium-ON bodies only.
     TestPdfPageEditing.cpp
+    # PDFium annotation adapter (read, render-hide, assembly edits, round
+    # trips against annots.pdf): PDFium-ON bodies only.
+    TestPdfiumAnnotations.cpp
     # Compiled directly into the test binary rather than linked from
     # rivet_pdfium, so the gate tests run with RIVET_WITH_PDFIUM=OFF too. The
     # gate translation unit has no FPDF_* dependency. In PDFium-ON builds the
