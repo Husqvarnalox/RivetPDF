@@ -23,6 +23,8 @@ add_executable(rivet_editor_tests
     TestAnnotationService.cpp
     TestAnnotationCommands.cpp
     TestAnnotationRoundTrip.cpp
+    # Page operations x annotations through the real saver (PDFium-ON bodies).
+    TestAnnotationPageOpsPdfium.cpp
 )
 
 add_test(NAME editor COMMAND rivet_editor_tests)
