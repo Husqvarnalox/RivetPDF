@@ -35,7 +35,8 @@ public:
         const PdfDocument& credentialsOf, const std::filesystem::path& path) override;
 
     // See PdfEngine::assembleDocument and PdfiumAssembly.cpp.
-    core::Status assembleDocument(const PdfAssemblyRequest& request, IPdfByteSink& sink) override;
+    core::Status assembleDocument(const PdfAssemblyRequest& request, IPdfByteSink& sink,
+                                  std::vector<PdfAssembledPageAnnotations>* annotationReport = nullptr) override;
 };
 
 // Maps FPDF_GetLastError() after a failed document load onto a Rivet error.

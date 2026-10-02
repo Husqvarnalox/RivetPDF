@@ -148,7 +148,9 @@ public:
         return openDocument(path, reopenPassword);
     }
 
-    core::Status assembleDocument(const pdf::PdfAssemblyRequest& request, pdf::IPdfByteSink& sink) override {
+    core::Status assembleDocument(const pdf::PdfAssemblyRequest& request, pdf::IPdfByteSink& sink,
+                                  std::vector<pdf::PdfAssembledPageAnnotations>* annotationReport = nullptr) override {
+        (void)annotationReport;
         const int ordinal = ++assemblies;
         waitAtGate();
         if (failAssembly.load() || (failAssemblyFrom.load() > 0 && ordinal >= failAssemblyFrom.load())) {

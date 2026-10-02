@@ -11,7 +11,9 @@
 #include "pdf/PdfTypes.hpp"
 
 #include <cstddef>
+#include <cstdint>
 #include <memory>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -90,6 +92,7 @@ public:
 protected:
     core::Result<core::Bitmap> renderPageInView(std::size_t pageIndex,
                                                 const PdfPageView& view,
+                                                std::span<const std::uint32_t> hiddenAnnotations,
                                                 const core::Rect& pageRectPoints,
                                                 double devicePixelsPerPoint) override;
 

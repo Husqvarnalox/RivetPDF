@@ -88,7 +88,7 @@ core::Result<pdf::PdfAssemblyRequest> PageModelSnapshot::toAssemblyRequest(
     pdf::PdfAssemblyRequest request;
     request.base = base_.get();
     const auto append = [&request](const PageEntry& entry) {
-        request.pages.push_back(pdf::PdfAssemblyPage{entry.source.get(), entry.sourcePageIndex, entry.view});
+        request.pages.push_back(pdf::PdfAssemblyPage{entry.source.get(), entry.sourcePageIndex, entry.view, nullptr});
     };
     if (mode == AssemblyMode::Save) {
         request.mode = pdf::PdfAssemblyRequest::Mode::PreserveBase;

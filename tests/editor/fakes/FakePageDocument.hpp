@@ -25,6 +25,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <span>
 #include <string>
 #include <utility>
 #include <vector>
@@ -71,7 +72,7 @@ public:
 
     core::Result<core::Bitmap> renderPage(std::size_t pageIndex, const core::Rect& rect,
                                           double scale) override {
-        return renderPageInView(pageIndex, pdf::PdfPageView{core::PageRotation::None, mediaBox(pageIndex)},
+        return renderPageInView(pageIndex, pdf::PdfPageView{core::PageRotation::None, mediaBox(pageIndex)}, {},
                                 rect, scale);
     }
 
@@ -117,7 +118,9 @@ public:
 
 protected:
     core::Result<core::Bitmap> renderPageInView(std::size_t pageIndex, const pdf::PdfPageView& view,
+                                                std::span<const std::uint32_t> hiddenAnnotations,
                                                 const core::Rect& rect, double scale) override {
+        (void)hiddenAnnotations;
         if (pageIndex >= info_.pageCount) {
             return std::unexpected(core::makeError(core::ErrorCode::InvalidArgument, "page", "test"));
         }

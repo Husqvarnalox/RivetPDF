@@ -125,7 +125,9 @@ core::Result<std::unique_ptr<PdfDocument>> PdfiumEngine::reopenWithCredentialsOf
     return openDocument(path, pdfium->openPassword());
 }
 
-core::Status PdfiumEngine::assembleDocument(const PdfAssemblyRequest& request, IPdfByteSink& sink) {
+core::Status PdfiumEngine::assembleDocument(const PdfAssemblyRequest& request, IPdfByteSink& sink,
+                                           std::vector<PdfAssembledPageAnnotations>* annotationReport) {
+    (void)annotationReport; // TODO(phase4-A): annotation edits
     return assembleWithPdfium(*this, request, sink);
 }
 

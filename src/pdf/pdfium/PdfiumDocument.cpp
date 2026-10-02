@@ -257,8 +257,10 @@ core::Result<core::Bitmap> PdfiumDocument::renderPage(std::size_t pageIndex,
 
 core::Result<core::Bitmap> PdfiumDocument::renderPageInView(std::size_t pageIndex,
                                                             const PdfPageView& view,
+                                                            std::span<const std::uint32_t> hiddenAnnotations,
                                                             const core::Rect& pageRectPoints,
                                                             double devicePixelsPerPoint) {
+    (void)hiddenAnnotations; // TODO(phase4-A): hide these annotations while rendering
     return renderPageImpl(pageIndex, &view, pageRectPoints, devicePixelsPerPoint);
 }
 

@@ -3,6 +3,7 @@
 #include "core/Error.hpp"
 #include "core/Bitmap.hpp"
 #include "core/geometry/Rect.hpp"
+#include "pdf/PdfAnnotation.hpp"
 #include "pdf/PdfAssembly.hpp"
 #include "pdf/PdfPageGeometry.hpp"
 #include "pdf/PdfText.hpp"
@@ -13,6 +14,7 @@
 #include <filesystem>
 #include <memory>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -63,7 +65,20 @@ public:
                                           const PdfPageView& view,
                                           const core::Rect& pageRectPoints,
                                           double devicePixelsPerPoint) {
-        return renderPageInView(pageIndex, view, pageRectPoints, devicePixelsPerPoint);
+        return renderPageInView(pageIndex, view, {}, pageRectPoints, devicePixelsPerPoint);
+    }
+
+    // Same, but the annotations at the given /Annots indices of the page are
+    // NOT drawn (Rivet draws its edited versions in an overlay instead;
+    // deleted ones must disappear). Indices out of range are ignored. The
+    // document's persistent state is not changed by this (backends may
+    // toggle engine-internal flags for the duration of the call only).
+    core::Result<core::Bitmap> renderPage(std::size_t pageIndex,
+                                          const PdfPageView& view,
+                                          std::span<const std::uint32_t> hiddenAnnotations,
+                                          const core::Rect& pageRectPoints,
+                                          double devicePixelsPerPoint) {
+        return renderPageInView(pageIndex, view, hiddenAnnotations, pageRectPoints, devicePixelsPerPoint);
     }
 
     core::Result<std::shared_ptr<const PdfTextPage>> textPage(std::size_t pageIndex,
@@ -94,6 +109,15 @@ public:
                                                "this backend has no page label support", "pdf"));
     }
 
+    // All annotations of a page in /Annots order, read from the document AS
+    // STORED IN ITS FILE (independent of anything rendering did to the live
+    // document). Geometry in the page's user space. Default: NotAvailable.
+    virtual core::Result<PdfPageAnnotationsPtr> annotations(std::size_t pageIndex) const {
+        (void)pageIndex;
+        return std::unexpected(core::makeError(core::ErrorCode::NotAvailable,
+                                               "this backend has no annotation support", "pdf"));
+    }
+
     // All links of a page. Default: NotAvailable.
     virtual core::Result<std::vector<PdfPageLink>> pageLinks(std::size_t pageIndex) const {
         (void)pageIndex;
@@ -117,9 +141,11 @@ protected:
     // backends override all three.
     virtual core::Result<core::Bitmap> renderPageInView(std::size_t pageIndex,
                                                         const PdfPageView& view,
+                                                        std::span<const std::uint32_t> hiddenAnnotations,
                                                         const core::Rect& pageRectPoints,
                                                         double devicePixelsPerPoint) {
         (void)view;
+        (void)hiddenAnnotations;
         return renderPage(pageIndex, pageRectPoints, devicePixelsPerPoint);
     }
 
@@ -176,9 +202,16 @@ public:
     // The sink must not call back into the engine or any document (backends
     // may hold internal locks while writing). Default: NotAvailable (null
     // engine, test fakes).
-    virtual core::Status assembleDocument(const PdfAssemblyRequest& request, IPdfByteSink& sink) {
+    //
+    // `annotationReport` (optional) receives, per output page in request
+    // order, where the page's PdfAssemblyPage::annotationEdits creations
+    // landed (empty entries for pages without edits). Only meaningful on
+    // success.
+    virtual core::Status assembleDocument(const PdfAssemblyRequest& request, IPdfByteSink& sink,
+                                          std::vector<PdfAssembledPageAnnotations>* annotationReport = nullptr) {
         (void)request;
         (void)sink;
+        (void)annotationReport;
         return std::unexpected(core::makeError(core::ErrorCode::NotAvailable,
                                                "this backend cannot write documents", "pdf"));
     }

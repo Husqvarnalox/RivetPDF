@@ -34,10 +34,14 @@ private:
 struct DocumentIdTag;
 struct PageIdTag;
 struct ObjectIdTag;
+struct AnnotationIdTag;
 
 using DocumentId = StrongId<DocumentIdTag>;
 using PageId = StrongId<PageIdTag>;
 using ObjectId = StrongId<ObjectIdTag>;
+// Session-scoped identity of an annotation (see ADR-0011): minted by the
+// page model, never reused, independent of /Annots positions.
+using AnnotationId = StrongId<AnnotationIdTag>;
 
 // Sequential ID source. Thread-safe usage is the caller's responsibility;
 // each generator instance should be owned by the layer that mints the IDs
