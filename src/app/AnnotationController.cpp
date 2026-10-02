@@ -87,9 +87,11 @@ AnnotationController::AnnotationController(ShellContext& context, ui::Widget& pa
 
     notePanel_->setFrame(kHiddenFrame);
     context_.viewport.setAnnotationLayer(&layer_);
+    pendingEditsToken_ = context_.pendingEdits.add([this] { return commitPendingEdits(); });
 }
 
 AnnotationController::~AnnotationController() {
+    context_.pendingEdits.remove(pendingEditsToken_);
     context_.viewport.setAnnotationLayer(nullptr);
     // The workspace (and every session) outlives the controllers: drop the
     // observers so no callback fires into a dead controller.
@@ -550,6 +552,22 @@ void AnnotationController::placeNotePanel() {
     const double y = std::clamp(anchor.minY(), viewportFrame_.minY(),
                                 std::max(viewportFrame_.minY(), viewportFrame_.maxY() - kNotePanelHeight));
     notePanel_->setFrame(core::Rect{x, y, kNotePanelWidth, kNotePanelHeight});
+}
+
+bool AnnotationController::commitPendingEdits() {
+    if (!editing_.has_value()) return true;
+    // Text that differs from the original cannot be committed while a save
+    // holds the editing lock: keep the editor (and its text) open instead of
+    // closing it, which would drop the text.
+    if (noteArea_->text() != editing_->original) {
+        const DocumentTab* tab = context_.workspace.tabById(editing_->tab);
+        if (tab != nullptr && lockedForEditing(*tab)) {
+            context_.setStatus(kLockedMessage);
+            return false;
+        }
+    }
+    closeNoteEditor();
+    return true;
 }
 
 void AnnotationController::closeNoteEditor() {

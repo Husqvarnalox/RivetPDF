@@ -162,6 +162,10 @@ public:
     bool isSavingAnything() const { return activeSave_.has_value(); }
 
 private:
+    // Commits edits still held by other controllers (an open note editor)
+    // so the document being saved, exported or closed contains them.
+    void commitPendingEdits();
+
     // One in-flight or queued save (main thread state; workers only see the
     // captured job).
     struct SaveRequest {

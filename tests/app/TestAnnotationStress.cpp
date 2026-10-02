@@ -1165,3 +1165,60 @@ RIVET_TEST(pageEditingControllerDestructionUninstallsItsCropTool) {
     shell.editing.reset();
     CHECK(shell.viewport->activeTool() == nullptr);
 }
+
+// --- Uncommitted note text ---------------------------------------------------------
+
+RIVET_TEST(saveCommitsAnOpenNoteEditorsTextWithoutClosingItFirst) {
+    FileShell shell;
+    DocumentTab* tab = shell.open("notesave.pdf", true, 3);
+    CHECK(tab != nullptr);
+    Intent note = intent(IntentKind::CreateNote, 1);
+    note.rect = core::Rect{50.0, 50.0, 20.0, 20.0};
+    shell.annotations->applyIntent(note);
+    const core::AnnotationId id = *shell.annotations->selectedId();
+    shell.annotations->noteArea().setText("typed, then Cmd+S");
+    CHECK(shell.annotations->noteEditorOpen());
+    const std::size_t depth = shell.depth();
+
+    shell.files->save(*tab); // no closeNoteEditor(): the save commits it
+    CHECK(!shell.annotations->noteEditorOpen());
+    CHECK_EQ(shell.depth(), depth + 1);
+    const auto view = shell.viewOf(id, 1);
+    CHECK(view.has_value());
+    if (view.has_value()) CHECK_EQ(view->contents, std::string("typed, then Cmd+S"));
+    CHECK(shell.dispatcher.waitUntil([&] { return !shell.files->isSavingAnything(); }));
+}
+
+RIVET_TEST(pendingNoteTextKeepsTheEditorOpenWhileASaveHoldsTheLock) {
+    FileShell shell;
+    DocumentTab* tab = shell.open("notelock.pdf", true, 3);
+    CHECK(tab != nullptr);
+    Intent note = intent(IntentKind::CreateNote, 0);
+    note.rect = core::Rect{50.0, 50.0, 20.0, 20.0};
+    shell.annotations->applyIntent(note);
+    const core::AnnotationId id = *shell.annotations->selectedId();
+    shell.annotations->noteArea().setText("held back");
+    const std::size_t depth = shell.depth();
+
+    tab->session()->setEditingLocked(true, "saving");
+    CHECK(!shell.context->pendingEdits.commitAll());
+    CHECK(shell.annotations->noteEditorOpen());
+    CHECK_EQ(shell.annotations->noteArea().text(), std::string("held back"));
+    CHECK_EQ(shell.depth(), depth);
+
+    // Once the lock is gone the same text commits.
+    tab->session()->setEditingLocked(false, "");
+    CHECK(shell.context->pendingEdits.commitAll());
+    CHECK(!shell.annotations->noteEditorOpen());
+    CHECK_EQ(shell.depth(), depth + 1);
+    const auto view = shell.viewOf(id, 0);
+    CHECK(view.has_value());
+    if (view.has_value()) CHECK_EQ(view->contents, std::string("held back"));
+}
+
+RIVET_TEST(destroyedAnnotationControllerUnregistersItsPendingEditsHook) {
+    FileShell shell;
+    CHECK(shell.open("nohook.pdf", true, 3) != nullptr);
+    shell.annotations.reset();
+    CHECK(shell.context->pendingEdits.commitAll()); // no dangling hook
+}

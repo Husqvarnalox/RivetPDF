@@ -35,6 +35,8 @@ FileController::~FileController() {
     scope_.closeAndWait();
 }
 
+void FileController::commitPendingEdits() { context_.pendingEdits.commitAll(); }
+
 FileController::WorkerToken FileController::enterWorkerScope() {
     std::optional<core::AsyncScope::Token> token = scope_.enter();
     if (!token.has_value()) return nullptr;
@@ -94,11 +96,13 @@ bool FileController::isSaving(TabId tab) const {
 
 void FileController::save(DocumentTab& tab) {
     if (tab.session() == nullptr || tab.state() != DocumentTab::State::Ready) return;
+    commitPendingEdits();
     requestSave(tab, tab.session()->path(), false, true);
 }
 
 void FileController::saveAs(DocumentTab& tab) {
     if (tab.session() == nullptr || tab.state() != DocumentTab::State::Ready) return;
+    commitPendingEdits();
     if (context_.services.saveDialog == nullptr) {
         setStatus_(kUnavailable);
         return;
@@ -132,6 +136,7 @@ void FileController::saveAs(DocumentTab& tab) {
 void FileController::requestSave(DocumentTab& tab, std::filesystem::path destination,
                                  bool closeTabWhenDone, bool interactive) {
     if (tab.session() == nullptr) return;
+    commitPendingEdits();
     if (activeSave_.has_value()) {
         if (interactive) {
             setStatus_("A save is already in progress");
@@ -286,6 +291,7 @@ void FileController::saveSettled(TabId tab, bool saved) {
 
 void FileController::extract(DocumentTab& tab, std::span<const core::PageId> pages) {
     if (tab.session() == nullptr || tab.state() != DocumentTab::State::Ready) return;
+    commitPendingEdits();
     if (context_.services.saveDialog == nullptr) {
         setStatus_(kUnavailable);
         return;
@@ -364,6 +370,7 @@ void FileController::split(DocumentTab& tab) {
 
 void FileController::splitByRanges(DocumentTab& tab, std::string_view rangeText) {
     if (tab.session() == nullptr || tab.state() != DocumentTab::State::Ready) return;
+    commitPendingEdits();
     const auto fail = [&](const std::string& message) {
         setStatus_(message);
         if (context_.services.alerts != nullptr) context_.services.alerts->showError("Split PDF", message);
@@ -594,7 +601,10 @@ void FileController::discardAndClose(TabId id) {
 }
 
 bool FileController::confirmCloseTab(DocumentTab& tab) {
-    if (tab.session() == nullptr || !tab.session()->isDirty()) return true;
+    if (tab.session() == nullptr) return true;
+    // An open note editor makes the document dirty only once committed.
+    commitPendingEdits();
+    if (!tab.session()->isDirty()) return true;
 
     // A prompt that cannot be asked (no alert service) must never discard
     // data silently: treat it as Cancel.
@@ -632,6 +642,7 @@ bool FileController::confirmCloseTab(DocumentTab& tab) {
 }
 
 bool FileController::confirmCloseWindow() {
+    commitPendingEdits();
     const std::vector<TabId> dirty = dirtyTabs();
     if (dirty.empty()) return true;
     if (context_.services.alerts == nullptr) return false;
@@ -665,6 +676,7 @@ bool FileController::confirmCloseWindow() {
 }
 
 void FileController::handleQuitRequest(platform::IAppLifecycle::QuitReply reply) {
+    commitPendingEdits();
     const std::vector<TabId> dirty = dirtyTabs();
     if (dirty.empty()) {
         reply(true);

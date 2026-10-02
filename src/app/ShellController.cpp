@@ -526,6 +526,9 @@ void ShellController::handlePrintRequest() {
         setStatus("Nothing to print — open a document first");
         return;
     }
+    // The printout reads the document as a whole: commit an open note
+    // editor's text first.
+    if (context_ != nullptr) context_->pendingEdits.commitAll();
     printCoordinator_.print(*tab->session(), tab->title());
 }
 

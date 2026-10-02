@@ -1162,3 +1162,92 @@ RIVET_TEST(closeTabSaveThatCannotBePreparedKeepsTabOpen) {
     CHECK_EQ(shell.workspace.tabCount(), 1u);
     CHECK(tab->session()->isDirty());
 }
+
+// --- Pending edits ----------------------------------------------------------------
+
+namespace {
+
+// Stands in for a controller holding an uncommitted edit (an open note
+// editor): the first commit turns it into a real, dirtying edit.
+void addPendingRotation(Shell& shell, rivet::app::TabId id, int* calls) {
+    shell.context->pendingEdits.add([&shell, id, calls, done = false]() mutable {
+        ++*calls;
+        if (done) return true;
+        done = true;
+        if (DocumentTab* tab = shell.workspace.tabById(id); tab != nullptr) shell.rotateFirst(*tab);
+        return true;
+    });
+}
+
+} // namespace
+
+RIVET_TEST(saveCommitsPendingEditsFirst) {
+    Shell shell;
+    DocumentTab* tab = shell.open("pending-save.pdf");
+    CHECK(tab != nullptr);
+    const auto original = rivet::test::fakeFileMarkers(shell.dir("pending-save.pdf"));
+    int calls = 0;
+    addPendingRotation(shell, tab->id(), &calls);
+    CHECK(!tab->session()->isDirty());
+
+    shell.files->save(*tab);
+    CHECK(calls >= 1);
+    CHECK(shell.dispatcher.waitUntil([&] { return shell.hasStatus("Saved"); }));
+    CHECK(!tab->session()->isDirty());
+    // The pending edit is in the written file.
+    CHECK(rivet::test::fakeFileMarkers(shell.dir("pending-save.pdf")) != original);
+}
+
+RIVET_TEST(closeTabQuitAndWindowCloseSeePendingEditsAsDirty) {
+    Shell shell;
+    DocumentTab* tab = shell.open("pending-close.pdf");
+    CHECK(tab != nullptr);
+    int calls = 0;
+    addPendingRotation(shell, tab->id(), &calls);
+
+    // Close tab: a clean document would close silently; the pending edit
+    // makes it dirty, so the save prompt appears (and Cancel keeps the tab).
+    CHECK(!shell.files->confirmCloseTab(*tab));
+    CHECK_EQ(shell.alerts.savePrompts.size(), 1u);
+    CHECK(tab->session()->isDirty());
+    CHECK_EQ(shell.workspace.tabCount(), 1u);
+
+    // Window close asks as well, for a fresh pending edit on a clean tab.
+    DocumentTab* other = shell.open("pending-window.pdf");
+    CHECK(other != nullptr);
+    int otherCalls = 0;
+    addPendingRotation(shell, other->id(), &otherCalls);
+    shell.alerts.reviewAnswers.push_back(rivet::platform::ReviewChangesChoice::Cancel);
+    CHECK(!shell.files->confirmCloseWindow());
+    CHECK(otherCalls >= 1);
+    CHECK(other->session()->isDirty());
+
+    // ... and so does quit.
+    DocumentTab* third = shell.open("pending-quit.pdf");
+    CHECK(third != nullptr);
+    int thirdCalls = 0;
+    addPendingRotation(shell, third->id(), &thirdCalls);
+    shell.alerts.reviewAnswers.push_back(rivet::platform::ReviewChangesChoice::Cancel);
+    bool replied = false;
+    bool proceed = true;
+    shell.files->handleQuitRequest([&](bool decision) {
+        replied = true;
+        proceed = decision;
+    });
+    CHECK(replied);
+    CHECK(!proceed);
+    CHECK(thirdCalls >= 1);
+    CHECK(third->session()->isDirty());
+}
+
+RIVET_TEST(exportsCommitPendingEditsFirst) {
+    Shell shell;
+    DocumentTab* tab = shell.open("pending-export.pdf");
+    CHECK(tab != nullptr);
+    int calls = 0;
+    addPendingRotation(shell, tab->id(), &calls);
+    const std::vector<rivet::core::PageId> pages{tab->session()->pageId(0)};
+    shell.files->extract(*tab, pages); // the fake panel cancels; the hook still ran first
+    CHECK(calls >= 1);
+    CHECK(tab->session()->isDirty());
+}

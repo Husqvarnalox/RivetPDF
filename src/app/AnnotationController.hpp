@@ -119,6 +119,10 @@ public:
     bool noteEditorOpen() const { return editing_.has_value(); }
     // Commits (one editContents command when the text changed) and closes.
     void closeNoteEditor();
+    // Commits an open note editor's text as an undoable edit before the
+    // document is saved, exported, printed or closed. False (editor left
+    // open, text intact) when a running save holds the editing lock.
+    bool commitPendingEdits();
     ui::TextArea& noteArea() { return *noteArea_; }
     ui::Button& noteDoneButton() { return *noteDone_; }
 
@@ -180,6 +184,7 @@ private:
     ui::Button* noteDone_ = nullptr;
     core::Rect viewportFrame_;
     std::optional<Editing> editing_;
+    std::size_t pendingEditsToken_ = 0;
     // Tabs whose session carries our originals-loaded observer.
     std::vector<TabId> observedTabs_;
 };
