@@ -325,3 +325,163 @@ RIVET_TEST(sidebarSelectsRowOnMouseDown) {
     sidebar.setItems({"Only"});
     CHECK(!sidebar.selectedIndex().has_value());
 }
+
+// ---- pointer capture --------------------------------------------------------
+
+namespace {
+
+PointerEvent pointerEvent(PointerEventType type, Point position, int button) {
+    PointerEvent event;
+    event.type = type;
+    event.position = position;
+    event.button = button;
+    return event;
+}
+
+// Records the types of the pointer events it receives, with their positions.
+class PointerLog final : public Widget {
+public:
+    bool consumeDown = true;
+    std::vector<PointerEventType> types;
+    std::vector<Point> positions;
+
+    bool onMouse(const PointerEvent& event) override {
+        types.push_back(event.type);
+        positions.push_back(event.position);
+        return event.type == PointerEventType::Down ? consumeDown : true;
+    }
+    int count(PointerEventType type) const {
+        int n = 0;
+        for (const PointerEventType t : types) n += t == type ? 1 : 0;
+        return n;
+    }
+};
+
+} // namespace
+
+RIVET_TEST(pointerCaptureDeliversMoveAndUpOutsideTheCapturedWidget) {
+    Container root;
+    root.setFrame(Rect{0.0, 0.0, 400.0, 400.0});
+    auto widget = std::make_unique<PointerLog>();
+    widget->setFrame(Rect{100.0, 100.0, 50.0, 50.0});
+    PointerLog* probe = widget.get();
+    root.addChild(std::move(widget));
+
+    CHECK(root.onMouse(pointerEvent(PointerEventType::Down, Point{110.0, 110.0}, 1)));
+    // Outside the widget's frame, still delivered (in the widget's local space).
+    CHECK(root.onMouse(pointerEvent(PointerEventType::Move, Point{300.0, 350.0}, 1)));
+    CHECK(root.onMouse(pointerEvent(PointerEventType::Up, Point{320.0, 360.0}, 1)));
+    CHECK_EQ(probe->types.size(), std::size_t{3});
+    CHECK(probe->types[1] == PointerEventType::Move);
+    CHECK(probe->types[2] == PointerEventType::Up);
+    CHECK(Point::nearlyEqual(probe->positions[1], Point{200.0, 250.0}, 1e-9));
+    CHECK(Point::nearlyEqual(probe->positions[2], Point{220.0, 260.0}, 1e-9));
+
+    // The Up released the capture: later outside events are not delivered.
+    CHECK(!root.onMouse(pointerEvent(PointerEventType::Move, Point{300.0, 350.0}, 1)));
+    CHECK(!root.onMouse(pointerEvent(PointerEventType::Up, Point{300.0, 350.0}, 1)));
+    CHECK_EQ(probe->types.size(), std::size_t{3});
+}
+
+RIVET_TEST(pointerCaptureIgnoresADownThatNobodyConsumed) {
+    Container root;
+    root.setFrame(Rect{0.0, 0.0, 400.0, 400.0});
+    auto widget = std::make_unique<PointerLog>();
+    widget->setFrame(Rect{100.0, 100.0, 50.0, 50.0});
+    widget->consumeDown = false;
+    PointerLog* probe = widget.get();
+    root.addChild(std::move(widget));
+
+    CHECK(!root.onMouse(pointerEvent(PointerEventType::Down, Point{110.0, 110.0}, 1)));
+    CHECK(!root.onMouse(pointerEvent(PointerEventType::Move, Point{300.0, 350.0}, 1)));
+    CHECK(!root.onMouse(pointerEvent(PointerEventType::Up, Point{300.0, 350.0}, 1)));
+    CHECK_EQ(probe->types.size(), std::size_t{1});
+}
+
+RIVET_TEST(pointerCaptureComposesThroughNestedContainers) {
+    Container root;
+    root.setFrame(Rect{0.0, 0.0, 400.0, 400.0});
+    auto panel = std::make_unique<Container>();
+    panel->setFrame(Rect{50.0, 50.0, 200.0, 200.0});
+    auto widget = std::make_unique<PointerLog>();
+    widget->setFrame(Rect{10.0, 10.0, 20.0, 20.0});
+    PointerLog* probe = widget.get();
+    panel->addChild(std::move(widget));
+    root.addChild(std::move(panel));
+
+    CHECK(root.onMouse(pointerEvent(PointerEventType::Down, Point{65.0, 65.0}, 1)));
+    // Outside the leaf but inside the panel, and then outside both.
+    CHECK(root.onMouse(pointerEvent(PointerEventType::Move, Point{200.0, 200.0}, 1)));
+    CHECK(root.onMouse(pointerEvent(PointerEventType::Move, Point{390.0, 390.0}, 1)));
+    CHECK(root.onMouse(pointerEvent(PointerEventType::Up, Point{395.0, 395.0}, 1)));
+    CHECK_EQ(probe->count(PointerEventType::Move), 2);
+    CHECK_EQ(probe->count(PointerEventType::Up), 1);
+    CHECK(Point::nearlyEqual(probe->positions[2], Point{330.0, 330.0}, 1e-9));
+}
+
+RIVET_TEST(pointerCaptureEndsWhenTheCapturedWidgetIsRemoved) {
+    Container root;
+    root.setFrame(Rect{0.0, 0.0, 400.0, 400.0});
+    auto widget = std::make_unique<RecordingWidget>();
+    widget->setFrame(Rect{100.0, 100.0, 50.0, 50.0});
+    bool destroyed = false;
+    widget->destroyedFlag = &destroyed;
+    RecordingWidget* probe = widget.get();
+    root.addChild(std::move(widget));
+
+    CHECK(root.onMouse(pointerEvent(PointerEventType::Down, Point{110.0, 110.0}, 1)));
+    CHECK(root.removeChild(probe));
+    CHECK(destroyed);
+    // No dangling capture: the events are simply unhandled.
+    CHECK(!root.onMouse(pointerEvent(PointerEventType::Move, Point{300.0, 300.0}, 1)));
+    CHECK(!root.onMouse(pointerEvent(PointerEventType::Up, Point{300.0, 300.0}, 1)));
+}
+
+RIVET_TEST(pointerCaptureSurvivesAWidgetRemovingItselfOnDown) {
+    class SelfRemoving final : public Widget {
+    public:
+        Widget* host = nullptr;
+        bool onMouse(const PointerEvent&) override {
+            host->removeChild(this); // destroys this widget mid-handler
+            return true;
+        }
+    };
+    Container root;
+    root.setFrame(Rect{0.0, 0.0, 400.0, 400.0});
+    auto widget = std::make_unique<SelfRemoving>();
+    widget->setFrame(Rect{100.0, 100.0, 50.0, 50.0});
+    widget->host = &root;
+    root.addChild(std::move(widget));
+
+    CHECK(root.onMouse(pointerEvent(PointerEventType::Down, Point{110.0, 110.0}, 1)));
+    CHECK(!root.onMouse(pointerEvent(PointerEventType::Move, Point{300.0, 300.0}, 1)));
+    CHECK(!root.onMouse(pointerEvent(PointerEventType::Up, Point{300.0, 300.0}, 1)));
+}
+
+RIVET_TEST(pointerCaptureReleasesOnAMoveWithoutAHeldButtonAndOnTheNextDown) {
+    Container root;
+    root.setFrame(Rect{0.0, 0.0, 400.0, 400.0});
+    auto first = std::make_unique<PointerLog>();
+    first->setFrame(Rect{0.0, 0.0, 50.0, 50.0});
+    PointerLog* firstPtr = first.get();
+    auto second = std::make_unique<PointerLog>();
+    second->setFrame(Rect{200.0, 200.0, 50.0, 50.0});
+    PointerLog* secondPtr = second.get();
+    root.addChild(std::move(first));
+    root.addChild(std::move(second));
+
+    // The Up was lost (released outside the window): a button-less Move
+    // ends the capture and routes normally.
+    CHECK(root.onMouse(pointerEvent(PointerEventType::Down, Point{10.0, 10.0}, 1)));
+    CHECK(root.onMouse(pointerEvent(PointerEventType::Move, Point{210.0, 210.0}, 0)));
+    CHECK_EQ(firstPtr->count(PointerEventType::Move), 0);
+    CHECK_EQ(secondPtr->count(PointerEventType::Move), 1);
+
+    // A new Down while a capture is stale goes to the widget under it.
+    CHECK(root.onMouse(pointerEvent(PointerEventType::Down, Point{10.0, 10.0}, 1)));
+    CHECK(root.onMouse(pointerEvent(PointerEventType::Down, Point{210.0, 210.0}, 1)));
+    CHECK_EQ(secondPtr->count(PointerEventType::Down), 1);
+    CHECK(root.onMouse(pointerEvent(PointerEventType::Up, Point{0.0, 399.0}, 1)));
+    CHECK_EQ(secondPtr->count(PointerEventType::Up), 1);
+    CHECK_EQ(firstPtr->count(PointerEventType::Up), 0);
+}

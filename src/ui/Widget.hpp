@@ -69,6 +69,7 @@ public:
         if (child == nullptr) return nullptr;
         for (auto it = children_.begin(); it != children_.end(); ++it) {
             if (it->get() == child) {
+                if (capturedChild_ == child) capturedChild_ = nullptr;
                 std::unique_ptr<Widget> detached = std::move(*it);
                 detached->parent_ = nullptr;
                 detached->setRedrawSink(nullptr);
@@ -113,13 +114,43 @@ public:
     // hit-test and convert). Return true if consumed. Default: forward to
     // children in reverse paint order (topmost first, converting the point
     // into each child's space) until one consumes the event.
+    //
+    // Pointer capture: the child that consumed a Down is "captured" and
+    // receives the following Moves with a button held and the Up even when
+    // the pointer left its frame, so drags (scrollbar thumb, text selection,
+    // press-and-release buttons) behave outside the widget. The capture ends
+    // on Up, on a Move without a held button (the Up was lost elsewhere), on
+    // the next Down, and when the child is detached from this widget. It is
+    // kept per parent, so it composes down the tree through this default.
     virtual bool onMouse(const PointerEvent& event) {
+        if (capturedChild_ != nullptr) {
+            const bool heldMove = event.type == PointerEventType::Move && event.button != 0;
+            if (event.type == PointerEventType::Up || heldMove) {
+                Widget& target = *capturedChild_;
+                if (event.type == PointerEventType::Up) capturedChild_ = nullptr;
+                PointerEvent local = event;
+                local.position = event.position - target.frame_.origin;
+                // The target may detach (and destroy) itself while handling
+                // the event: detachChild() clears the capture, and `target`
+                // is not touched afterwards.
+                const bool handled = target.onMouse(local);
+                if (local.accepted) event.accepted = true;
+                return handled;
+            }
+            if (event.type == PointerEventType::Down || event.type == PointerEventType::Move) {
+                capturedChild_ = nullptr; // stale: the matching Up never arrived
+            }
+        }
         for (auto it = children_.rbegin(); it != children_.rend(); ++it) {
             Widget& child = **it;
             if (!child.frame().contains(event.position)) continue;
             PointerEvent local = event;
             local.position = event.position - child.frame().origin;
-            if (child.onMouse(local)) return true;
+            const Widget* const target = &child;
+            if (child.onMouse(local)) {
+                if (event.type == PointerEventType::Down) captureIfStillChild(target);
+                return true;
+            }
         }
         return false;
     }
@@ -174,7 +205,19 @@ public:
     bool isFocused() const { return focused_; }
 
 private:
+    // Starts capturing the child after a consumed Down, unless the handler
+    // already removed it from this widget.
+    void captureIfStillChild(const Widget* target) {
+        for (const auto& child : children_) {
+            if (child.get() == target) {
+                capturedChild_ = child.get();
+                return;
+            }
+        }
+    }
+
     Widget* parent_ = nullptr;
+    Widget* capturedChild_ = nullptr; // pointer capture (see onMouse)
     std::vector<std::unique_ptr<Widget>> children_;
     core::Rect frame_;
     IRedrawSink* redrawSink_ = nullptr;
