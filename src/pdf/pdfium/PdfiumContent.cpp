@@ -272,8 +272,14 @@ PdfFontInfo describeFont(FPDF_FONT font) {
     const int weight = FPDFFont_GetWeight(font);
     int angle = 0;
     const bool haveAngle = FPDFFont_GetItalicAngle(font, &angle) != 0;
-    info.monospace = (flags & 1) != 0 || contains(bare, "Courier") || contains(bare, "Mono");
-    info.serif = (flags & 2) != 0 || contains(bare, "Times");
+    // PDFium writes no serif flag for fonts it loads from bytes, so the
+    // bundled serif (Tinos) and the common serif names are matched by name.
+    info.monospace = (flags & 1) != 0 || contains(bare, "Courier") || contains(bare, "Mono") ||
+                     contains(bare, "Cousine");
+    info.serif = (flags & 2) != 0 || contains(bare, "Times") || contains(bare, "Tinos") ||
+                 (contains(bare, "Serif") && !contains(bare, "Sans")) || contains(bare, "Georgia") ||
+                 contains(bare, "Garamond") || contains(bare, "Cambria") || contains(bare, "Palatino") ||
+                 contains(bare, "Bookman");
     info.italic = (flags & 64) != 0 || (haveAngle && angle != 0) || contains(bare, "Italic") || contains(bare, "Oblique");
     info.bold = weight >= 600 || (flags & (1 << 18)) != 0 || contains(bare, "Bold") || contains(bare, "Black");
     return info;

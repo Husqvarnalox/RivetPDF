@@ -847,6 +847,41 @@ RIVET_TEST(contentAddTextWrapsAtTheWrapWidth) {
     }
 }
 
+// PDFium writes no serif/fixed-pitch descriptor flags for fonts it loads from
+// bytes: the bundled faces must still classify by family after a round trip
+// (the properties bar and the retype coverage check depend on it).
+RIVET_TEST(contentBundledFontsKeepTheirFamilyAfterARoundTrip) {
+    auto engine = pdfiumEngine();
+    if (!engine) return;
+    auto document = openText(*engine, simplePdf());
+    if (!document) return;
+    Edits edits;
+    edits.text(textBlock(5, "Serif", bundled(PdfBundledFont::SerifRegular), core::Matrix::translation(20.0, 120.0)));
+    edits.text(textBlock(6, "Mono", bundled(PdfBundledFont::MonoBold), core::Matrix::translation(20.0, 100.0)));
+    edits.text(textBlock(7, "Sans", bundled(PdfBundledFont::SansRegular), core::Matrix::translation(20.0, 80.0)));
+    const RoundTrip saved = roundTrip(*engine, *document, edits.ptr());
+    if (!saved.content) return;
+    int seen = 0;
+    for (const PdfContentObject& object : saved.content->objects) {
+        if (object.text == "Serif") {
+            ++seen;
+            CHECK(object.font.serif);
+            CHECK(!object.font.monospace);
+            CHECK(!object.font.bold);
+        } else if (object.text == "Mono") {
+            ++seen;
+            CHECK(object.font.monospace);
+            CHECK(!object.font.serif);
+            CHECK(object.font.bold);
+        } else if (object.text == "Sans") {
+            ++seen;
+            CHECK(!object.font.serif);
+            CHECK(!object.font.monospace);
+        }
+    }
+    CHECK_EQ(seen, 3);
+}
+
 RIVET_TEST(contentAddRotatedTextKeepsTheRotation) {
     auto engine = pdfiumEngine();
     if (!engine) return;
