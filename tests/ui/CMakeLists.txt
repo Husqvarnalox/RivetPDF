@@ -5,6 +5,7 @@ add_executable(rivet_ui_tests
     TestPdfViewport.cpp
     TestScrollBar.cpp
     TestTabStrip.cpp
+    TestTextArea.cpp
     TestTextField.cpp
     TestWidgetTree.cpp
 )
