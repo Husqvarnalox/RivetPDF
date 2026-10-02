@@ -19,9 +19,11 @@ Your documents stay on your computer.
 
 ## Status
 
-> **Early development**
+> **Early development** - Phase 3 (Page Editing) is **CLOSED**.
 
-Rivet is under active development. The macOS build currently provides a PDF viewer (tabs, thumbnails, outline, search, text selection, printing) and page-level editing: multi-select, drag reorder, rotate, delete, duplicate, crop, import/merge, export of selected pages, undo/redo, and background Save / Save As with atomic file replacement and unsaved-changes prompts. Content, annotation and form editing are not implemented yet.
+Rivet is under active development. The macOS build currently provides a PDF viewer (tabs, thumbnails, outline, search, text selection, printing) and page-level editing: multi-select, drag reorder, rotate, delete, duplicate, crop, import/merge, extract of selected pages, split by page ranges into separate files, undo/redo, and background Save / Save As with atomic file replacement and unsaved-changes prompts. Content, annotation and form editing are not implemented yet.
+
+Known limitations of the page-editing release (details in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#phase-3-status-closed-2026-10-02)): extract and split do not carry document-level structure (outline, metadata, forms, labels); undo history does not survive a save; editing is paused while a save runs; reviewing several unsaved tabs on window close saves only one of them per pass; split never overwrites existing files (atomically on macOS, best effort elsewhere).
 
 The project is not ready for daily use yet. Windows and Linux shells are not implemented; only the portable layers build and are tested there.
 
@@ -425,7 +427,7 @@ Supported compilers are expected to include:
 * [x] Bookmarks
 * [x] Printing
 
-### Phase 3 — Page Editing
+### Phase 3 — Page Editing (closed)
 
 * [x] Page reorder
 * [x] Rotate

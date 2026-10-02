@@ -150,8 +150,34 @@ and written sequentially by a single worker task. Decisions:
   The status reports the failing file and "N of M files written".
 - Existing outputs are never overwritten: all output paths are checked
   before any write and the split is aborted naming the first collision.
+  Each job also commits with `overwriteExisting = false` (macOS
+  `renamex_np(RENAME_EXCL)`; best-effort re-check on other platforms), so a
+  file created between the check and the commit is not replaced.
 - Like Extract, it is not tied to the tab (closing the tab is safe; the jobs
   own their snapshots). Controller destruction (quit) cancels cooperatively
-  through `DocumentWriteControl::cancelled` bound to `alive_` and drops the
-  completion; quit does not wait for the worker.
+  through `DocumentWriteControl::cancelled` bound to the controller's
+  `core::AsyncScope`, waits for the worker to return and drops the
+  completion.
 - Ranges must be disjoint; uncovered pages are simply not exported.
+
+## Addendum: Phase 3 closure hardening
+
+Found by the Phase 3 correctness review and fixed before closing the phase:
+
+- **Modals drain the main queue.** On macOS `IMainThreadDispatcher` posts to
+  the main queue, which `NSAlert` / `NSSavePanel` keep draining while they
+  run, so an async completion can close a tab during a prompt. Every flow
+  that shows a modal (close/quit prompts, Save As, Extract, Split, Import)
+  keeps a `TabId` across it and re-resolves the tab afterwards; a tab that
+  vanished or is no longer Ready ends the flow. "Don't Save" therefore
+  closes exactly the tab it was asked about, and the quit review skips tabs
+  that closed or stopped being dirty during the prompts.
+- **Worker lifetime fence.** Worker tasks (save, extract, split, import)
+  hold a `core::AsyncScope` token. `~FileController` clears `alive_`,
+  cancels the scope (writers abort before their commit) and waits for active
+  tokens, so no worker touches controller state after destruction. Quit can
+  therefore wait for at most the current output's write.
+- **Save As retargets the session.** A successful Save As sets the session
+  path to the destination (`DocumentSession::setPath`) even when the rebase
+  could not reload the written file, so a later Save never writes to the old
+  path.

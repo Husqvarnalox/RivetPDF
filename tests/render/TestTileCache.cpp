@@ -135,7 +135,7 @@ RIVET_TEST(tileCacheRejectsOversize) {
 RIVET_TEST(tileCacheRejectsNullAndInvalid) {
     TileCache cache;
     CHECK(!cache.put(makeTileKey(1, 1), 1, nullptr));
-    auto invalid = std::make_shared<const Bitmap>(); // default-constructed: no pixels
+    const std::shared_ptr<const Bitmap> invalid(new Bitmap()); // default-constructed: no pixels
     CHECK(!cache.put(makeTileKey(1, 1), 1, invalid));
     CHECK_EQ(cache.count(), std::size_t{0});
     CHECK_EQ(cache.sizeBytes(), std::size_t{0});

@@ -157,6 +157,13 @@ void PageEditingController::handlePageModelChanged(TabId tabId, const editor::Pa
     const DocumentTab* active = context_.workspace.activeTab();
     if (active == nullptr || tab->id() != active->id()) return;
 
+    // The crop tool holds a page index and a frame (view/mediaBox) captured
+    // at begin: any page-model change (undo/redo, delete, rotate, a move) can
+    // leave them stale, so the tool closes WITHOUT applying. The tool's own
+    // Apply/Reset commands land here too; their callbacks end the tool
+    // anyway (endCrop is idempotent).
+    if (isCropping()) endCrop();
+
     // The active tab's visible state follows the new model. The viewport
     // anchor was recorded at the last current-page update, i.e. BEFORE the
     // edit: resolve it against the new order.
@@ -465,6 +472,7 @@ void PageEditingController::endCrop() {
     // the uninstall must happen regardless.
     cropTool_.end();
     context_.viewport.setActiveTool(nullptr);
+    cropTargets_.clear();
 }
 
 void PageEditingController::prunePageSelections() {

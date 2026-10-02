@@ -263,18 +263,16 @@ void ContentViewHost::requestRedraw() {
         dy = event.deltaY * 10.0;
     }
 
-    // Delta mapping: AppKit's positive deltaY means "scroll up" (the view
-    // moves toward the document top, i.e. the content visually moves DOWN;
-    // e.g. a natural-scrolling two-finger flick up reports deltaY < 0 and
-    // moves the content up). Rivet's scrollDelta convention is
-    // "positive = content moves up", hence the y negation. The x axis is NOT
-    // negated: positive AppKit deltaX already corresponds to content moving
-    // left in Rivet's terms. Horizontal direction could not be exercised
-    // headless; revisit against a physical trackpad if it feels inverted.
+    // Delta mapping: both axes follow the NSScrollView convention, offset -=
+    // delta. AppKit's positive deltaY means "scroll up" (content visually
+    // moves DOWN; a natural-scrolling two-finger flick up reports deltaY < 0
+    // and moves the content up) and positive deltaX means "scroll toward the
+    // left edge". Rivet's scrollDelta is "positive = offset grows (content
+    // moves up/left)", hence both axes are negated. Verified against Preview.
     rivet::ui::PointerEvent pointerEvent;
     pointerEvent.type = rivet::ui::PointerEventType::Scroll;
     pointerEvent.position = [self localPointForEvent:event];
-    pointerEvent.scrollDelta = rivet::core::Point{dx, -dy};
+    pointerEvent.scrollDelta = rivet::core::Point{-dx, -dy};
     pointerEvent.modifiers = makeModifiers(event.modifierFlags);
     rootWidget_->onMouse(pointerEvent);
 }

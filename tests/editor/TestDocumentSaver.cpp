@@ -341,6 +341,92 @@ RIVET_TEST(saverEditingLockBlocksCommandsAndHistory) {
     CHECK(session->redo());
 }
 
+RIVET_TEST(saverCancelledMidWriteCommitsNothingAndLeavesNoTemp) {
+    TempDir dir;
+    FakeWritableEngine engine;
+    core::TaskScheduler scheduler(1);
+    const fs::path path = dir / "doc.pdf";
+    writeFile(path, "ORIGINAL");
+    auto session = openSession(engine, scheduler, path);
+    if (!session) return;
+    const fs::path fresh = dir / "fresh.pdf";
+    auto replace = editor::makeSaveJob(*session, path);
+    auto create = editor::makeSaveJob(*session, fresh);
+    CHECK(replace.has_value());
+    CHECK(create.has_value());
+    if (!replace || !create) return;
+
+    // Not cancelled at the start (the temp file exists by now), cancelled
+    // from the first poll inside the write on: abort before the rename.
+    for (editor::DocumentWriteJob* job : {&*replace, &*create}) {
+        editor::DocumentWriteControl control;
+        control.cancelled = [polls = 0]() mutable { return ++polls >= 2; };
+        const auto result = editor::runDocumentWrite(engine, *job, control);
+        CHECK(!result.written.has_value());
+        CHECK(result.written.error().code == core::ErrorCode::Cancelled);
+        CHECK(!result.rebase.has_value());
+    }
+    CHECK_EQ(readFile(path), std::string("ORIGINAL")); // replace target untouched
+    CHECK(!fs::exists(fresh));                         // no partial new file
+    CHECK_EQ(entryCount(dir.path()), 1u);              // no stray temp file
+}
+
+RIVET_TEST(saverOverwriteExistingFalseRefusesToReplace) {
+    TempDir dir;
+    FakeWritableEngine engine;
+    core::TaskScheduler scheduler(1);
+    const fs::path path = dir / "doc.pdf";
+    auto session = openSession(engine, scheduler, path);
+    if (!session) return;
+    const fs::path existing = dir / "existing.pdf";
+    writeFile(existing, "KEEP ME");
+    auto job = editor::makeSaveJob(*session, existing);
+    CHECK(job.has_value());
+    if (!job) return;
+    CHECK(job->overwriteExisting); // Save / Save As / Extract replace by default
+
+    job->overwriteExisting = false;
+    const auto refused = editor::runDocumentWrite(engine, *job);
+    CHECK(!refused.written.has_value());
+    CHECK(refused.written.error().code == core::ErrorCode::AlreadyExists);
+    CHECK_EQ(readFile(existing), std::string("KEEP ME"));
+    CHECK_EQ(entryCount(dir.path()), 1u);
+
+    // A destination that does not exist is created as usual.
+    auto fresh = editor::makeExtractJob(*session, std::vector{session->pageId(0)}, dir / "fresh.pdf");
+    CHECK(fresh.has_value());
+    if (!fresh) return;
+    fresh->overwriteExisting = false;
+    CHECK(editor::runDocumentWrite(engine, *fresh).written.has_value());
+    CHECK(fs::exists(dir / "fresh.pdf"));
+
+    // The flag is the atomic guard (the pre-write existence check can race):
+    // a file that appeared after the job was captured is never replaced.
+    auto raced = editor::makeExtractJob(*session, std::vector{session->pageId(1)}, dir / "late.pdf");
+    CHECK(raced.has_value());
+    if (!raced) return;
+    raced->overwriteExisting = false;
+    writeFile(dir / "late.pdf", "WINNER");
+    CHECK(!editor::runDocumentWrite(engine, *raced).written.has_value());
+    CHECK_EQ(readFile(dir / "late.pdf"), std::string("WINNER"));
+}
+
+RIVET_TEST(saverSetPathRetargetsTheSessionOnly) {
+    FakeWritableEngine engine;
+    core::TaskScheduler scheduler(1);
+    auto session = openSession(engine, scheduler, "doc.pdf");
+    if (!session) return;
+    run(*session, std::make_unique<editor::RotatePagesCommand>(session->pageModel(),
+                                                               std::vector{session->pageId(0)}, 90));
+    const std::uint64_t state = session->documentRevision();
+    session->setPath("elsewhere.pdf");
+    CHECK(session->path() == fs::path("elsewhere.pdf"));
+    CHECK_EQ(session->pageCount(), 5u);
+    CHECK(session->isDirty()); // the model and the history are untouched
+    CHECK(session->commands().canUndo());
+    CHECK_EQ(session->documentRevision(), state);
+}
+
 // ---------------------------------------------------------------------------
 // PDFium round trips
 // ---------------------------------------------------------------------------

@@ -115,3 +115,26 @@ RIVET_TEST(outlinePanelRevealScrollsToRow) {
     panel.revealRow(40);
     CHECK_NEAR(panel.scrollOffset(), 40.0 * OutlinePanel::kRowHeight, 1e-9);
 }
+
+// Regression: the press point is list-local; the scroll offset must be
+// applied exactly once when resolving the row.
+RIVET_TEST(outlinePanelClickAfterScrollHitsVisibleRow) {
+    OutlinePanel panel;
+    panel.setFrame(Rect{0.0, 0.0, 200.0, 240.0});
+    std::vector<OutlineRow> rows;
+    for (int i = 0; i < 100; ++i) rows.push_back(rowOf("row", 0, false));
+    panel.setRows(std::move(rows));
+    PointerEvent scroll;
+    scroll.type = PointerEventType::Scroll;
+    scroll.scrollDelta = Point{0.0, 40.0 * OutlinePanel::kRowHeight};
+    panel.onMouse(scroll);
+    CHECK_NEAR(panel.scrollOffset(), 40.0 * OutlinePanel::kRowHeight, 1e-9);
+
+    std::optional<std::size_t> activated;
+    panel.setOnRowActivated([&activated](std::size_t index) { activated = index; });
+
+    // The third visible row (local y inside [2, 3) * kRowHeight) is row 42.
+    CHECK_EQ(panel.onMouse(downAt(60.0, 2.5 * OutlinePanel::kRowHeight)), true);
+    CHECK_EQ(activated.has_value(), true);
+    if (activated) CHECK_EQ(*activated, std::size_t{42});
+}

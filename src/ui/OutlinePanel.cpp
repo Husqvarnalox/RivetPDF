@@ -141,8 +141,10 @@ bool OutlinePanel::onMouse(const PointerEvent& event) {
         return true;
     }
     if (event.type == PointerEventType::Down) {
+        // rowIndexAt takes a list-local point (it applies the scroll offset);
+        // the marker rect is in content space.
         const core::Point contentPoint{event.position.x, event.position.y + scrollOffset_};
-        const std::optional<std::size_t> index = rowIndexAt(contentPoint);
+        const std::optional<std::size_t> index = rowIndexAt(event.position);
         if (!index.has_value()) return false;
         event.accepted = true;
 

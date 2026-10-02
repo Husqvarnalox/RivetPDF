@@ -4,19 +4,25 @@
 //   rivet_perf_page_editing model <pdf>         model ops on an existing doc
 //   rivet_perf_page_editing import <pdf> <src>  import all pages of src
 //   rivet_perf_page_editing save <pdf>          save path + peak RSS
+//   rivet_perf_page_editing extract <pdf>       extract 1 / 10 / 100 pages
+//   rivet_perf_page_editing split <pdf> <per>   split into ranges of <per>
+//                                               pages (FileController path)
 #include "core/Error.hpp"
 #include "core/async/TaskScheduler.hpp"
 #include "editor/DocumentSaver.hpp"
 #include "editor/DocumentSession.hpp"
 #include "editor/PageCommands.hpp"
 #include "editor/PageModel.hpp"
+#include "editor/PageRangeParser.hpp"
 #include "pdf/PdfEngine.hpp"
 #include "pdf/PdfSystem.hpp"
 
 #include <sys/resource.h>
 
+#include <algorithm>
 #include <chrono>
 #include <cstdio>
+#include <cstdint>
 #include <filesystem>
 #include <memory>
 #include <string>
@@ -33,6 +39,11 @@ static double rssMb() {
     rusage u{};
     getrusage(RUSAGE_SELF, &u);
     return static_cast<double>(u.ru_maxrss) / (1024.0 * 1024.0); // bytes on macOS
+}
+static std::uintmax_t fileSize(const std::filesystem::path& p) {
+    std::error_code ec;
+    const auto size = std::filesystem::file_size(p, ec);
+    return ec ? 0 : size;
 }
 static void row(const char* op, std::size_t n, std::size_t k, const char* phase, double t) {
     std::printf("%-10s N=%-5zu k=%-5zu %-5s %9.3f ms\n", op, n, k, phase, t);
@@ -117,6 +128,71 @@ int main(int argc, char** argv) {
                         static_cast<unsigned long long>(r.bytesWritten), r.rebase.has_value());
         }
         std::filesystem::remove(dest);
+    } else if (mode == "extract") {
+        // Same path as File > Extract: main-thread job capture, worker write.
+        const auto dest = std::filesystem::path(argv[2]).replace_extension(".extract.pdf");
+        for (std::size_t k : {std::size_t{1}, std::size_t{10}, std::size_t{100}}) {
+            if (k > n) continue;
+            std::vector<core::PageId> ids;
+            for (std::size_t i = 0; i < k; ++i) ids.push_back(s.pageId((i * 3) % n));
+            t = Clock::now();
+            auto job = ed::makeExtractJob(s, ids, dest);
+            const double capture = ms(t);
+            if (!job.has_value()) { std::puts("extract job failed"); return 1; }
+            t = Clock::now();
+            auto r = ed::runDocumentWrite(*engine, *job);
+            const double write = ms(t);
+            row("extract", n, k, "job", capture);
+            row("extract", n, k, "write", write);
+            std::printf("  ok=%d bytes=%llu rss=%.1f MB\n", r.written.has_value(),
+                        static_cast<unsigned long long>(fileSize(dest)), rssMb());
+            std::filesystem::remove(dest);
+        }
+    } else if (mode == "split") {
+        // Mirrors FileController::splitByRanges: parse, capture every job on
+        // the main thread, then write them sequentially (one worker task).
+        const std::size_t per = argc > 3 ? std::stoul(argv[3]) : 10;
+        if (per == 0) return 2;
+        std::string text;
+        for (std::size_t first = 1; first <= n; first += per) {
+            if (!text.empty()) text += ",";
+            const std::size_t last = std::min(n, first + per - 1);
+            text += first == last ? std::to_string(first) : std::to_string(first) + "-" + std::to_string(last);
+        }
+        const auto outDir = std::filesystem::path(argv[2]).parent_path() / "split-probe";
+        std::filesystem::remove_all(outDir);
+        std::filesystem::create_directories(outDir);
+        const auto total = Clock::now();
+        t = Clock::now();
+        auto ranges = ed::parsePageRanges(text, n);
+        if (!ranges.has_value()) { std::puts("parse failed"); return 1; }
+        const auto outputs = ed::splitOutputPaths(outDir / "report.pdf", *ranges);
+        std::vector<ed::DocumentWriteJob> jobs;
+        for (std::size_t i = 0; i < ranges->size(); ++i) {
+            std::vector<core::PageId> pages;
+            for (std::size_t p = (*ranges)[i].first; p <= (*ranges)[i].last; ++p) pages.push_back(s.pageId(p - 1));
+            auto job = ed::makeExtractJob(s, pages, outputs[i]);
+            if (!job.has_value()) { std::puts("split job failed"); return 1; }
+            jobs.push_back(std::move(*job));
+        }
+        row("split", n, jobs.size(), "jobs", ms(t));
+        t = Clock::now();
+        std::size_t written = 0;
+        for (auto& job : jobs) written += ed::runDocumentWrite(*engine, job).written.has_value() ? 1 : 0;
+        jobs.clear();
+        row("split", n, outputs.size(), "write", ms(t));
+        row("split", n, outputs.size(), "total", ms(total));
+        std::uintmax_t bytes = 0, minB = UINTMAX_MAX, maxB = 0;
+        for (const auto& o : outputs) {
+            const auto b = fileSize(o);
+            bytes += b;
+            minB = std::min(minB, b);
+            maxB = std::max(maxB, b);
+        }
+        std::printf("  outputs=%zu/%zu bytes total=%llu min=%llu max=%llu\n", written, outputs.size(),
+                    static_cast<unsigned long long>(bytes), static_cast<unsigned long long>(minB),
+                    static_cast<unsigned long long>(maxB));
+        std::filesystem::remove_all(outDir);
     }
     std::printf("peak rss %.1f MB\n", rssMb());
     return 0;

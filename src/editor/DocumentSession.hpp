@@ -28,6 +28,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace rivet::editor {
@@ -80,6 +81,11 @@ public:
 
     core::DocumentId id() const { return id_; }
     const std::filesystem::path& path() const { return path_; }
+    // Points the session at a new file path (main thread). For the Save As
+    // completion when the written file could not be reloaded, so rebaseOnto()
+    // did not carry the path: the document must still follow its file, or the
+    // next Save would overwrite the previous one. Does not touch the model.
+    void setPath(std::filesystem::path path) { path_ = std::move(path); }
     // Info of the BASE document as opened (info().pageCount is the base's
     // page count, not the model's - use pageCount()).
     const pdf::PdfDocumentInfo& info() const { return info_; }

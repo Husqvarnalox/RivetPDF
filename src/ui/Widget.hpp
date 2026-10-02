@@ -66,6 +66,7 @@ public:
     // ownership to the caller. Returns nullptr when `child` is not a child of
     // this widget. The detached child's parent and redraw sink are cleared.
     std::unique_ptr<Widget> detachChild(const Widget* child) {
+        if (child == nullptr) return nullptr;
         for (auto it = children_.begin(); it != children_.end(); ++it) {
             if (it->get() == child) {
                 std::unique_ptr<Widget> detached = std::move(*it);
