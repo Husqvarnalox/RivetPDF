@@ -18,6 +18,7 @@ add_executable(rivet_app_tests
     # Phase 5 end-to-end content editing over the real engine (PDFium-ON
     # bodies; early return without a backend).
     TestContentIntegration.cpp
+    TestContentIntegrationText.cpp
     # PDFium-ON round trips through the file lifecycle (early return
     # without a backend).
     TestFileRoundTripPdfium.cpp

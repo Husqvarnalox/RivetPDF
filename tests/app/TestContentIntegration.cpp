@@ -12,12 +12,6 @@ using core::Point;
 using core::Rect;
 using pdf::PdfContentObjectType;
 
-namespace {
-
-Point centerOf(const Rect& rect) { return rect.center(); }
-
-} // namespace
-
 // 1. Select + move a text block on a page that also carries a Square and a
 // Link annotation over it.
 RIVET_TEST(integSelectHitsTheTextBlockAndMoveIsOneUndoStep) {

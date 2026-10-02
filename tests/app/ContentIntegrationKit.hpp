@@ -62,6 +62,23 @@
 #include <utility>
 #include <vector>
 
+// Expected-failure marker for a CONFIRMED product bug (src/ is not fixed by
+// the integration tests). While `cond` is false the bug is reported on stderr
+// and the test still passes; once the product is fixed `cond` becomes true and
+// the check FAILS with a message asking to promote it to a plain CHECK and
+// drop the marker, so a stale marker cannot hide a regression.
+#define KNOWN_BUG(id, cond, description)                                                                 \
+    do {                                                                                                 \
+        if (cond) {                                                                                      \
+            rivet::test::reportCheck(false,                                                              \
+                                     "KNOWN BUG " id " appears FIXED (" #cond                           \
+                                     "): promote it to a plain CHECK and remove the marker",             \
+                                     __FILE__, __LINE__);                                                \
+        } else {                                                                                         \
+            std::fprintf(stderr, "[known bug] %s: %s\n", id, description);                               \
+        }                                                                                                \
+    } while (false)
+
 namespace rivet::test::integ {
 
 namespace fs = std::filesystem;
@@ -498,6 +515,28 @@ struct Rig {
         return nullptr;
     }
 
+    // Waits until page `index` is loaded and a block containing `needle`
+    // exists; returns a copy of it.
+    std::optional<editor::TextBlockView> awaitBlock(const std::string& needle, std::size_t index = 0) {
+        std::optional<editor::TextBlockView> found;
+        dispatcher.waitUntil([&] {
+            const auto view = contentNow(index);
+            if (view == nullptr || !view->loaded) return false;
+            const auto* block = blockWith(*view, needle);
+            if (block == nullptr) return false;
+            found = *block;
+            return true;
+        });
+        return found;
+    }
+    // Waits until page `index` is loaded and NO block contains `needle`.
+    bool awaitNoBlock(const std::string& needle, std::size_t index = 0) {
+        return dispatcher.waitUntil([&] {
+            const auto view = contentNow(index);
+            return view != nullptr && view->loaded && blockWith(*view, needle) == nullptr;
+        });
+    }
+
     void selectTool() { content->setTool(ContentTool::SelectObject); }
     void addTextTool() { content->setTool(ContentTool::AddText); }
 
@@ -606,5 +645,33 @@ inline std::shared_ptr<const pdf::PdfPageContent> contentOf(pdf::PdfDocument& do
 }
 
 inline bool contains(const std::string& text, const std::string& part) { return text.find(part) != std::string::npos; }
+
+inline core::Point centerOf(const core::Rect& rect) { return rect.center(); }
+
+// First object of the block `blockId` (the lowest z-index among its members).
+inline std::optional<std::uint32_t> firstMemberIndex(const editor::PageContentView& view, core::ObjectId blockId) {
+    std::optional<std::uint32_t> lowest;
+    for (const auto& object : view.objects) {
+        if (object.block != blockId) continue;
+        if (!lowest.has_value() || object.index < *lowest) lowest = object.index;
+    }
+    return lowest;
+}
+
+// Selects the block containing `needle` (page 0), opens the inline editor,
+// replaces its text and commits. False when any step is refused.
+inline bool retype(Rig& rig, const std::string& needle, const std::string& replacement) {
+    const auto view = rig.contentNow(0);
+    if (view == nullptr) return false;
+    const auto* block = rig.blockWith(*view, needle);
+    if (block == nullptr) return false;
+    rig.click(centerOf(block->bounds));
+    const auto selected = rig.content->selected();
+    if (!selected.has_value() || selected->info.id != block->id) return false;
+    rig.content->editSelectedText();
+    if (!rig.content->editorOpen()) return false;
+    rig.content->editorArea().setText(replacement);
+    return rig.content->commitEditor();
+}
 
 } // namespace rivet::test::integ
