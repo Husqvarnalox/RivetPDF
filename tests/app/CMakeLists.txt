@@ -19,6 +19,7 @@ add_executable(rivet_app_tests
     # bodies; early return without a backend).
     TestContentIntegration.cpp
     TestContentIntegrationText.cpp
+    TestContentIntegrationImage.cpp
     # PDFium-ON round trips through the file lifecycle (early return
     # without a backend).
     TestFileRoundTripPdfium.cpp
