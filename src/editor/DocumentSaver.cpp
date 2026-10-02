@@ -107,7 +107,7 @@ DocumentWriteResult runDocumentWrite(pdf::PdfEngine& engine, const DocumentWrite
     }
 
     core::io::AtomicWriteOptions options;
-    options.overwriteExisting = true; // the save panel confirmed any overwrite
+    options.overwriteExisting = job.overwriteExisting; // default: the save panel confirmed it
     options.faultInjector = control.faultInjector;
     auto writer = core::io::AtomicFileWriter::begin(job.destination, std::move(options));
     if (!writer.has_value()) {

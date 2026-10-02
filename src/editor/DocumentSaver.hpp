@@ -46,6 +46,11 @@ struct DocumentWriteJob {
     // Save: after the write, reopen the file (same credentials as the
     // snapshot's base) and read what DocumentSession::rebaseOnto needs.
     bool prepareRebase = false;
+    // false: the commit refuses to replace an existing destination
+    // (ErrorCode::AlreadyExists; atomic where the OS supports it, see
+    // AtomicFileWriter). Save / Save As / Extract replace (the save panel
+    // already confirmed the overwrite); Split never does.
+    bool overwriteExisting = true;
     // The session state the job captured (for the completion's checks).
     core::DocumentId document;
     std::uint64_t documentRevision = 0;
