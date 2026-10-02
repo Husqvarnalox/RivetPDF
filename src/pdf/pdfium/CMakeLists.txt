@@ -2,11 +2,13 @@ add_library(rivet_pdfium STATIC
     PdfSystem_pdfium.cpp
     PdfiumCallGate.cpp
     PdfiumEngine.cpp
+    PdfiumAnnotationReader.cpp
     PdfiumAssembly.cpp
     PdfiumDocument.cpp
     PdfiumFileSource.cpp
     PdfiumTextPage.cpp
     PdfiumLibrary.cpp
+    PdfiumStrings.cpp
 )
 add_library(rivet::pdfium ALIAS rivet_pdfium)
 target_link_libraries(rivet_pdfium
