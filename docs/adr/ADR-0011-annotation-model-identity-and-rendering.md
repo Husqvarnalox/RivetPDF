@@ -1,6 +1,6 @@
 # ADR-0011: Annotation model, identity and rendering split
 
-Status: Proposed
+Status: Accepted (phase4-annotations branch; pending integration into main)
 
 Date: 2026-10-02
 
@@ -164,3 +164,13 @@ past the limits. Contents are never logged.
 - The overlay draws with CoreGraphics while the raster uses PDFium. Minor
   anti-aliasing differences between an edited annotation on screen and the
   same annotation after reopen are expected.
+- Reading goes through PDFium's public annotation API, not a parser of our
+  own, so some malformed values are coerced the way PDFium coerces them: a
+  non-numeric `/QuadPoints` entry reads as 0, and a short `/InkList` entry
+  becomes a short stroke. Such annotations stay editable with the coerced
+  geometry. Structural problems (non-dictionary entries, dangling
+  references, missing `/Rect`, over-limit data) make an annotation opaque
+  or skip it, without failing the page.
+- Ink reduction (Ramer–Douglas–Peucker) runs in windows of 1024 points. The
+  tolerance guarantee still holds, and adversarial strokes such as zigzags
+  stay near-linear instead of quadratic.

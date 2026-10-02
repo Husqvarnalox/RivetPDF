@@ -1,6 +1,6 @@
 # ADR-0013: Annotation tools, interaction and on-screen rendering
 
-Status: Proposed
+Status: Accepted (phase4-annotations branch; pending integration into main)
 
 Date: 2026-10-02
 
@@ -135,6 +135,22 @@ reports failures in the status bar.
   and menu).
 - Ids that no longer resolve after undo, page deletion or a rebase without
   a report clear the selection lazily.
+
+### Decisions made during implementation
+
+- `ui::PointerEvent` has no click count, so `AnnotationLayer` detects
+  double-clicks itself: 0.4 s and 5 logical points, with an injectable
+  clock for tests.
+- A press that hits an annotation selects it under every tool except Ink,
+  which draws over annotations. Creation gestures start only on empty page
+  areas.
+- The tool strip is a second toolbar row, toggled by "Annotate" in the main
+  toolbar. Choosing a tool from the menu reveals the strip. Hiding the strip
+  returns to `Select`. The strip shows only the style controls that apply to
+  the current tool or selection.
+- The macOS key mapping gives Space, '+' and '-' their typed text as well as
+  their dedicated keys. Zoom shortcuts still work, and text fields and the
+  note editor receive these characters.
 
 ### Markup from text
 

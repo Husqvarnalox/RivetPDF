@@ -1,6 +1,6 @@
 # ADR-0012: Annotation persistence through the page assembly
 
-Status: Proposed
+Status: Accepted (phase4-annotations branch; pending integration into main)
 
 Date: 2026-10-02
 
