@@ -927,7 +927,7 @@ struct SaveFixture {
         auto job = makeSaveJob(*f.session, path);
         CHECK(job.has_value());
         if (!job) return core::ok();
-        const auto result = runDocumentWrite(f.engine, *job);
+        auto result = runDocumentWrite(f.engine, *job);
         CHECK(result.written.has_value());
         CHECK(result.rebase.has_value());
         if (!result.rebase || !result.rebase->has_value()) return core::ok();

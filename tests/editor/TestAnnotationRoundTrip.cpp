@@ -110,7 +110,7 @@ bool saveAndRebase(DocumentSession& session, pdf::PdfEngine& engine, const fs::p
     auto job = makeSaveJob(session, path);
     CHECK(job.has_value());
     if (!job) return false;
-    const auto result = runDocumentWrite(engine, *job);
+    auto result = runDocumentWrite(engine, *job);
     CHECK(result.written.has_value());
     CHECK(result.rebase.has_value() && result.rebase->has_value());
     if (!result.written || !result.rebase || !result.rebase->has_value()) return false;
