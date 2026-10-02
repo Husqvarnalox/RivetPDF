@@ -21,6 +21,7 @@ add_executable(rivet_app_tests
     TestContentIntegrationText.cpp
     TestContentIntegrationImage.cpp
     TestContentIntegrationIdentity.cpp
+    TestContentIntegrationLimits.cpp
     # PDFium-ON round trips through the file lifecycle (early return
     # without a backend).
     TestFileRoundTripPdfium.cpp

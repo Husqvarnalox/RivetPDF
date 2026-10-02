@@ -82,6 +82,7 @@
 namespace rivet::test::integ {
 
 namespace fs = std::filesystem;
+namespace pdffix = rivet::test::pdffix;
 using app::ContentTool;
 using app::DocumentTab;
 
