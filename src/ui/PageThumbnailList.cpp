@@ -288,9 +288,7 @@ bool PageThumbnailList::onMouse(const PointerEvent& event) {
         // The scrollbar child keeps its own press/drag handling.
         if (scrollBar_->frame().contains(event.position) && Widget::onMouse(event)) return true;
         if (onFocusRequested_) onFocusRequested_();
-        // Rows are laid out in content space; convert the local point.
-        const core::Point contentPoint{event.position.x, event.position.y + scrollOffset_};
-        const std::optional<std::size_t> index = rowIndexAt(contentPoint);
+        const std::optional<std::size_t> index = rowIndexAt(event.position);
         if (!index.has_value()) return Widget::onMouse(event);
 
         ClickGesture gesture = ClickGesture::Replace;
