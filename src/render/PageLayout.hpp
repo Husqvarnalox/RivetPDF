@@ -26,9 +26,11 @@ public:
         core::PageId id;
         core::Size sizePoints; // display size (post-rotation)
         core::PageRotation rotation = core::PageRotation::None;
-        // The page model's contentRevision of the page as laid out (see
-        // editor::PageEntry): part of every tile key, so a rotated/cropped
-        // page never matches tiles of its previous view.
+        // The page model's RASTER revision of the page as laid out (see
+        // editor::PageEntry::rasterRevision; the field keeps its historical
+        // name): part of every tile key, so a rotated/cropped page, or one
+        // whose engine-drawn annotations changed, never matches tiles of
+        // its previous raster.
         std::uint64_t contentRevision = 0;
     };
 

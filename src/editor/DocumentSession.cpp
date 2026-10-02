@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 #include "editor/DocumentSession.hpp"
 
+#include <algorithm>
 #include <cassert>
 #include <mutex>
 #include <utility>
@@ -60,7 +61,8 @@ DocumentSession::DocumentSession(core::DocumentId id,
                 executor_,
                 mainDispatcher),
       textService_(*this),
-      linkService_(*this) {
+      linkService_(*this),
+      annotationService_(*this) {
     layout_.setPageGapPoints(16.0);
     layout_.setPageMarginPoints(24.0);
     rebuildLayout();
@@ -193,7 +195,9 @@ core::Status DocumentSession::rebaseOnto(RebaseTarget target, std::optional<std:
         return std::unexpected(core::makeError(core::ErrorCode::InvalidArgument,
                                                "the saved file does not match the document's pages", "editor"));
     }
+    const bool haveReport = target.annotationReport.size() == current->size();
     std::vector<PageEntry> entries;
+    std::vector<AnnotationService::PageRekey> rekeys;
     entries.reserve(current->size());
     for (std::size_t index = 0; index < current->size(); ++index) {
         const PageEntry& old = current->at(index);
@@ -205,10 +209,44 @@ core::Status DocumentSession::rebaseOnto(RebaseTarget target, std::optional<std:
         }
         // Same view as presented (up to float noise): tiles/text keyed by
         // (PageId, contentRevision) stay valid. Otherwise a fresh revision.
-        const std::uint64_t revision =
-            nearlyEqual(old.view, page.nativeView) ? old.contentRevision : model_->mintContentRevision();
-        entries.push_back(PageEntry{old.id, target.document, index, page.nativeView, revision, page.mediaBox,
-                                    page.nativeView});
+        const bool sameView = nearlyEqual(old.view, page.nativeView);
+        std::uint64_t contentRevision = old.contentRevision;
+        std::uint64_t rasterRevision = old.rasterRevision;
+        PageAnnotationStatePtr state;
+        if (old.annotations != nullptr) {
+            const PageAnnotationState& before = *old.annotations;
+            const bool matches =
+                haveReport && target.annotationReport[index].createdIndices.size() == before.overlay.size();
+            AnnotationService::PageRekey rekey;
+            rekey.page = old.id;
+            if (matches) {
+                const std::vector<std::uint32_t>& created = target.annotationReport[index].createdIndices;
+                auto next = std::make_shared<PageAnnotationState>();
+                next->suppressed = created;
+                std::sort(next->suppressed.begin(), next->suppressed.end());
+                next->suppressed.erase(std::unique(next->suppressed.begin(), next->suppressed.end()),
+                                       next->suppressed.end());
+                for (std::size_t k = 0; k < before.overlay.size(); ++k) {
+                    OverlayAnnotation item = before.overlay[k];
+                    item.fileIndex = created[k];
+                    rekey.overlayIds.emplace_back(item.id, created[k]);
+                    next->overlay.push_back(std::move(item));
+                }
+                if (!next->overlay.empty()) state = std::move(next);
+                rekey.keep = true;
+                rekey.removed = before.suppressed;
+            } else {
+                // No usable report: the file's own copies are drawn now.
+                rasterRevision = model_->mintRasterRevision();
+            }
+            rekeys.push_back(std::move(rekey));
+        }
+        if (!sameView) {
+            contentRevision = model_->mintContentRevision();
+            rasterRevision = contentRevision;
+        }
+        entries.push_back(PageEntry{old.id, target.document, index, page.nativeView, contentRevision,
+                                    page.mediaBox, page.nativeView, std::move(state), rasterRevision});
     }
 
     // Base-level state first: the page-model observer (fired by the model
@@ -220,6 +258,9 @@ core::Status DocumentSession::rebaseOnto(RebaseTarget target, std::optional<std:
     if (newPath.has_value()) path_ = std::move(*newPath);
     // Links (and the outline) index the previous documents' pages.
     linkService_.resetForNewBase();
+    // Identity registry follows the file's new /Annots indices; originals of
+    // the previous documents (and loads in flight) are dropped.
+    annotationService_.rebased(rekeys);
     // Recorded commands reference entries of the previous documents; they
     // cannot be re-targeted (see header). Clear before the publish so no
     // stale command can run against the new model.
@@ -259,7 +300,7 @@ void DocumentSession::rebuildLayout() {
     pages.reserve(snapshot.size());
     for (const PageEntry& entry : snapshot.entries()) {
         pages.push_back(render::PageLayout::PageInfo{entry.id, pdf::displaySize(entry.view), entry.view.rotation,
-                                                     entry.contentRevision});
+                                                     entry.rasterRevision});
     }
     layout_.setPages(std::move(pages));
 }
@@ -269,6 +310,7 @@ void DocumentSession::handleModelChanged(const PageModelChange& change) {
     if (!change.removed.empty()) {
         textService_.evictPages(change.removed);
         linkService_.evictPages(change.removed);
+        annotationService_.evictPages(change.removed);
     }
     if (onPageModelChanged_) {
         auto callback = onPageModelChanged_; // may replace itself
@@ -279,7 +321,10 @@ void DocumentSession::handleModelChanged(const PageModelChange& change) {
 std::optional<RenderPageTarget> DocumentSession::resolveRenderTarget(core::PageId pageId) const {
     const PageEntry* entry = pageSnapshot()->find(pageId);
     if (entry == nullptr) return std::nullopt;
-    return RenderPageTarget{entry->source, entry->sourcePageIndex, entry->view, entry->contentRevision};
+    std::vector<std::uint32_t> hidden;
+    if (entry->annotations != nullptr) hidden = entry->annotations->suppressed;
+    return RenderPageTarget{entry->source, entry->sourcePageIndex, entry->view, entry->rasterRevision,
+                            std::move(hidden)};
 }
 
 void DocumentSession::markModified() {

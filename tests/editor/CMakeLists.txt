@@ -17,6 +17,12 @@ add_executable(rivet_editor_tests
     TestPageModelPdfium.cpp
     # Save pipeline: portable (FakeWritableEngine) + PDFium round trips.
     TestDocumentSaver.cpp
+    # Annotations (Phase 4): geometry, service, commands, save/rebase, and
+    # the PDFium-ON round trip (returns early without annotation support).
+    TestAnnotationGeometry.cpp
+    TestAnnotationService.cpp
+    TestAnnotationCommands.cpp
+    TestAnnotationRoundTrip.cpp
 )
 
 add_test(NAME editor COMMAND rivet_editor_tests)

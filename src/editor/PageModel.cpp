@@ -88,7 +88,16 @@ core::Result<pdf::PdfAssemblyRequest> PageModelSnapshot::toAssemblyRequest(
     pdf::PdfAssemblyRequest request;
     request.base = base_.get();
     const auto append = [&request](const PageEntry& entry) {
-        request.pages.push_back(pdf::PdfAssemblyPage{entry.source.get(), entry.sourcePageIndex, entry.view, nullptr});
+        std::shared_ptr<const pdf::PdfPageAnnotationEdits> edits;
+        if (entry.annotations != nullptr) {
+            auto built = std::make_shared<pdf::PdfPageAnnotationEdits>();
+            built->removeIndices = entry.annotations->suppressed;
+            built->create.reserve(entry.annotations->overlay.size());
+            for (const OverlayAnnotation& item : entry.annotations->overlay) built->create.push_back(item.data);
+            edits = std::move(built);
+        }
+        request.pages.push_back(
+            pdf::PdfAssemblyPage{entry.source.get(), entry.sourcePageIndex, entry.view, std::move(edits)});
     };
     if (mode == AssemblyMode::Save) {
         request.mode = pdf::PdfAssemblyRequest::Mode::PreserveBase;
@@ -155,7 +164,7 @@ core::Result<std::unique_ptr<PageModel>> PageModel::create(std::shared_ptr<pdf::
     for (PageSource& page : pages) {
         if (page.document != base) return std::unexpected(invalid("initial pages must come from the base document"));
         entries.push_back(PageEntry{ids.next(), std::move(page.document), page.pageIndex, page.nativeView, 0,
-                                    page.mediaBox, page.nativeView});
+                                    page.mediaBox, page.nativeView, nullptr, 0});
     }
     return std::unique_ptr<PageModel>(new PageModel(std::move(base), std::move(entries), ids));
 }
@@ -340,6 +349,24 @@ core::Status PageModel::updateViews(std::span<const ViewUpdate> updates) {
         PageEntry& entry = entries[snapshot_->indexOf(update.id)];
         entry.view = update.view;
         entry.contentRevision = update.contentRevision;
+        entry.rasterRevision = update.rasterRevision;
+    }
+    publish(std::move(entries), false);
+    return core::ok();
+}
+
+core::Status PageModel::updateAnnotations(std::span<const AnnotationUpdate> updates) {
+    if (updates.empty()) return std::unexpected(invalid("no pages given"));
+    std::vector<core::PageId> ids;
+    ids.reserve(updates.size());
+    for (const AnnotationUpdate& update : updates) ids.push_back(update.id);
+    auto positions = positionsOf(ids);
+    if (!positions.has_value()) return std::unexpected(std::move(positions).error());
+    std::vector<PageEntry> entries = snapshot_->entries();
+    for (const AnnotationUpdate& update : updates) {
+        PageEntry& entry = entries[snapshot_->indexOf(update.id)];
+        entry.annotations = update.state;
+        entry.rasterRevision = update.rasterRevision;
     }
     publish(std::move(entries), false);
     return core::ok();
@@ -380,8 +407,12 @@ void PageModel::publish(std::vector<PageEntry> entries, bool orderChanged) {
         const PageEntry* now = snapshot_->find(entry.id);
         if (now == nullptr) {
             change.removed.push_back(entry.id);
-        } else if (now->view != entry.view || now->contentRevision != entry.contentRevision) {
-            change.contentChanged.push_back(entry.id);
+        } else {
+            if (now->view != entry.view || now->contentRevision != entry.contentRevision) {
+                change.contentChanged.push_back(entry.id);
+            }
+            if (now->annotations != entry.annotations) change.annotationsChanged.push_back(entry.id);
+            if (now->rasterRevision != entry.rasterRevision) change.rasterChanged.push_back(entry.id);
         }
     }
     for (const PageEntry& entry : snapshot_->entries()) {
