@@ -40,12 +40,15 @@ core::Error printError(core::ErrorCode code, std::string message) {
     return core::makeError(code, std::move(message), "app");
 }
 
-bool hasAnnotationEdits(const editor::PageModelSnapshot& snapshot) {
+// Annotation or page-content edits: the pages must come from an assembled
+// document (the edits are not part of the source pages).
+bool hasEdits(const editor::PageModelSnapshot& snapshot) {
     for (const editor::PageEntry& entry : snapshot.entries()) {
         if (entry.annotations != nullptr &&
             (!entry.annotations->suppressed.empty() || !entry.annotations->overlay.empty())) {
             return true;
         }
+        if (entry.contentEdits != nullptr && !entry.contentEdits->empty()) return true;
     }
     return false;
 }
@@ -213,10 +216,10 @@ void PrintCoordinator::print(TabId tabId) {
     // capture the page-model snapshot's entries (source document kept alive
     // by the entry, page presented through its view), so printing reflects
     // the edited page order/rotation/crop and never reads session state.
-    // A snapshot with annotation edits renders from its assembled document.
+    // A snapshot with annotation or content edits renders from its assembled document.
     const editor::PageSnapshotPtr snapshot = session.pageSnapshot();
     std::shared_ptr<Assembly> assembly;
-    if (hasAnnotationEdits(*snapshot)) {
+    if (hasEdits(*snapshot)) {
         std::vector<core::PageId> all;
         all.reserve(snapshot->size());
         for (const editor::PageEntry& entry : snapshot->entries()) all.push_back(entry.id);
