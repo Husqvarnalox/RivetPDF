@@ -15,6 +15,7 @@
 #include "ui/PaintContext.hpp"
 #include "ui/Widget.hpp"
 
+#include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -52,6 +53,34 @@ public:
         Color color;
         double strokeWidth = 0.0;
     };
+    struct DashedStrokeRecord {
+        core::Rect rect;
+        Color color;
+        double strokeWidth = 0.0;
+        double dash = 0.0;
+    };
+    // Path calls keep the segment ops (not just counts) so tests can check
+    // shapes; `stroke` distinguishes fillPath from strokePath.
+    struct PathRecord {
+        Path path;
+        Color color;
+        bool stroke = false;
+        double strokeWidth = 0.0; // stroke only
+        LineCap cap = LineCap::Butt;
+        LineJoin join = LineJoin::Miter;
+        std::size_t countOf(PathSegment::Op op) const {
+            std::size_t count = 0;
+            for (const PathSegment& segment : path.segments) count += segment.op == op ? 1 : 0;
+            return count;
+        }
+    };
+    struct BoxTextRecord {
+        std::string text;
+        core::Rect box;
+        int quarterTurns = 0;
+        Font font;
+        Color color;
+    };
     struct BitmapRecord {
         const core::Bitmap* bitmap = nullptr;
         core::Rect dest;
@@ -69,6 +98,9 @@ public:
     std::vector<RoundedFillRecord> roundedFills;
     std::vector<StrokeRecord> strokes;
     std::vector<LineRecord> lines;
+    std::vector<DashedStrokeRecord> dashedStrokes;
+    std::vector<PathRecord> paths;
+    std::vector<BoxTextRecord> boxTexts;
     std::vector<BitmapRecord> bitmaps;
     std::vector<TextRecord> texts;
     int clipDepth = 0;
@@ -92,6 +124,25 @@ public:
 
     void drawLine(core::Point from, core::Point to, const Color& color, double strokeWidth) override {
         lines.push_back(LineRecord{from, to, color, strokeWidth});
+    }
+
+    void strokeDashedRect(const core::Rect& rect, const Color& color, double strokeWidth,
+                          double dash) override {
+        dashedStrokes.push_back(DashedStrokeRecord{rect, color, strokeWidth, dash});
+    }
+
+    void fillPath(const Path& path, const Color& color) override {
+        paths.push_back(PathRecord{path, color, false, 0.0, LineCap::Butt, LineJoin::Miter});
+    }
+
+    void strokePath(const Path& path, const Color& color, double strokeWidth, LineCap cap,
+                    LineJoin join) override {
+        paths.push_back(PathRecord{path, color, true, strokeWidth, cap, join});
+    }
+
+    void drawTextInBox(std::string_view text, const core::Rect& box, int quarterTurns,
+                       const Font& font, const Color& color) override {
+        boxTexts.push_back(BoxTextRecord{std::string(text), box, quarterTurns, font, color});
     }
 
     void drawBitmap(const core::Bitmap& bitmap, const core::Rect& destLogicalRect) override {
