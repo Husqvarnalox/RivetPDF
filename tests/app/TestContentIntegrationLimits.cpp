@@ -179,13 +179,15 @@ RIVET_TEST(integCmykPageIsReadOnlyAndEveryFactoryRefuses) {
     mustRefuse(editor::resizeContent(session, page, anyObject, Rect{10.0, 10.0, 50.0, 50.0}), "resize");
     mustRefuse(editor::replaceImage(session, page, anyObject, jpeg(pdffix::blueJpeg())), "replace image");
     mustRefuse(editor::bringToFront(session, page, anyObject), "bring to front");
-    mustRefuse(editor::addTextBlock(session, page,
-                                    editor::NewTextBlock{.text = "Added", .fontSize = 12.0, .displayOrigin = Point{20.0, 100.0}}),
-               "add text");
+    editor::NewTextBlock added;
+    added.text = "Added";
+    added.fontSize = 12.0;
+    added.displayOrigin = Point{20.0, 100.0};
+    mustRefuse(editor::addTextBlock(session, page, added), "add text");
     if (!view->blocks.empty()) {
-        mustRefuse(editor::editTextBlock(session, page, view->blocks.front().id,
-                                         editor::TextBlockPatch{.text = std::string("Edited")}),
-                   "edit text");
+        editor::TextBlockPatch edited;
+        edited.text = std::string("Edited");
+        mustRefuse(editor::editTextBlock(session, page, view->blocks.front().id, edited), "edit text");
         mustRefuse(editor::moveContent(session, page, {view->blocks.front().id}, Point{5.0, 5.0}), "move block");
     }
     CHECK_EQ(rig.depth(), std::size_t{0});

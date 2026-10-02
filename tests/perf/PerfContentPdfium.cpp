@@ -129,8 +129,9 @@ void probe(pdf::PdfEngine& engine, core::TaskScheduler& scheduler, const fs::pat
     // Edit one text block.
     if (view != nullptr && !view->blocks.empty()) {
         t = Clock::now();
-        auto edit = ed::editTextBlock(*session, page, view->blocks.front().id,
-                                      ed::TextBlockPatch{.text = std::string("Edited text")});
+        ed::TextBlockPatch patch;
+        patch.text = std::string("Edited text");
+        auto edit = ed::editTextBlock(*session, page, view->blocks.front().id, patch);
         row("editTextBlock (build command)", objects, ms(t), edit.has_value() ? "" : "REFUSED");
         if (edit.has_value()) {
             session->execute(std::move(edit->command));

@@ -98,8 +98,9 @@ RIVET_TEST(integRevisionsChangeOnlyForTheEditedPage) {
 
     auto& session = rig.session();
     CHECK(step(editor::moveContent(session, page0, {helloId}, Point{6.0, 4.0}), "move"));
-    CHECK(step(editor::editTextBlock(session, page0, helloId, editor::TextBlockPatch{.text = std::string("Howdy")}),
-               "edit text"));
+    editor::TextBlockPatch howdy;
+    howdy.text = std::string("Howdy");
+    CHECK(step(editor::editTextBlock(session, page0, helloId, howdy), "edit text"));
     CHECK(step(editor::resizeContent(session, page0, imageId,
                                      Rect{imageBounds.minX(), imageBounds.minY(), imageBounds.size.width * 2.0,
                                           imageBounds.size.height * 2.0}),
