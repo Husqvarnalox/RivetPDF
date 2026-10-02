@@ -757,7 +757,8 @@ RIVET_TEST(annotationDuplicatePageCopiesStateWithFreshIds) {
     CHECK(f.session->execute(std::make_unique<DuplicatePagesCommand>(f.session->pageModel(), std::vector<PageId>{page}))
               .has_value());
     CHECK_EQ(f.session->pageCount(), sizeBefore + 1);
-    const PageEntry& copy = f.session->pageSnapshot()->at(1);
+    const auto snapshotAfterDuplicate = f.session->pageSnapshot(); // keeps `copy` alive across later edits
+    const PageEntry& copy = snapshotAfterDuplicate->at(1);
     CHECK(copy.id != page);
     CHECK(copy.annotations != nullptr);
     CHECK(copy.annotations != f.entry(0).annotations);
