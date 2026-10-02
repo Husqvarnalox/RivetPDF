@@ -2,7 +2,9 @@
 
 Deterministic PDFs used by `TestPdfiumRender.cpp` (geometry) and
 `TestPdfiumText.cpp` (text extraction). Each file is under 2 KB and is
-committed; tests never generate fixtures at build or run time.
+committed; the committed-file tests never generate fixtures at build or run
+time. The Phase 5 content-editing tests are the exception: they build their
+PDFs in memory (see "Generated content-editing fixtures" below).
 
 ## Regenerating
 
@@ -66,6 +68,23 @@ fixtures exist to pin: the display transform (especially the turn-1/turn-3
 directions, cross-checked against the rot90 render fixture), exact Cyrillic
 code-point extraction via glyph-name encodings, line-break handling, and row
 clustering across font sizes.
+
+## Generated content-editing fixtures
+
+`PdfFixtures.hpp` (header-only, `rivet::test::pdffix`) builds the PDFs of the
+Phase 5 content-editing integration tests (`tests/app/TestContentIntegration*.cpp`,
+`tests/perf/PerfContentPdfium.cpp`) at test time from raw PDF syntax. Nothing is
+copied from a third-party document: every byte is written by `buildPdf` (a
+valid xref table over the given object bodies) from strings in the header, so
+there is no licence or provenance question and nothing to commit. The output
+is deterministic (no timestamps, no randomness, no compression).
+
+| generator            | content                                                        |
+| -------------------- | -------------------------------------------------------------- |
+| `richPdf()`          | two 300x400 pages. Page 1: a filled red rectangle, a 4x4 RGB image XObject (ASCIIHex, 16 distinct colours), "Hello World" (Helvetica 18) and a three-line paragraph (Helvetica 12), plus a Square and a URI Link annotation over the text. Page 2: a green rectangle and "Page Two" |
+| `cmykPdf()`          | one 200x200 page whose only content is CMYK-filled (`0 0 0 1 k`) plus a text line: the regeneration fidelity probe refuses it, so every object is read-only (ADR-0017) |
+| `denseContentPdf(n)` | one page with `n` small filled rectangles and `n / 10` short Helvetica 8 text lines on a grid; used by the stress and perf probes |
+| `blueJpeg()`         | the bytes of an 8x8 solid-blue baseline JPEG produced once with macOS `sips` (quality 60, 776 bytes) from a generated blank image; embedded as a byte array so tests need no image tooling and no decoder |
 
 ## Rendering contract
 
