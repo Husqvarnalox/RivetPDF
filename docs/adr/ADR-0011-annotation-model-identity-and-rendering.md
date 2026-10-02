@@ -1,6 +1,6 @@
 # ADR-0011: Annotation model, identity and rendering split
 
-Status: Accepted (phase4-annotations branch; pending integration into main)
+Status: Accepted (integrated with Phase 4; manual QA pass pending)
 
 Date: 2026-10-02
 

@@ -1,6 +1,6 @@
 # ADR-0013: Annotation tools, interaction and on-screen rendering
 
-Status: Accepted (phase4-annotations branch; pending integration into main)
+Status: Accepted (integrated with Phase 4; manual QA pass pending)
 
 Date: 2026-10-02
 
