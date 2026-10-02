@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0
 // Annotation round trip against the real backend: create every kind through
 // the command pipeline, save with the real saver, rebase, reopen the file in
-// a NEW session and compare. Returns early when no PDF backend is built in or
-// the backend has no annotation support (annotations() NotAvailable).
+// a NEW session and compare. Returns early only when no PDF backend is built
+// in. This is the Phase 4A gate: open -> create -> save -> reopen -> verify.
 #include "RivetTest.h"
 
 #include "fakes/AnnotationTestSupport.hpp"
@@ -135,9 +135,7 @@ RIVET_TEST(annotationRoundTripAllKindsThroughSaveRebaseAndReopen) {
     Opened first(*engine, path);
     if (!first.session) return;
     {
-        // Backend without annotation support: nothing to verify here.
         const auto probe = first.session->document().annotations(0);
-        if (!probe.has_value() && probe.error().code == core::ErrorCode::NotAvailable) return;
         CHECK(probe.has_value());
         if (!probe.has_value()) return;
     }
