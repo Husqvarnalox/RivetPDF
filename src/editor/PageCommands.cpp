@@ -193,7 +193,7 @@ bool InsertPagesCommand::execute() {
     for (std::size_t i = 0; i < pages_.size(); ++i) {
         const PageSource& page = pages_[i];
         PageEntry entry{model_.mintPageId(), page.document, page.pageIndex, page.nativeView, 0,
-                        page.mediaBox, page.nativeView, nullptr, 0};
+                        page.mediaBox, page.nativeView, nullptr, 0, nullptr};
         created.push_back(entry.id);
         placed.emplace_back(index_ + i, std::move(entry));
     }

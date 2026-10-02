@@ -127,7 +127,7 @@ public:
                         if (it == pageIndex_.end()) return std::nullopt;
                         // Non-owning alias: the harness owns the document.
                         return RenderPageTarget{std::shared_ptr<PdfDocument>(std::shared_ptr<void>{}, &document_),
-                                                it->second, {}, 0, {}};
+                                                it->second, {}, 0, {}, nullptr};
                     },
                     cache_, scheduler_, executor_, /*mainDispatcher=*/nullptr) {}
 

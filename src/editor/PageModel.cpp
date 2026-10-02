@@ -96,8 +96,8 @@ core::Result<pdf::PdfAssemblyRequest> PageModelSnapshot::toAssemblyRequest(
             for (const OverlayAnnotation& item : entry.annotations->overlay) built->create.push_back(item.data);
             edits = std::move(built);
         }
-        request.pages.push_back(
-            pdf::PdfAssemblyPage{entry.source.get(), entry.sourcePageIndex, entry.view, std::move(edits)});
+        request.pages.push_back(pdf::PdfAssemblyPage{entry.source.get(), entry.sourcePageIndex, entry.view,
+                                                     std::move(edits), entry.contentEdits});
     };
     if (mode == AssemblyMode::Save) {
         request.mode = pdf::PdfAssemblyRequest::Mode::PreserveBase;
@@ -164,7 +164,7 @@ core::Result<std::unique_ptr<PageModel>> PageModel::create(std::shared_ptr<pdf::
     for (PageSource& page : pages) {
         if (page.document != base) return std::unexpected(invalid("initial pages must come from the base document"));
         entries.push_back(PageEntry{ids.next(), std::move(page.document), page.pageIndex, page.nativeView, 0,
-                                    page.mediaBox, page.nativeView, nullptr, 0});
+                                    page.mediaBox, page.nativeView, nullptr, 0, nullptr});
     }
     return std::unique_ptr<PageModel>(new PageModel(std::move(base), std::move(entries), ids));
 }
@@ -366,6 +366,24 @@ core::Status PageModel::updateAnnotations(std::span<const AnnotationUpdate> upda
     for (const AnnotationUpdate& update : updates) {
         PageEntry& entry = entries[snapshot_->indexOf(update.id)];
         entry.annotations = update.state;
+        entry.rasterRevision = update.rasterRevision;
+    }
+    publish(std::move(entries), false);
+    return core::ok();
+}
+
+core::Status PageModel::updateContent(std::span<const ContentUpdate> updates) {
+    if (updates.empty()) return std::unexpected(invalid("no pages given"));
+    std::vector<core::PageId> ids;
+    ids.reserve(updates.size());
+    for (const ContentUpdate& update : updates) ids.push_back(update.id);
+    auto positions = positionsOf(ids);
+    if (!positions.has_value()) return std::unexpected(std::move(positions).error());
+    std::vector<PageEntry> entries = snapshot_->entries();
+    for (const ContentUpdate& update : updates) {
+        PageEntry& entry = entries[snapshot_->indexOf(update.id)];
+        entry.contentEdits = update.edits;
+        entry.contentRevision = update.contentRevision;
         entry.rasterRevision = update.rasterRevision;
     }
     publish(std::move(entries), false);

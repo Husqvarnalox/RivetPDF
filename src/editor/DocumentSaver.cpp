@@ -117,7 +117,8 @@ DocumentWriteResult runDocumentWrite(pdf::PdfEngine& engine, const DocumentWrite
 
     BufferedAtomicSink sink(**writer, control);
     std::vector<pdf::PdfAssembledPageAnnotations> annotationReport;
-    core::Status status = engine.assembleDocument(job.request, sink, &annotationReport);
+    std::vector<pdf::PdfAssembledPageContent> contentReport;
+    core::Status status = engine.assembleDocument(job.request, sink, &annotationReport, &contentReport);
     if (status.has_value()) status = sink.flush();
     if (status.has_value() && control.cancelled && control.cancelled()) status = std::unexpected(cancelledError());
     if (status.has_value()) status = (*writer)->commit();
@@ -137,6 +138,7 @@ DocumentWriteResult runDocumentWrite(pdf::PdfEngine& engine, const DocumentWrite
             core::log::warning("save: reopening the saved file failed: " + core::describe(result.rebase->error()));
         } else {
             (**result.rebase).annotationReport = std::move(annotationReport);
+            (**result.rebase).contentReport = std::move(contentReport);
         }
     }
     return finish();

@@ -31,6 +31,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <set>
 #include <span>
 #include <string>
 #include <utility>
@@ -177,14 +178,17 @@ public:
     // With edits it returns the configured content with the removed objects
     // dropped and the transforms applied to matrix / bounds / quad (the
     // remaining objects are renumbered, origin = Source(original index)).
-    // Text blocks and image replacement are NOT simulated: tests that need
-    // created objects configure the expected content themselves.
+    // Text blocks are simulated minimally: the members are dropped and every
+    // non-empty line of the text becomes a created, tagged text object on top
+    // (matrix = placement, one lineAdvance per line, width 0.5 x size per
+    // character). Image replacement is not simulated.
     core::Result<pdf::PdfPageContentPtr> pageContent(std::size_t pageIndex,
                                                      const pdf::PdfPageContentEditsPtr& edits) const override {
         if (pageIndex >= info_.pageCount) {
             return std::unexpected(core::makeError(core::ErrorCode::InvalidArgument, "page", "test"));
         }
         ++contentLoads;
+        { std::lock_guard<std::mutex> gate(contentGate); }
         pdf::PdfPageContent content;
         if (const auto it = pageContents.find(pageIndex); it != pageContents.end()) content = it->second;
         {
@@ -199,7 +203,10 @@ public:
             return std::make_shared<const pdf::PdfPageContent>(std::move(content));
         }
         std::vector<pdf::PdfContentObject> out;
+        std::set<std::uint32_t> replaced;
+        for (const pdf::PdfTextBlockEdit& block : edits->textBlocks) replaced.insert(block.members.begin(), block.members.end());
         for (const pdf::PdfContentObject& source : content.objects) {
+            if (replaced.count(source.index) != 0) continue;
             const pdf::PdfObjectEdit* edit = nullptr;
             for (const pdf::PdfObjectEdit& candidate : edits->objects) {
                 if (candidate.sourceIndex == source.index) edit = &candidate;
@@ -230,6 +237,47 @@ public:
             }
             out.push_back(std::move(object));
         }
+        // Text blocks: one created text object per non-empty line (tagged),
+        // appended on top; the members they replace are gone.
+        for (const pdf::PdfTextBlockEdit& block : edits->textBlocks) {
+            std::size_t lineNo = 0;
+            std::size_t from = 0;
+            while (from <= block.text.size()) {
+                std::size_t to = block.text.find('\n', from);
+                if (to == std::string::npos) to = block.text.size();
+                const std::string line = block.text.substr(from, to - from);
+                const std::size_t k = lineNo++;
+                from = to + 1;
+                if (line.empty()) continue;
+                pdf::PdfContentObject o;
+                o.type = pdf::PdfContentObjectType::Text;
+                o.origin = {pdf::PdfContentOrigin::Kind::Created, 0, block.tag};
+                o.blockTag = block.tag;
+                o.matrix = block.placement * core::Matrix::translation(0.0, -static_cast<double>(k) * block.lineAdvance);
+                o.text = line;
+                o.fontSize = block.fontSize;
+                o.font.embedded = true;
+                o.font.baseName = "Bundled";
+                o.fill = block.color;
+                o.fontSubstituted = block.font.kind == pdf::PdfFontRef::Kind::Bundled;
+                const double width = 0.5 * block.fontSize * static_cast<double>(line.size());
+                const core::Point local[4] = {{0.0, -0.2 * block.fontSize},
+                                              {width, -0.2 * block.fontSize},
+                                              {width, 0.8 * block.fontSize},
+                                              {0.0, 0.8 * block.fontSize}};
+                pdf::PdfBox box{1e300, 1e300, -1e300, -1e300};
+                for (std::size_t c = 0; c < 4; ++c) {
+                    const core::Point p = o.matrix.map(local[c]);
+                    o.quad[c] = pdf::PdfPoint{p.x, p.y};
+                    box.left = std::min(box.left, p.x);
+                    box.bottom = std::min(box.bottom, p.y);
+                    box.right = std::max(box.right, p.x);
+                    box.top = std::max(box.top, p.y);
+                }
+                o.bounds = box;
+                out.push_back(std::move(o));
+            }
+        }
         for (std::size_t i = 0; i < out.size(); ++i) out[i].index = static_cast<std::uint32_t>(i);
         content.objects = std::move(out);
         return std::make_shared<const pdf::PdfPageContent>(std::move(content));
@@ -249,6 +297,8 @@ public:
         return lastContentEdits_;
     }
     mutable std::atomic<int> contentLoads{0};
+    // Held by a test to block pageContent() calls (after contentLoads is bumped).
+    mutable std::mutex contentGate;
 
     mutable std::atomic<int> renders{0};
     mutable std::atomic<int> extractions{0};

@@ -41,7 +41,7 @@ std::shared_ptr<const pdf::PdfTextPage> TextService::cachedTextPage(core::PageId
 
 std::shared_ptr<const pdf::PdfTextPage> TextService::extract(const PageEntry& entry) {
     if (entry.source == nullptr) return nullptr;
-    return entry.source->textPage(entry.sourcePageIndex, entry.view).value_or(nullptr);
+    return entry.source->textPage(entry.sourcePageIndex, entry.view, entry.contentEdits).value_or(nullptr);
 }
 
 void TextService::ensureTextPage(core::PageId pageId) {

@@ -38,6 +38,9 @@ struct RenderPageTarget {
     pdf::PdfPageView view;
     std::uint64_t rasterRevision = 0;
     std::vector<std::uint32_t> hiddenAnnotations;
+    // Content edits applied to the source page before rasterizing (null =
+    // the page as stored).
+    pdf::PdfPageContentEditsPtr contentEdits;
 };
 
 // Resolves a PageId to its current render target (nullopt = not in the

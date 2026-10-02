@@ -96,6 +96,9 @@ public:
         core::PageId page;
         std::vector<pdf::PdfContentOrigin> origins;
         std::vector<std::uint64_t> blockTags;
+        // false: the page had edits but no usable report - its registry
+        // entries are dropped (ids are minted afresh on the next resolve).
+        bool keep = true;
     };
     void rebased(std::span<const PageRekey> pages);
 

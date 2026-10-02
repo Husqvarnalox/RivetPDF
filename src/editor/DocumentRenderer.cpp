@@ -271,7 +271,7 @@ void DocumentRenderer::runJob(const render::TileKey& key, const render::RasterPa
     try {
         rendered = target.document->renderPage(target.pageIndex, target.view,
                                                std::span<const std::uint32_t>(target.hiddenAnnotations),
-                                               params.pageRectPoints, params.devicePixelsPerPoint);
+                                               target.contentEdits, params.pageRectPoints, params.devicePixelsPerPoint);
     } catch (const std::exception& exception) {
         rendered = std::unexpected(
             core::Error{core::ErrorCode::Internal, exception.what(), "editor"});

@@ -62,7 +62,8 @@ DocumentSession::DocumentSession(core::DocumentId id,
                 mainDispatcher),
       textService_(*this),
       linkService_(*this),
-      annotationService_(*this) {
+      annotationService_(*this),
+      contentService_(*this) {
     layout_.setPageGapPoints(16.0);
     layout_.setPageMarginPoints(24.0);
     rebuildLayout();
@@ -198,6 +199,8 @@ core::Status DocumentSession::rebaseOnto(RebaseTarget target, std::optional<std:
     const bool haveReport = target.annotationReport.size() == current->size();
     std::vector<PageEntry> entries;
     std::vector<AnnotationService::PageRekey> rekeys;
+    std::vector<ContentService::PageRekey> contentRekeys;
+    const bool haveContentReport = target.contentReport.size() == current->size();
     entries.reserve(current->size());
     for (std::size_t index = 0; index < current->size(); ++index) {
         const PageEntry& old = current->at(index);
@@ -241,12 +244,25 @@ core::Status DocumentSession::rebaseOnto(RebaseTarget target, std::optional<std:
             }
             rekeys.push_back(std::move(rekey));
         }
+        if (old.contentEdits != nullptr) {
+            // The file contains the edits now. Origins re-key the object ids.
+            ContentService::PageRekey rekey;
+            rekey.page = old.id;
+            if (haveContentReport && !target.contentReport[index].origins.empty()) {
+                rekey.origins = std::move(target.contentReport[index].origins);
+                rekey.blockTags = std::move(target.contentReport[index].blockTags);
+                rekey.keep = true;
+            } else {
+                rekey.keep = false;
+            }
+            contentRekeys.push_back(std::move(rekey));
+        }
         if (!sameView) {
             contentRevision = model_->mintContentRevision();
             rasterRevision = contentRevision;
         }
         entries.push_back(PageEntry{old.id, target.document, index, page.nativeView, contentRevision,
-                                    page.mediaBox, page.nativeView, std::move(state), rasterRevision});
+                                    page.mediaBox, page.nativeView, std::move(state), rasterRevision, nullptr});
     }
 
     // Base-level state first: the page-model observer (fired by the model
@@ -261,6 +277,9 @@ core::Status DocumentSession::rebaseOnto(RebaseTarget target, std::optional<std:
     // Identity registry follows the file's new /Annots indices; originals of
     // the previous documents (and loads in flight) are dropped.
     annotationService_.rebased(rekeys);
+    // Content: the extraction cache describes the previous documents; object
+    // ids follow the saved file's object indices.
+    contentService_.rebased(contentRekeys);
     // Recorded commands reference entries of the previous documents; they
     // cannot be re-targeted (see header). Clear before the publish so no
     // stale command can run against the new model.
@@ -311,6 +330,7 @@ void DocumentSession::handleModelChanged(const PageModelChange& change) {
         textService_.evictPages(change.removed);
         linkService_.evictPages(change.removed);
         annotationService_.evictPages(change.removed);
+        contentService_.evictPages(change.removed);
     }
     if (onPageModelChanged_) {
         auto callback = onPageModelChanged_; // may replace itself
@@ -324,7 +344,7 @@ std::optional<RenderPageTarget> DocumentSession::resolveRenderTarget(core::PageI
     std::vector<std::uint32_t> hidden;
     if (entry->annotations != nullptr) hidden = entry->annotations->suppressed;
     return RenderPageTarget{entry->source, entry->sourcePageIndex, entry->view, entry->rasterRevision,
-                            std::move(hidden)};
+                            std::move(hidden), entry->contentEdits};
 }
 
 void DocumentSession::markModified() {

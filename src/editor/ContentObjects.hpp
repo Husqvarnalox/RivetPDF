@@ -8,6 +8,7 @@
 #include "pdf/PdfContent.hpp"
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -85,6 +86,9 @@ struct PageContentView {
     bool truncated = false;     // > kMaxContentObjectsPerPage: nothing editable
     bool regenerationSafe = true;
     std::string regenerationIssue;
+    // Top-level objects of the SOURCE page (the bound content edits are
+    // validated against, pdf::validate). 0 until loaded or when truncated.
+    std::size_t sourceObjectCount = 0;
 };
 using PageContentViewPtr = std::shared_ptr<const PageContentView>;
 

@@ -6,6 +6,7 @@
 #include "core/geometry/Point.hpp"
 #include "editor/Annotations.hpp"
 #include "pdf/PdfAssembly.hpp"
+#include "pdf/PdfContent.hpp"
 #include "pdf/PdfEngine.hpp"
 #include "pdf/PdfNavigation.hpp"
 #include "pdf/PdfPageGeometry.hpp"
@@ -61,6 +62,13 @@ struct PageSource {
 // when the suppressed set changes, and is restored by undo/redo. Render
 // tiles are keyed by it; text and links stay keyed by contentRevision, so
 // annotation edits never invalidate them.
+//
+// contentEdits (ADR-0014/0017): the page's content edits against its SOURCE
+// page (null = the source page's content is untouched). Immutable; commands
+// swap the pointer, duplicates share it, the save pipeline hands it to the
+// backend and DocumentSession::rebaseOnto clears it once the file contains
+// the edits. A content edit mints a fresh contentRevision AND rasterRevision
+// (text, search, links and tiles of that page are re-derived; nothing else).
 struct PageEntry {
     core::PageId id;
     std::shared_ptr<pdf::PdfDocument> source;
@@ -71,6 +79,7 @@ struct PageEntry {
     pdf::PdfPageView nativeView;
     PageAnnotationStatePtr annotations;
     std::uint64_t rasterRevision = 0;
+    pdf::PdfPageContentEditsPtr contentEdits;
 };
 
 // A destination (link or outline) resolved against the page model.
@@ -214,6 +223,9 @@ public:
     std::uint64_t mintRasterRevision() { return ++lastContentRevision_; }
     // Fresh, never-before-issued annotation id.
     core::AnnotationId mintAnnotationId() { return annotationIds_.next(); }
+    // Fresh, never-before-issued content object id (first value is 1). Also
+    // the source of text block edit tags (the tag IS the block's ObjectId).
+    core::ObjectId mintObjectId() { return objectIds_.next(); }
 
     // --- Primitive, transactional mutations (used by the commands) -------
     //
@@ -258,6 +270,19 @@ public:
     };
     core::Status updateAnnotations(std::span<const AnnotationUpdate> updates);
 
+    // Replaces the content edits + contentRevision + rasterRevision of
+    // existing pages (all ids present, no duplicates; transactional like
+    // updateViews; one publish, orderChanged = false). The edits pointer may
+    // be null (back to the source page's content). The caller validated the
+    // edits (pdf::validate) against the page's source object count.
+    struct ContentUpdate {
+        core::PageId id;
+        pdf::PdfPageContentEditsPtr edits;
+        std::uint64_t contentRevision = 0;
+        std::uint64_t rasterRevision = 0;
+    };
+    core::Status updateContent(std::span<const ContentUpdate> updates);
+
     // Re-bases the model onto `base` (a document just written from this
     // model and reopened): `entries` replace the current ones one-for-one in
     // the SAME order with the SAME ids (only source/sourcePageIndex/views/
@@ -283,6 +308,7 @@ private:
     std::shared_ptr<pdf::PdfDocument> base_;
     core::IdGenerator<core::PageIdTag> ids_;
     core::IdGenerator<core::AnnotationIdTag> annotationIds_;
+    core::IdGenerator<core::ObjectIdTag> objectIds_;
     std::uint64_t lastContentRevision_ = 0;
     std::uint64_t orderRevision_ = 1;
     std::uint64_t documentRevision_ = 1;

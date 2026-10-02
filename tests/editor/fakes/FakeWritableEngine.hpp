@@ -78,6 +78,24 @@ public:
 
     const std::vector<Page>& pages() const { return pages_; }
 
+    // Page content of the written file (Phase 5): set by the engine from its
+    // `reopenedContents` before the document is shared.
+    std::map<std::size_t, pdf::PdfPageContent> contents;
+
+    core::Result<pdf::PdfPageContentPtr> pageContent(std::size_t index,
+                                                     const pdf::PdfPageContentEditsPtr&) const override {
+        if (index >= pages_.size()) {
+            return std::unexpected(core::makeError(core::ErrorCode::InvalidArgument, "page", "test"));
+        }
+        pdf::PdfPageContent content;
+        if (const auto it = contents.find(index); it != contents.end()) content = it->second;
+        for (std::size_t i = 0; i < content.objects.size(); ++i) {
+            content.objects[i].index = static_cast<std::uint32_t>(i);
+            content.objects[i].origin = {pdf::PdfContentOrigin::Kind::Source, static_cast<std::uint32_t>(i), 0};
+        }
+        return std::make_shared<const pdf::PdfPageContent>(std::move(content));
+    }
+
 private:
     pdf::PdfDocumentInfo info_;
     std::vector<Page> pages_;
@@ -129,7 +147,12 @@ public:
                 pages.push_back(std::move(page));
             }
             if (!in) return std::unexpected(core::makeError(core::ErrorCode::InvalidDocument, "truncated", "test"));
-            return std::unique_ptr<pdf::PdfDocument>(std::make_unique<FakeFileDocument>(std::move(pages)));
+            auto file = std::make_unique<FakeFileDocument>(std::move(pages));
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                file->contents = reopenedContents;
+            }
+            return std::unique_ptr<pdf::PdfDocument>(std::move(file));
         }
         // Any other path: an n-page FakePageDocument ("<stem>-" markers),
         // n from pageCounts (default 5).
@@ -254,6 +277,9 @@ public:
     // When set, returned as the content report of every assembly (else one
     // empty entry per page).
     std::optional<std::vector<pdf::PdfAssembledPageContent>> contentReportOverride;
+    // Page content of documents read back from fake-written files, by page
+    // index (set before the save; objects are renumbered Source(i)).
+    std::map<std::size_t, pdf::PdfPageContent> reopenedContents;
 
     std::atomic<int> opens{0};
     std::atomic<int> reopens{0};

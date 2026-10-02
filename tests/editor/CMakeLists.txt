@@ -29,6 +29,7 @@ add_executable(rivet_editor_tests
     # Content editing (Phase 5): geometry, text blocks, service, commands.
     TestContentGeometry.cpp
     TestTextBlocks.cpp
+    TestContentService.cpp
 )
 
 add_test(NAME editor COMMAND rivet_editor_tests)

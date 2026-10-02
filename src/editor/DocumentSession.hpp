@@ -4,6 +4,7 @@
 #include "CommandStack.hpp"
 #include "DocumentRenderer.hpp"
 #include "AnnotationService.hpp"
+#include "ContentService.hpp"
 #include "LinkService.hpp"
 #include "PageModel.hpp"
 #include "TextService.hpp"
@@ -178,6 +179,7 @@ public:
     // text selection, search, print and extract keep working. Main thread.
     void setEditingLocked(bool locked, std::string reason = {});
     bool isEditingLocked() const { return editingLocked_; }
+    const std::string& editingLockReason() const { return editingLockReason_; }
 
     // --- Rebase after save ----------------------------------------------------
 
@@ -192,6 +194,11 @@ public:
         // request order (see PdfEngine::assembleDocument). Empty = no
         // report: rebaseOnto then drops the pages' annotation state.
         std::vector<pdf::PdfAssembledPageAnnotations> annotationReport;
+        // Where the objects of every written page came from, one per page in
+        // request order (see PdfEngine::assembleDocument). Empty = no
+        // report: rebaseOnto then drops the object identities of pages that
+        // had content edits (their ids are minted afresh).
+        std::vector<pdf::PdfAssembledPageContent> contentReport;
     };
 
     // Worker-safe (touches only the engine and the immutable credentials of
@@ -221,6 +228,12 @@ public:
     //     matching report the state is dropped and the raster revision is
     //     fresh (the file's own annotations are drawn instead; overlay ids
     //     of that page are lost - acceptable fallback);
+    //   - content edits (ADR-0017 "Rebase"): the file contains them now, so
+    //     every entry's contentEdits becomes null and its revisions are kept
+    //     (the page looks the same). A page with edits and a matching
+    //     target.contentReport entry keeps its object ids (re-keyed to the
+    //     objects' new indices through ContentService::rebased); without one
+    //     the page's object ids are dropped and minted afresh;
     //   - the UNDO HISTORY IS CLEARED: recorded commands hold entries of the
     //     previous documents and cannot be re-targeted (a deleted page does
     //     not exist in the new file). The current stateId is kept, so the
@@ -264,6 +277,18 @@ public:
     // Fired (main thread) when a page's originals finished loading.
     void setOnAnnotationsChanged(std::function<void(core::PageId)> onChanged) {
         annotationService_.setOnChanged(std::move(onChanged));
+    }
+
+    // Page content objects (ADR-0014): lazily extracted originals + the page
+    // model's edits, resolved to display space with reconstructed text
+    // blocks (see ContentService).
+    ContentService& contentService() { return contentService_; }
+    const ContentService& contentService() const { return contentService_; }
+    // Fired (main thread) when a page's content finished (re)loading. Content
+    // EDITS are reported through the page-model observer instead (the page
+    // appears in PageModelChange::contentChanged/rasterChanged). Single slot.
+    void setOnContentChanged(std::function<void(core::PageId)> onChanged) {
+        contentService_.setOnChanged(std::move(onChanged));
     }
 
     // RENDER revision (tile-cache epoch), bumped only by markModified().
@@ -324,6 +349,7 @@ private:
     TextService textService_;
     LinkService linkService_;
     AnnotationService annotationService_;
+    ContentService contentService_;
 };
 
 } // namespace rivet::editor
