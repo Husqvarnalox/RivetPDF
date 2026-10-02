@@ -10,6 +10,7 @@ add_executable(rivet_app_tests
     TestPageEditingController.cpp
     TestFileController.cpp
     TestSearchRestart.cpp
+    TestPrintCoordinator.cpp
     # PDFium-ON round trips through the file lifecycle (early return
     # without a backend).
     TestFileRoundTripPdfium.cpp

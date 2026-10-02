@@ -28,7 +28,7 @@ ShellController::ShellController(const platform::ShellServices& services)
       scheduler_(0),
       engine_(pdf::createEngine()),
       workspace_(*engine_, scheduler_, services.mainDispatcher),
-      printCoordinator_(scheduler_, services.mainDispatcher, services.printService,
+      printCoordinator_(workspace_, *engine_, scheduler_, services.mainDispatcher, services.printService,
                         [this](std::string text) { setStatus(std::move(text)); }) {}
 
 ShellController::~ShellController() {
@@ -529,7 +529,7 @@ void ShellController::handlePrintRequest() {
     // The printout reads the document as a whole: commit an open note
     // editor's text first.
     if (context_ != nullptr) context_->pendingEdits.commitAll();
-    printCoordinator_.print(*tab->session(), tab->title());
+    printCoordinator_.print(tab->id());
 }
 
 void ShellController::cancelPrintForTab(std::size_t index) {
