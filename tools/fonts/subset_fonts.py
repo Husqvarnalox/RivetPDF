@@ -24,6 +24,7 @@ Rivet positions glyphs itself (no shaping, no kerning).
 """
 
 import argparse
+import copy
 import os
 import sys
 
@@ -83,6 +84,36 @@ def ranges_of(codepoints):
     return out
 
 
+def unique_glyph_per_codepoint(font):
+    """Gives every code point its own glyph.
+
+    PDFium builds the ToUnicode map of a font it embeds by inverting the
+    font's cmap, and when several code points share one glyph (NBSP and
+    space, soft hyphen and hyphen, Greek question mark and semicolon, ...)
+    text extraction returns the LAST one - a space typed in Rivet would come
+    back as U+00A0 and break search and copy. The duplicates are copies of
+    the shared glyph, so rendering is unchanged. Idempotent.
+    """
+    cmap = font.getBestCmap()
+    owners = {}
+    for cp in sorted(cmap):
+        owners.setdefault(cmap[cp], []).append(cp)
+    order = list(font.getGlyphOrder())
+    glyf = font["glyf"]
+    hmtx = font["hmtx"]
+    for glyph, cps in owners.items():
+        for cp in cps[1:]:
+            name = f"{glyph}.u{cp:04X}"
+            glyf.glyphs[name] = copy.deepcopy(glyf[glyph])
+            hmtx.metrics[name] = hmtx.metrics[glyph]
+            order.append(name)
+            for table in font["cmap"].tables:
+                if table.isUnicode() and table.cmap.get(cp) == glyph:
+                    table.cmap[cp] = name
+    font.setGlyphOrder(order)
+    glyf.glyphOrder = order
+
+
 def subset_one(src_path, dst_path):
     font = TTFont(src_path)
     fs_type = font["OS/2"].fsType
@@ -110,6 +141,7 @@ def subset_one(src_path, dst_path):
     for tag in list(font.keys()):
         if tag != "GlyphOrder" and tag not in KEEP_TABLES:
             del font[tag]
+    unique_glyph_per_codepoint(font)
     font.save(dst_path)
 
     # Re-read what was actually written and report its coverage.
