@@ -11,6 +11,7 @@
 #include "core/geometry/Rect.hpp"
 #include "core/geometry/Rotation.hpp"
 #include "core/geometry/Size.hpp"
+#include "pdf/PdfAnnotation.hpp"
 #include "pdf/PdfEngine.hpp"
 #include "pdf/PdfNavigation.hpp"
 #include "pdf/PdfPageGeometry.hpp"
@@ -18,6 +19,8 @@
 #include "pdf/PdfTypes.hpp"
 
 #include <atomic>
+#include <chrono>
+#include <condition_variable>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -25,6 +28,8 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <optional>
+#include <span>
 #include <string>
 #include <utility>
 #include <vector>
@@ -71,7 +76,7 @@ public:
 
     core::Result<core::Bitmap> renderPage(std::size_t pageIndex, const core::Rect& rect,
                                           double scale) override {
-        return renderPageInView(pageIndex, pdf::PdfPageView{core::PageRotation::None, mediaBox(pageIndex)},
+        return renderPageInView(pageIndex, pdf::PdfPageView{core::PageRotation::None, mediaBox(pageIndex)}, {},
                                 rect, scale);
     }
 
@@ -106,6 +111,55 @@ public:
         links_[pageIndex] = std::move(links);
     }
 
+    // --- Annotations ----------------------------------------------------
+    // Originals returned by annotations(pageIndex) (default: an empty list).
+    // `annotsCount` defaults to the item count.
+    void setAnnotations(std::size_t pageIndex, std::vector<pdf::PdfPageAnnotation> items,
+                        std::optional<std::uint32_t> annotsCount = std::nullopt) {
+        auto page = std::make_shared<pdf::PdfPageAnnotations>();
+        page->annotsCount = annotsCount.value_or(static_cast<std::uint32_t>(items.size()));
+        page->items = std::move(items);
+        std::lock_guard<std::mutex> lock(mutex_);
+        annotations_[pageIndex] = std::move(page);
+    }
+    // annotations() reports NotAvailable (like a backend without support).
+    void setAnnotationsUnavailable(bool unavailable) { annotationsUnavailable_ = unavailable; }
+    // Annotation loads park inside annotations() until released.
+    void closeAnnotationGate() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        annotationGated_ = true;
+    }
+    void releaseAnnotationGate() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        annotationGated_ = false;
+        cv_.notify_all();
+    }
+    bool waitAnnotationParked(int count) {
+        std::unique_lock<std::mutex> lock(mutex_);
+        return cv_.wait_for(lock, std::chrono::seconds(10), [&] { return annotationParked_ >= count; });
+    }
+
+    core::Result<pdf::PdfPageAnnotationsPtr> annotations(std::size_t pageIndex) const override {
+        std::unique_lock<std::mutex> lock(mutex_);
+        ++annotationLoads;
+        if (annotationGated_) {
+            ++annotationParked_;
+            cv_.notify_all();
+            cv_.wait(lock, [this] { return !annotationGated_; });
+        }
+        if (annotationsUnavailable_ || pageIndex >= info_.pageCount) {
+            return std::unexpected(core::makeError(core::ErrorCode::NotAvailable, "no annotations", "test"));
+        }
+        const auto it = annotations_.find(pageIndex);
+        if (it == annotations_.end()) return std::make_shared<const pdf::PdfPageAnnotations>();
+        return it->second;
+    }
+
+    std::vector<std::uint32_t> lastHiddenAnnotations() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return lastHidden_;
+    }
+
     pdf::PdfPageView lastRenderView() const {
         std::lock_guard<std::mutex> lock(mutex_);
         return lastRenderView_;
@@ -114,9 +168,11 @@ public:
     mutable std::atomic<int> renders{0};
     mutable std::atomic<int> extractions{0};
     mutable std::atomic<int> linkLoads{0};
+    mutable std::atomic<int> annotationLoads{0};
 
 protected:
     core::Result<core::Bitmap> renderPageInView(std::size_t pageIndex, const pdf::PdfPageView& view,
+                                                std::span<const std::uint32_t> hiddenAnnotations,
                                                 const core::Rect& rect, double scale) override {
         if (pageIndex >= info_.pageCount) {
             return std::unexpected(core::makeError(core::ErrorCode::InvalidArgument, "page", "test"));
@@ -125,6 +181,7 @@ protected:
         {
             std::lock_guard<std::mutex> lock(mutex_);
             lastRenderView_ = view;
+            lastHidden_.assign(hiddenAnnotations.begin(), hiddenAnnotations.end());
         }
         const auto width = static_cast<std::uint32_t>(rect.size.width * scale + 0.5);
         const auto height = static_cast<std::uint32_t>(rect.size.height * scale + 0.5);
@@ -158,6 +215,12 @@ private:
     mutable std::mutex mutex_;
     std::map<std::size_t, std::vector<pdf::PdfPageLink>> links_;
     pdf::PdfPageView lastRenderView_;
+    std::vector<std::uint32_t> lastHidden_;
+    std::map<std::size_t, pdf::PdfPageAnnotationsPtr> annotations_;
+    mutable std::condition_variable cv_;
+    bool annotationGated_ = false;
+    mutable int annotationParked_ = 0;
+    std::atomic<bool> annotationsUnavailable_{false};
 };
 
 // Opens FakePageDocuments of a fixed size; remembers the last one.

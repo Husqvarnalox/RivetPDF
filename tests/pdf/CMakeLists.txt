@@ -16,9 +16,17 @@ add_executable(rivet_pdf_tests
     TestPdfNavigation.cpp
     # Engine-independent page-view geometry: runs in both build modes.
     TestPdfPageGeometry.cpp
+    # Engine-independent annotation data, validation and appearance builder.
+    TestPdfAnnotation.cpp
     # View-aware reads and document assembly round trips (page editing
     # foundation): PDFium-ON bodies only.
     TestPdfPageEditing.cpp
+    # PDFium annotation adapter (read, render-hide, assembly edits, round
+    # trips against annots.pdf): PDFium-ON bodies only.
+    TestPdfiumAnnotations.cpp
+    # Hostile / over-limit annotation inputs (annots-many.pdf, annots-hostile.pdf):
+    # PDFium-ON bodies only.
+    TestPdfiumAnnotationLimits.cpp
     # Compiled directly into the test binary rather than linked from
     # rivet_pdfium, so the gate tests run with RIVET_WITH_PDFIUM=OFF too. The
     # gate translation unit has no FPDF_* dependency. In PDFium-ON builds the

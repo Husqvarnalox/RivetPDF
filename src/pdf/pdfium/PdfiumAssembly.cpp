@@ -5,14 +5,17 @@
 #include <cstddef>
 #include <cstdint>
 #include <exception>
+#include <algorithm>
 #include <limits>
 #include <map>
 #include <new>
+#include <memory>
 #include <optional>
 #include <string>
 #include <utility>
 #include <vector>
 
+#include "PdfiumAnnotations.h"
 #include "PdfiumCallGate.hpp"
 #include "PdfiumDisplayTransform.h"
 #include "PdfiumDocument.h"
@@ -44,11 +47,14 @@
 //      place: its page object, and everything that points at it (outline
 //      and link destinations, form fields, structure tree), survives.
 //   3. Every other page - duplicates of base pages and pages of other
-//      documents - is appended with FPDF_ImportPagesByIndex, ONE call per
+//      documents - is appended with FPDF_ImportPagesByIndex, one call per
 //      source document (in order of first appearance; a superset of
 //      batching consecutive runs), so resources shared between the pages of
-//      one source (fonts, images) are copied once. Duplicates of base pages
-//      are imported from the live base document (read-only).
+//      one source (fonts, images) are copied once. A source page index is
+//      imported at most once per call (a further copy starts another call
+//      for the same source), so every copy owns its annotation objects.
+//      Duplicates of base pages are imported from the live base document
+//      (read-only).
 //   4. One FPDF_MovePages(working, finalIndices, M, 0) brings the final
 //      order to the front (skipped when it already is), then FPDFPage_Delete
 //      removes the leftovers from the end backwards.
@@ -59,7 +65,8 @@
 //
 // Fresh (Extract): working = FPDF_CreateNewDocument(); pages are imported in
 // final order (one FPDF_ImportPagesByIndex per run of consecutive pages
-// from the same source), views applied, saved. NOT carried over: the
+// from the same source and without a repeated source page index), views
+// applied, saved. NOT carried over: the
 // outline, document metadata (/Info title/author/...; PDFium writes its own
 // /Producer "PDFium" and a /CreationDate), XMP metadata, AcroForm (imported
 // widget annotations lose their fields), the page-label tree, the structure
@@ -171,6 +178,9 @@ struct ResolvedPage {
     const PdfiumDocument* source = nullptr;
     int sourceIndex = 0;
     PdfPageView view;
+    // Annotation edits (validated against the source page's /Annots); null
+    // or empty = the page's annotations are carried over unchanged.
+    std::shared_ptr<const PdfPageAnnotationEdits> edits;
 };
 
 // Resolves a request's document pointer: it must be a live PdfiumDocument
@@ -190,6 +200,31 @@ core::Result<const PdfiumDocument*> ownedDocument(const PdfiumEngine& engine,
     return pdfium;
 }
 
+// Checks one page's annotation edits against the source page's /Annots size:
+// removal indices sorted ascending, unique and in range, every creation
+// writable (after normalization, which the writer applies too).
+core::Status validateEdits(const PdfPageAnnotationEdits& edits, int annotCount) {
+    for (std::size_t k = 0; k < edits.removeIndices.size(); ++k) {
+        const std::uint32_t index = edits.removeIndices[k];
+        if (index >= static_cast<std::uint32_t>(annotCount)) {
+            return std::unexpected(invalidArgument("annotation index " + std::to_string(index) +
+                                                   " to remove is out of range (page has " +
+                                                   std::to_string(annotCount) + " annotations)"));
+        }
+        if (k > 0 && edits.removeIndices[k - 1] >= index) {
+            return std::unexpected(invalidArgument("annotation removal indices must be ascending and unique"));
+        }
+    }
+    for (const PdfAnnotationData& data : edits.create) {
+        PdfAnnotationData normalized = data;
+        normalizeAnnotation(normalized);
+        if (!isWritableAnnotation(normalized)) {
+            return std::unexpected(invalidArgument("an annotation to create is not writable"));
+        }
+    }
+    return core::ok();
+}
+
 // Validates the request and resolves every page. Caller holds the gate:
 // view validation loads each distinct source page once (read-only, like a
 // render) to learn its native view and media box.
@@ -205,6 +240,7 @@ core::Result<std::vector<ResolvedPage>> resolvePages(const PdfiumEngine& engine,
     struct PageFacts {
         PdfPageView nativeView;
         PdfBox mediaBox;
+        int annotCount = 0; // size of the page's /Annots array
     };
     std::map<std::pair<const PdfiumDocument*, int>, PageFacts> facts;
 
@@ -244,7 +280,8 @@ core::Result<std::vector<ResolvedPage>> resolvePages(const PdfiumEngine& engine,
                                                            " has invalid display dimensions",
                                                        "pdf"));
             }
-            known = facts.emplace(key, PageFacts{*native, internal::pageMediaBox(loaded.get(), *native)})
+            known = facts.emplace(key, PageFacts{*native, internal::pageMediaBox(loaded.get(), *native),
+                                                 std::max(0, FPDFPage_GetAnnotCount(loaded.get()))})
                         .first;
         }
         const core::Status valid = internal::checkPageView(page.view, known->second.nativeView,
@@ -253,7 +290,14 @@ core::Result<std::vector<ResolvedPage>> resolvePages(const PdfiumEngine& engine,
             return std::unexpected(invalidArgument("assembly page " + std::to_string(i) + ": " +
                                                    valid.error().message));
         }
-        resolved.push_back(ResolvedPage{*source, sourceIndex, page.view});
+        if (page.annotationEdits != nullptr) {
+            const core::Status edits = validateEdits(*page.annotationEdits, known->second.annotCount);
+            if (!edits.has_value()) {
+                return std::unexpected(invalidArgument("assembly page " + std::to_string(i) + ": " +
+                                                       edits.error().message));
+            }
+        }
+        resolved.push_back(ResolvedPage{*source, sourceIndex, page.view, page.annotationEdits});
     }
     return resolved;
 }
@@ -312,6 +356,46 @@ core::Status applyViews(FPDF_DOCUMENT working, const std::vector<ResolvedPage>& 
             !sameBox(applied->cropBox, wanted.cropBox)) {
             return std::unexpected(internalError("assembled page " + std::to_string(i) +
                                                  " does not present the requested view"));
+        }
+    }
+    return core::ok();
+}
+
+// Applies every page's annotation edits to the working document (pages are
+// already in final order with their views) and fills `report` (one entry per
+// page; pages without edits only get their /Annots size). Caller holds the
+// gate.
+core::Status applyAnnotations(FPDF_DOCUMENT working,
+                              const std::vector<ResolvedPage>& pages,
+                              std::vector<PdfAssembledPageAnnotations>* report) {
+    if (report != nullptr) {
+        report->assign(pages.size(), PdfAssembledPageAnnotations{});
+    }
+    for (std::size_t i = 0; i < pages.size(); ++i) {
+        const bool edited = pages[i].edits != nullptr && !pages[i].edits->empty();
+        if (!edited && report == nullptr) {
+            continue;
+        }
+        internal::ScopedPage page(FPDF_LoadPage(working, static_cast<int>(i)));
+        if (page.get() == nullptr) {
+            const int lastError = static_cast<int>(FPDF_GetLastError());
+            return std::unexpected(core::makeError(core::ErrorCode::InvalidDocument,
+                                                   "PDFium failed to load assembled page " +
+                                                       std::to_string(i) + " (FPDF error " +
+                                                       std::to_string(lastError) + ")",
+                                                   "pdf"));
+        }
+        if (!edited) {
+            (*report)[i].annotsCount = static_cast<std::uint32_t>(std::max(0, FPDFPage_GetAnnotCount(page.get())));
+            continue;
+        }
+        PdfAssembledPageAnnotations local;
+        if (auto applied = internal::applyAnnotationEdits(working, page.get(), *pages[i].edits, local);
+            !applied.has_value()) {
+            return applied;
+        }
+        if (report != nullptr) {
+            (*report)[i] = std::move(local);
         }
     }
     return core::ok();
@@ -384,7 +468,8 @@ core::Status verifyPageCount(FPDF_DOCUMENT working, std::size_t expected, const 
 
 core::Status assemblePreserveBase(const PdfiumDocument& base,
                                   const std::vector<ResolvedPage>& pages,
-                                  IPdfByteSink& sink) {
+                                  IPdfByteSink& sink,
+                                  std::vector<PdfAssembledPageAnnotations>* report) {
     const std::size_t baseCount = base.info().pageCount;
     const std::size_t finalCount = pages.size();
 
@@ -422,9 +507,16 @@ core::Status assemblePreserveBase(const PdfiumDocument& base,
             workingIndex[i] = page.sourceIndex;
             continue;
         }
+        // One group per (source, call): a source page index occurs at most
+        // once per FPDF_ImportPagesByIndex call, because PDFium maps every
+        // source object once per call - two copies of one page imported
+        // together would share their annotation objects (ADR-0012
+        // "Duplicates are never imported twice in one call").
         ImportGroup* group = nullptr;
         for (ImportGroup& candidate : groups) {
-            if (candidate.source == page.source) {
+            if (candidate.source == page.source &&
+                std::find(candidate.sourceIndices.begin(), candidate.sourceIndices.end(),
+                          page.sourceIndex) == candidate.sourceIndices.end()) {
                 group = &candidate;
                 break;
             }
@@ -482,10 +574,14 @@ core::Status assemblePreserveBase(const PdfiumDocument& base,
     if (auto viewed = applyViews(working.get(), pages); !viewed.has_value()) {
         return viewed;
     }
+    if (auto annotated = applyAnnotations(working.get(), pages, report); !annotated.has_value()) {
+        return annotated;
+    }
     return saveTo(working.get(), sink);
 }
 
-core::Status assembleFresh(const std::vector<ResolvedPage>& pages, IPdfByteSink& sink) {
+core::Status assembleFresh(const std::vector<ResolvedPage>& pages, IPdfByteSink& sink,
+                           std::vector<PdfAssembledPageAnnotations>* report) {
     ScopedDocument working(FPDF_CreateNewDocument());
     if (working.get() == nullptr) {
         return std::unexpected(core::makeError(core::ErrorCode::OutOfMemory,
@@ -499,7 +595,8 @@ core::Status assembleFresh(const std::vector<ResolvedPage>& pages, IPdfByteSink&
     while (runStart < pages.size()) {
         std::size_t runEnd = runStart;
         std::vector<int> indices;
-        while (runEnd < pages.size() && pages[runEnd].source == pages[runStart].source) {
+        while (runEnd < pages.size() && pages[runEnd].source == pages[runStart].source &&
+               std::find(indices.begin(), indices.end(), pages[runEnd].sourceIndex) == indices.end()) {
             indices.push_back(pages[runEnd].sourceIndex);
             ++runEnd;
         }
@@ -518,6 +615,9 @@ core::Status assembleFresh(const std::vector<ResolvedPage>& pages, IPdfByteSink&
     if (auto viewed = applyViews(working.get(), pages); !viewed.has_value()) {
         return viewed;
     }
+    if (auto annotated = applyAnnotations(working.get(), pages, report); !annotated.has_value()) {
+        return annotated;
+    }
     return saveTo(working.get(), sink);
 }
 
@@ -525,7 +625,8 @@ core::Status assembleFresh(const std::vector<ResolvedPage>& pages, IPdfByteSink&
 
 core::Status assembleWithPdfium(const PdfiumEngine& engine,
                                 const PdfAssemblyRequest& request,
-                                IPdfByteSink& sink) {
+                                IPdfByteSink& sink,
+                                std::vector<PdfAssembledPageAnnotations>* annotationReport) {
     try {
         // Public entry operation: ONE gate acquisition for the whole
         // assembly (see the gate strategy at the top of this file). Every
@@ -541,11 +642,11 @@ core::Status assembleWithPdfium(const PdfiumEngine& engine,
                     if (!base.has_value()) {
                         return std::unexpected(base.error());
                     }
-                    return assemblePreserveBase(**base, *pages, sink);
+                    return assemblePreserveBase(**base, *pages, sink, annotationReport);
                 }
                 case PdfAssemblyRequest::Mode::Fresh:
                     // `base` is ignored: a Fresh document has no base.
-                    return assembleFresh(*pages, sink);
+                    return assembleFresh(*pages, sink, annotationReport);
             }
             return std::unexpected(invalidArgument("unknown assembly mode"));
         });

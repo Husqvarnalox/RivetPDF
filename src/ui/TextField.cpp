@@ -3,6 +3,7 @@
 
 #include "core/geometry/Insets.hpp"
 #include "core/geometry/Point.hpp"
+#include "ui/Utf8.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -23,28 +24,6 @@ constexpr Color kSelectionFill = Color::rgba(0.0, 0.47, 1.0, 0.25);
 constexpr Color kCaretColor = Color::rgba(0.0, 0.47, 1.0, 1.0);
 constexpr double kCaretWidth = 1.5;
 constexpr double kStrokeWidth = 1.0;
-
-bool isContinuationByte(char byte) {
-    return (static_cast<unsigned char>(byte) & 0xC0) == 0x80;
-}
-
-void appendCodePointUtf8(std::string& out, char32_t codePoint) {
-    if (codePoint <= 0x7Fu) {
-        out.push_back(static_cast<char>(codePoint));
-    } else if (codePoint <= 0x7FFu) {
-        out.push_back(static_cast<char>(0xC0u | (codePoint >> 6)));
-        out.push_back(static_cast<char>(0x80u | (codePoint & 0x3Fu)));
-    } else if (codePoint <= 0xFFFFu) {
-        out.push_back(static_cast<char>(0xE0u | (codePoint >> 12)));
-        out.push_back(static_cast<char>(0x80u | ((codePoint >> 6) & 0x3Fu)));
-        out.push_back(static_cast<char>(0x80u | (codePoint & 0x3Fu)));
-    } else {
-        out.push_back(static_cast<char>(0xF0u | (codePoint >> 18)));
-        out.push_back(static_cast<char>(0x80u | ((codePoint >> 12) & 0x3Fu)));
-        out.push_back(static_cast<char>(0x80u | ((codePoint >> 6) & 0x3Fu)));
-        out.push_back(static_cast<char>(0x80u | (codePoint & 0x3Fu)));
-    }
-}
 
 } // namespace
 
@@ -80,20 +59,11 @@ void TextField::setOnFocusRequested(std::function<void()> onFocusRequested) {
 }
 
 std::size_t TextField::previousBoundary(const std::string& s, std::size_t byteIndex) {
-    if (s.empty()) return 0;
-    std::size_t index = std::min(byteIndex, s.size());
-    if (index == 0) return 0;
-    --index;
-    while (index > 0 && isContinuationByte(s[index])) --index;
-    return index;
+    return utf8::previousBoundary(s, byteIndex);
 }
 
 std::size_t TextField::nextBoundary(const std::string& s, std::size_t byteIndex) {
-    const std::size_t size = s.size();
-    if (byteIndex >= size) return size;
-    std::size_t next = byteIndex + 1;
-    while (next < size && isContinuationByte(s[next])) ++next;
-    return next;
+    return utf8::nextBoundary(s, byteIndex);
 }
 
 core::Size TextField::preferredSize(const PaintContext& context) const {
@@ -306,18 +276,29 @@ bool TextField::onKey(const KeyEvent& event) {
         if (edited) notifyTextChanged(); // a no-op is not an edit
         break;
     }
+    case Key::Space:
+    case Key::Plus:
+    case Key::Minus:
     case Key::Character: {
-        if (event.text.empty()) return false;
+        // Space, '+' and '-' have dedicated keys (the viewport zooms on
+        // them); the platform fills event.text with the typed character, and
+        // a platform that does not gets the plain character here.
+        std::string typed = event.text;
+        if (typed.empty()) {
+            if (event.key == Key::Space) typed = " ";
+            else if (event.key == Key::Minus) typed = "-";
+            else if (event.key == Key::Plus) typed = event.modifiers.shift ? "+" : "=";
+            else return false;
+        }
         eraseSelection();
-        text_.insert(caret_, event.text); // may be multi-byte UTF-8
-        caret_ += event.text.size();
+        text_.insert(caret_, typed); // may be multi-byte UTF-8
+        caret_ += typed.size();
         anchor_ = caret_;
         notifyTextChanged();
         break;
     }
     default:
-        // Space/Tab arriving as bare keys without text, arrows we do not
-        // handle, etc. — not ours.
+        // Tab, arrows we do not handle, etc. — not ours.
         return false;
     }
 
@@ -339,7 +320,7 @@ void TextField::paintSelf(PaintContext& context) const {
         displayText.clear();
         std::size_t at = 0;
         while (at < text_.size()) {
-            appendCodePointUtf8(displayText, echoCharacter_);
+            utf8::appendCodePoint(displayText, echoCharacter_);
             at = nextBoundary(text_, at);
         }
     }

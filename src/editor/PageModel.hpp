@@ -4,6 +4,7 @@
 #include "core/Error.hpp"
 #include "core/StrongId.hpp"
 #include "core/geometry/Point.hpp"
+#include "editor/Annotations.hpp"
 #include "pdf/PdfAssembly.hpp"
 #include "pdf/PdfEngine.hpp"
 #include "pdf/PdfNavigation.hpp"
@@ -51,6 +52,15 @@ struct PageSource {
 // pages and links are cached by it, so reorder/delete/duplicate never
 // invalidate another page's caches and an undone rotation hits the cache
 // again.
+//
+// annotations / rasterRevision (ADR-0011): `annotations` is the page's
+// annotation edits (null = the source page's annotations are untouched).
+// rasterRevision identifies what the page RASTER shows (view + suppressed
+// annotation set); it is minted from the same model-wide counter as
+// contentRevision, changes together with it on rotate/crop and on its own
+// when the suppressed set changes, and is restored by undo/redo. Render
+// tiles are keyed by it; text and links stay keyed by contentRevision, so
+// annotation edits never invalidate them.
 struct PageEntry {
     core::PageId id;
     std::shared_ptr<pdf::PdfDocument> source;
@@ -59,6 +69,8 @@ struct PageEntry {
     std::uint64_t contentRevision = 0;
     pdf::PdfBox mediaBox;
     pdf::PdfPageView nativeView;
+    PageAnnotationStatePtr annotations;
+    std::uint64_t rasterRevision = 0;
 };
 
 // A destination (link or outline) resolved against the page model.
@@ -150,6 +162,8 @@ struct PageModelChange {
     std::vector<core::PageId> removed;      // in `previous`, not in `current`
     std::vector<core::PageId> added;        // in `current`, not in `previous`
     std::vector<core::PageId> contentChanged; // in both, view/contentRevision differ
+    std::vector<core::PageId> annotationsChanged; // in both, annotation state pointer differs
+    std::vector<core::PageId> rasterChanged;      // in both, rasterRevision differs
 };
 
 // The editor-level mutable page model of one document. Main-thread owned
@@ -195,6 +209,11 @@ public:
     core::PageId mintPageId() { return ids_.next(); }
     // Fresh content revision (see PageEntry::contentRevision).
     std::uint64_t mintContentRevision() { return ++lastContentRevision_; }
+    // Fresh raster revision: the same model-wide counter, so a value is never
+    // reused for a different raster (or view).
+    std::uint64_t mintRasterRevision() { return ++lastContentRevision_; }
+    // Fresh, never-before-issued annotation id.
+    core::AnnotationId mintAnnotationId() { return annotationIds_.next(); }
 
     // --- Primitive, transactional mutations (used by the commands) -------
     //
@@ -225,8 +244,19 @@ public:
         core::PageId id;
         pdf::PdfPageView view;
         std::uint64_t contentRevision = 0;
+        std::uint64_t rasterRevision = 0;
     };
     core::Status updateViews(std::span<const ViewUpdate> updates);
+
+    // Replaces the annotation state + rasterRevision of existing pages (all
+    // ids present, no duplicates; transactional like updateViews; one
+    // publish, orderChanged = false). The state pointer may be null.
+    struct AnnotationUpdate {
+        core::PageId id;
+        PageAnnotationStatePtr state;
+        std::uint64_t rasterRevision = 0;
+    };
+    core::Status updateAnnotations(std::span<const AnnotationUpdate> updates);
 
     // Re-bases the model onto `base` (a document just written from this
     // model and reopened): `entries` replace the current ones one-for-one in
@@ -252,6 +282,7 @@ private:
 
     std::shared_ptr<pdf::PdfDocument> base_;
     core::IdGenerator<core::PageIdTag> ids_;
+    core::IdGenerator<core::AnnotationIdTag> annotationIds_;
     std::uint64_t lastContentRevision_ = 0;
     std::uint64_t orderRevision_ = 1;
     std::uint64_t documentRevision_ = 1;

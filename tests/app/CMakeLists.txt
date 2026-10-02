@@ -3,6 +3,10 @@ add_executable(rivet_app_tests
     TestShellWiring.cpp
     TestWorkspaceLifecycle.cpp
     TestUrlPolicy.cpp
+    TestAnnotationController.cpp
+    TestAnnotationStress.cpp
+    TestAnnotationInteraction.cpp
+    TestAnnotationPainter.cpp
     TestPageEditingController.cpp
     TestFileController.cpp
     # PDFium-ON round trips through the file lifecycle (early return
@@ -22,7 +26,8 @@ rivet_set_target_sanitizers(rivet_app_tests)
 
 # TestPageEditingController/TestFileController share the editor-layer fakes
 # (FakePageDocument, FakeWritableEngine).
-target_include_directories(rivet_app_tests PRIVATE "${CMAKE_SOURCE_DIR}/tests/editor")
+target_include_directories(rivet_app_tests PRIVATE "${CMAKE_SOURCE_DIR}/tests/editor"
+    "${CMAKE_SOURCE_DIR}/tests/ui")
 
 # PDFium-ON bodies (TestFileRoundTripPdfium.cpp) run against the shared
 # fixtures and early-return without a backend.

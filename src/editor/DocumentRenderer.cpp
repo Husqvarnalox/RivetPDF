@@ -76,10 +76,10 @@ void DocumentRenderer::requestRender(const render::RenderRequest& request,
                                               "no page matches the requested page id", "editor"});
         return;
     }
-    if (target->contentRevision != request.key.contentRevision) {
+    if (target->rasterRevision != request.key.contentRevision) {
         reject(std::move(onDone),
                core::Error{core::ErrorCode::NotFound,
-                           "render request names a stale page content revision", "editor"});
+                           "render request names a stale page raster revision", "editor"});
         return;
     }
 
@@ -266,8 +266,9 @@ void DocumentRenderer::runJob(const render::TileKey& key, const render::RasterPa
     core::Result<core::Bitmap> rendered = std::unexpected(
         core::Error{core::ErrorCode::Internal, "render job did not produce a result", "editor"});
     try {
-        rendered = target.document->renderPage(target.pageIndex, target.view, params.pageRectPoints,
-                                               params.devicePixelsPerPoint);
+        rendered = target.document->renderPage(target.pageIndex, target.view,
+                                               std::span<const std::uint32_t>(target.hiddenAnnotations),
+                                               params.pageRectPoints, params.devicePixelsPerPoint);
     } catch (const std::exception& exception) {
         rendered = std::unexpected(
             core::Error{core::ErrorCode::Internal, exception.what(), "editor"});

@@ -3,6 +3,7 @@
 
 #include "CommandStack.hpp"
 #include "DocumentRenderer.hpp"
+#include "AnnotationService.hpp"
 #include "LinkService.hpp"
 #include "PageModel.hpp"
 #include "TextService.hpp"
@@ -187,6 +188,10 @@ public:
         pdf::PdfDocumentInfo info;
         std::vector<PageSource> pages;   // every page, native metadata
         std::vector<std::string> labels; // parallel to pages ("" = none)
+        // Where the annotations the save created ended up, one per page in
+        // request order (see PdfEngine::assembleDocument). Empty = no
+        // report: rebaseOnto then drops the pages' annotation state.
+        std::vector<pdf::PdfAssembledPageAnnotations> annotationReport;
     };
 
     // Worker-safe (touches only the engine and the immutable credentials of
@@ -209,6 +214,13 @@ public:
     //   - base info, page labels and the path (`newPath`, when given) are
     //     replaced; cached links and the outline are reset (their
     //     destinations index the previous documents);
+    //   - annotation state (ADR-0012 "Rebase"): a page with edits and a
+    //     matching target.annotationReport keeps its overlay ids (the items
+    //     now live in the file at the reported indices, which stay
+    //     suppressed from the raster) and its rasterRevision; without a
+    //     matching report the state is dropped and the raster revision is
+    //     fresh (the file's own annotations are drawn instead; overlay ids
+    //     of that page are lost - acceptable fallback);
     //   - the UNDO HISTORY IS CLEARED: recorded commands hold entries of the
     //     previous documents and cannot be re-targeted (a deleted page does
     //     not exist in the new file). The current stateId is kept, so the
@@ -244,6 +256,15 @@ public:
 
     // Per-page links (dedicated stream + count-bounded LRU).
     LinkService& linkService() { return linkService_; }
+
+    // Annotations: lazily loaded originals + the page model's overlay state,
+    // resolved to display space (see AnnotationService).
+    AnnotationService& annotations() { return annotationService_; }
+    const AnnotationService& annotations() const { return annotationService_; }
+    // Fired (main thread) when a page's originals finished loading.
+    void setOnAnnotationsChanged(std::function<void(core::PageId)> onChanged) {
+        annotationService_.setOnChanged(std::move(onChanged));
+    }
 
     // RENDER revision (tile-cache epoch), bumped only by markModified().
     // Page-model edits do NOT bump it: tiles are keyed by (PageId,
@@ -302,6 +323,7 @@ private:
     DocumentRenderer renderer_;
     TextService textService_;
     LinkService linkService_;
+    AnnotationService annotationService_;
 };
 
 } // namespace rivet::editor

@@ -92,6 +92,18 @@ bool Button::onMouse(const PointerEvent& event) {
     return true;
 }
 
+void Button::setActive(bool active) {
+    if (active_ == active) return;
+    active_ = active;
+    invalidate();
+}
+
+void Button::setSwatch(std::optional<Color> swatch) {
+    if (swatch_ == swatch) return;
+    swatch_ = swatch;
+    invalidate();
+}
+
 void Button::paint(PaintContext& context) const {
     paintSelf(context);
 }
@@ -106,10 +118,18 @@ void Button::paintSelf(PaintContext& context) const {
     case VisualState::Normal: break;
     }
 
+    constexpr Color kActiveBorder{0.10, 0.45, 0.95, 1.0};
+    if (active_) fill = Color{0.82, 0.90, 1.0, 1.0};
     context.fillRoundedRect(rect, fill, kCornerRadius);
     // Inset half a stroke width so the border stays inside the clip.
-    context.strokeRect(rect.inset(core::Insets::uniform(0.5)), kBorder, 1.0);
-    context.drawText(label_, rect, kLabelFont, kLabelColor, TextAlign::Center);
+    context.strokeRect(rect.inset(core::Insets::uniform(0.5)), active_ ? kActiveBorder : kBorder,
+                       active_ ? 2.0 : 1.0);
+    if (swatch_.has_value()) {
+        const core::Rect chip = rect.inset(core::Insets::uniform(5.0));
+        context.fillRoundedRect(chip, *swatch_, 3.0);
+    } else {
+        context.drawText(label_, rect, kLabelFont, kLabelColor, TextAlign::Center);
+    }
 }
 
 } // namespace rivet::ui

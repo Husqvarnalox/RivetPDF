@@ -28,7 +28,7 @@ core::Result<std::vector<PageModel::ViewUpdate>> currentViews(const PageModelSna
                                                    "page is not in the document", "editor"));
         }
         if (!seen.insert(id).second) return std::unexpected(invalid("page listed twice"));
-        views.push_back(PageModel::ViewUpdate{id, entry->view, entry->contentRevision});
+        views.push_back(PageModel::ViewUpdate{id, entry->view, entry->contentRevision, entry->rasterRevision});
     }
     return views;
 }
@@ -108,6 +108,7 @@ bool RotatePagesCommand::execute() {
     for (PageModel::ViewUpdate& update : after) {
         update.view.rotation = core::addRotation(update.view.rotation, delta);
         update.contentRevision = model_.mintContentRevision();
+        update.rasterRevision = update.contentRevision; // one fresh value for both
     }
     if (!record(model_.updateViews(after))) return false;
     before_ = std::move(*before);
@@ -145,6 +146,13 @@ bool DuplicatePagesCommand::execute() {
         PageEntry copy = snapshot->at(positions[i]);
         copy.id = model_.mintPageId();
         copy.contentRevision = 0; // a new id: its creation view
+        // An independent copy of the annotation state: fresh ids for every
+        // overlay item (fileIndex kept); the raster is the same.
+        if (copy.annotations != nullptr) {
+            auto cloned = std::make_shared<PageAnnotationState>(*copy.annotations);
+            for (OverlayAnnotation& item : cloned->overlay) item.id = model_.mintAnnotationId();
+            copy.annotations = std::move(cloned);
+        }
         created.push_back(copy.id);
         // Copy i goes right after its original, which itself moved down by
         // the i copies inserted before it.
@@ -185,7 +193,7 @@ bool InsertPagesCommand::execute() {
     for (std::size_t i = 0; i < pages_.size(); ++i) {
         const PageSource& page = pages_[i];
         PageEntry entry{model_.mintPageId(), page.document, page.pageIndex, page.nativeView, 0,
-                        page.mediaBox, page.nativeView};
+                        page.mediaBox, page.nativeView, nullptr, 0};
         created.push_back(entry.id);
         placed.emplace_back(index_ + i, std::move(entry));
     }
@@ -222,7 +230,10 @@ bool CropPagesCommand::execute() {
             return fail(invalid("crop box must be non-empty and within the page's media box"));
         }
     }
-    for (PageModel::ViewUpdate& update : after) update.contentRevision = model_.mintContentRevision();
+    for (PageModel::ViewUpdate& update : after) {
+        update.contentRevision = model_.mintContentRevision();
+        update.rasterRevision = update.contentRevision; // one fresh value for both
+    }
     if (!record(model_.updateViews(after))) return false;
     before_ = std::move(*before);
     after_ = std::move(after);

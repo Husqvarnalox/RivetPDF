@@ -26,6 +26,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <set>
 #include <sstream>
 #include <string>
@@ -148,8 +149,17 @@ public:
         return openDocument(path, reopenPassword);
     }
 
-    core::Status assembleDocument(const pdf::PdfAssemblyRequest& request, pdf::IPdfByteSink& sink) override {
+    core::Status assembleDocument(const pdf::PdfAssemblyRequest& request, pdf::IPdfByteSink& sink,
+                                  std::vector<pdf::PdfAssembledPageAnnotations>* annotationReport = nullptr) override {
         const int ordinal = ++assemblies;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            lastEdits.clear();
+            for (const pdf::PdfAssemblyPage& page : request.pages) {
+                lastEdits.push_back(page.annotationEdits != nullptr ? *page.annotationEdits
+                                                                    : pdf::PdfPageAnnotationEdits{});
+            }
+        }
         waitAtGate();
         if (failAssembly.load() || (failAssemblyFrom.load() > 0 && ordinal >= failAssemblyFrom.load())) {
             return std::unexpected(core::makeError(core::ErrorCode::InvalidDocument, "assembly failed", "test"));
@@ -160,6 +170,29 @@ public:
             out << fakeMarker(*page.source, page.sourcePageIndex) << ' ' << core::rotationDegrees(page.view.rotation)
                 << ' ' << page.view.cropBox.left << ' ' << page.view.cropBox.bottom << ' '
                 << page.view.cropBox.right << ' ' << page.view.cropBox.top << "\n";
+        }
+        if (annotationReport != nullptr && reportAnnotations.load()) {
+            annotationReport->clear();
+            if (reportOverride.has_value()) {
+                *annotationReport = *reportOverride;
+            } else {
+                // Like the real writer: removals first, then the creations appended.
+                for (const pdf::PdfAssemblyPage& page : request.pages) {
+                    std::uint32_t count = 0;
+                    if (auto originals = page.source->annotations(page.sourcePageIndex); originals.has_value()) {
+                        count = (*originals)->annotsCount;
+                    }
+                    pdf::PdfAssembledPageAnnotations entry;
+                    if (page.annotationEdits != nullptr) {
+                        count -= static_cast<std::uint32_t>(page.annotationEdits->removeIndices.size());
+                        for (std::size_t k = 0; k < page.annotationEdits->create.size(); ++k) {
+                            entry.createdIndices.push_back(count++);
+                        }
+                    }
+                    entry.annotsCount = count;
+                    annotationReport->push_back(std::move(entry));
+                }
+            }
         }
         const std::string bytes = out.str();
         // Several chunks, like a real backend streaming its output.
@@ -195,6 +228,13 @@ public:
     std::atomic<int> failAssemblyFrom{0};
     std::string reopenPassword;
     std::string lastPassword;
+
+    // Annotation report: filled like a real writer unless disabled (a
+    // backend without report support) or overridden.
+    std::atomic<bool> reportAnnotations{true};
+    std::optional<std::vector<pdf::PdfAssembledPageAnnotations>> reportOverride;
+    // The annotation edits of the last assembly, one per page (empty = none).
+    std::vector<pdf::PdfPageAnnotationEdits> lastEdits;
 
     std::atomic<int> opens{0};
     std::atomic<int> reopens{0};

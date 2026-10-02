@@ -1,9 +1,11 @@
 #pragma once
 
+#include "ui/UiTypes.hpp"
 #include "ui/Widget.hpp"
 
 #include <cstdint>
 #include <functional>
+#include <optional>
 #include <string>
 
 namespace rivet::ui {
@@ -26,6 +28,15 @@ public:
     void setOnClick(std::function<void()> onClick);
     bool hasOnClick() const { return onClick_ != nullptr; }
 
+    // Toggle look: an active button is drawn with an accent border and a
+    // tinted fill (tool strips mark the current choice with it). Purely
+    // visual; the click callback is unaffected.
+    void setActive(bool active);
+    bool active() const { return active_; }
+    // A color chip drawn instead of the label text (palette swatches).
+    void setSwatch(std::optional<Color> swatch);
+    const std::optional<Color>& swatch() const { return swatch_; }
+
     // Text extents plus padding; height never below kMinHeight.
     core::Size preferredSize(const PaintContext& context) const override;
 
@@ -45,6 +56,8 @@ private:
     std::function<void()> onClick_;
     bool armed_ = false;   // mouse went down inside; the matching up may click
     bool hovered_ = false; // pointer is currently inside the button
+    bool active_ = false;
+    std::optional<Color> swatch_;
 };
 
 } // namespace rivet::ui

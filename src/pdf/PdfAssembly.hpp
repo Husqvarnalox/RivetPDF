@@ -2,10 +2,12 @@
 #pragma once
 
 #include "core/Error.hpp"
+#include "pdf/PdfAnnotation.hpp"
 #include "pdf/PdfPageGeometry.hpp"
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <vector>
 
 namespace rivet::pdf {
@@ -33,6 +35,9 @@ struct PdfAssemblyPage {
     const PdfDocument* source = nullptr;
     std::size_t sourcePageIndex = 0;
     PdfPageView view;
+    // Annotation changes against the SOURCE page's /Annots (null or empty =
+    // the page's annotations are copied unchanged). Applied after the view.
+    std::shared_ptr<const PdfPageAnnotationEdits> annotationEdits;
 };
 
 // A request to materialize a page list into a new PDF.

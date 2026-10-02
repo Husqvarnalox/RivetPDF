@@ -19,6 +19,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <span>
 #include <unordered_map>
 #include <vector>
 
@@ -26,13 +27,17 @@ namespace rivet::editor {
 
 // Where a page's pixels come from: a page of some opened document presented
 // through a view (see PdfPageGeometry.hpp), identified for caching by the
-// page model's contentRevision. The shared_ptr keeps the source document
-// alive for the queued job.
+// page model's RASTER revision (view + suppressed annotations; the tile
+// key's revision field). `hiddenAnnotations` are the /Annots indices the
+// raster must not draw (Rivet draws their edited versions, or they were
+// deleted). The shared_ptr keeps the source document alive for the queued
+// job.
 struct RenderPageTarget {
     std::shared_ptr<pdf::PdfDocument> document;
     std::size_t pageIndex = 0;
     pdf::PdfPageView view;
-    std::uint64_t contentRevision = 0;
+    std::uint64_t rasterRevision = 0;
+    std::vector<std::uint32_t> hiddenAnnotations;
 };
 
 // Resolves a PageId to its current render target (nullopt = not in the
@@ -51,7 +56,7 @@ using RenderPageResolver = std::function<std::optional<RenderPageTarget>(core::P
 //     belonging to another document or RasterParams not derived from the key
 //     (params.devicePixelsPerPoint must equal key.scale.scale()); NotFound
 //     for a PageId the resolver does not know (page deleted) or a key whose
-//     contentRevision is not the page's current one (stale view).
+//     revision is not the page's current rasterRevision (stale raster).
 //   - A tile that already FAILED for the current revision fires inline on the
 //     calling thread with the recorded error, WITHOUT scheduling. Failed tiles
 //     never re-enter the render pipeline (see failed-tile contract below).

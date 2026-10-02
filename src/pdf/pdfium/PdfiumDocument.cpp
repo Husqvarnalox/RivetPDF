@@ -10,7 +10,9 @@
 #include <vector>
 
 #include "PdfiumCallGate.hpp"
+#include "PdfiumAnnotations.h"
 #include "PdfiumFileSource.h"
+#include "PdfiumStrings.h"
 #include "PdfiumTextPage.h"
 #include "core/geometry/Matrix.hpp"
 #include "fpdf_doc.h"  // FPDF_GetMetaText
@@ -20,6 +22,8 @@
 
 namespace rivet::pdf {
 namespace {
+
+using internal::utf16leToUtf8;
 
 // RAII wrapper for FPDF_PAGE handles (FPDF_LoadPage / FPDF_ClosePage).
 class ScopedPage {
@@ -60,6 +64,56 @@ private:
     FPDF_BITMAP bitmap_;
 };
 
+// Sets FPDF_ANNOT_FLAG_HIDDEN on the given /Annots entries of a page for the
+// guard's lifetime and restores the exact previous /F values on destruction
+// (also on every error path). Indices out of range (or entries that are not
+// dictionaries) are ignored. Caller holds the PDFium gate for the whole
+// lifetime; the page must outlive the guard.
+class HiddenAnnotationsGuard {
+public:
+    HiddenAnnotationsGuard(FPDF_PAGE page, std::span<const std::uint32_t> hidden) : page_(page) {
+        if (hidden.empty()) {
+            return;
+        }
+        const int count = FPDFPage_GetAnnotCount(page_);
+        for (const std::uint32_t index : hidden) {
+            if (index >= static_cast<std::uint32_t>(std::max(0, count))) {
+                continue;
+            }
+            if (std::any_of(saved_.begin(), saved_.end(),
+                            [index](const Saved& s) { return s.index == static_cast<int>(index); })) {
+                continue; // listed twice: remember the ORIGINAL flags only
+            }
+            internal::ScopedAnnot annot(FPDFPage_GetAnnot(page_, static_cast<int>(index)));
+            if (annot.get() == nullptr) {
+                continue;
+            }
+            const int flags = FPDFAnnot_GetFlags(annot.get());
+            if (FPDFAnnot_SetFlags(annot.get(), flags | FPDF_ANNOT_FLAG_HIDDEN) != 0) {
+                saved_.push_back(Saved{static_cast<int>(index), flags});
+            }
+        }
+    }
+    ~HiddenAnnotationsGuard() {
+        for (const Saved& s : saved_) {
+            internal::ScopedAnnot annot(FPDFPage_GetAnnot(page_, s.index));
+            if (annot.get() != nullptr) {
+                FPDFAnnot_SetFlags(annot.get(), s.flags);
+            }
+        }
+    }
+    HiddenAnnotationsGuard(const HiddenAnnotationsGuard&) = delete;
+    HiddenAnnotationsGuard& operator=(const HiddenAnnotationsGuard&) = delete;
+
+private:
+    struct Saved {
+        int index;
+        int flags;
+    };
+    FPDF_PAGE page_;
+    std::vector<Saved> saved_;
+};
+
 // Upper bound for a single metadata string (UTF-16LE bytes, including the
 // terminator). Titles are short; anything larger is treated as missing.
 constexpr std::size_t kMaxMetaTextBytes = 1u << 16;
@@ -74,69 +128,6 @@ constexpr double kMaxRenderScale = 512.0;
 // Tolerance when checking that the requested tile lies inside the page: page
 // dimensions come back as floats and callers compute from those values.
 constexpr double kContainmentEpsilon = 1e-4;
-
-// Converts UTF-16LE bytes (as returned by FPDF_GetMetaText) to UTF-8.
-// Stops at the terminating NUL code unit, skips a leading BOM, decodes
-// surrogate pairs and emits U+FFFD for malformed sequences. No <codecvt>.
-std::string utf16leToUtf8(const std::uint8_t* bytes, std::size_t byteLength) {
-    std::string out;
-    out.reserve(byteLength); // usually an over-estimate; avoids reallocation
-
-    const std::size_t units = byteLength / 2;
-    auto unitAt = [&](std::size_t index) -> std::uint16_t {
-        return static_cast<std::uint16_t>(static_cast<std::uint16_t>(bytes[index * 2]) |
-                                          (static_cast<std::uint16_t>(bytes[index * 2 + 1]) << 8));
-    };
-
-    auto appendCodePoint = [&out](std::uint32_t codePoint) {
-        if (codePoint <= 0x7Fu) {
-            out.push_back(static_cast<char>(codePoint));
-        } else if (codePoint <= 0x7FFu) {
-            out.push_back(static_cast<char>(0xC0u | (codePoint >> 6)));
-            out.push_back(static_cast<char>(0x80u | (codePoint & 0x3Fu)));
-        } else if (codePoint <= 0xFFFFu) {
-            out.push_back(static_cast<char>(0xE0u | (codePoint >> 12)));
-            out.push_back(static_cast<char>(0x80u | ((codePoint >> 6) & 0x3Fu)));
-            out.push_back(static_cast<char>(0x80u | (codePoint & 0x3Fu)));
-        } else {
-            out.push_back(static_cast<char>(0xF0u | (codePoint >> 18)));
-            out.push_back(static_cast<char>(0x80u | ((codePoint >> 12) & 0x3Fu)));
-            out.push_back(static_cast<char>(0x80u | ((codePoint >> 6) & 0x3Fu)));
-            out.push_back(static_cast<char>(0x80u | (codePoint & 0x3Fu)));
-        }
-    };
-
-    std::size_t i = 0;
-    if (units > 0 && unitAt(0) == 0xFEFFu) {
-        i = 1; // byte-order mark
-    }
-
-    while (i < units) {
-        const std::uint16_t unit = unitAt(i);
-        if (unit == 0) {
-            break; // terminator
-        }
-        if (unit >= 0xD800u && unit <= 0xDBFFu) { // high surrogate
-            if (i + 1 < units && unitAt(i + 1) >= 0xDC00u && unitAt(i + 1) <= 0xDFFFu) {
-                appendCodePoint(0x10000u + ((static_cast<std::uint32_t>(unit) - 0xD800u) << 10) +
-                                (static_cast<std::uint32_t>(unitAt(i + 1)) - 0xDC00u));
-                i += 2;
-            } else {
-                appendCodePoint(0xFFFDu); // unpaired high surrogate
-                i += 1;
-            }
-            continue;
-        }
-        if (unit >= 0xDC00u && unit <= 0xDFFFu) { // unpaired low surrogate
-            appendCodePoint(0xFFFDu);
-            i += 1;
-            continue;
-        }
-        appendCodePoint(unit);
-        i += 1;
-    }
-    return out;
-}
 
 } // namespace
 
@@ -162,16 +153,25 @@ PdfiumDocument::~PdfiumDocument() {
         secret[i] = '\0';
     }
 
-    if (document_ == nullptr) {
+    if (document_ == nullptr && annotationReader_ == nullptr) {
         return;
     }
     const FPDF_DOCUMENT handle = document_;
+    const FPDF_DOCUMENT reader = annotationReader_;
     document_ = nullptr;
+    annotationReader_ = nullptr;
     // Public entry operation: one gate acquisition for the close. The gate is
     // a leaked singleton, so this remains valid during static teardown. The
     // file source (a member) is released only after this body, i.e. after
-    // PDFium is done with it.
-    globalPdfiumCallGate().invoke([handle] { FPDF_CloseDocument(handle); });
+    // PDFium is done with it (both documents read through it).
+    globalPdfiumCallGate().invoke([handle, reader] {
+        if (reader != nullptr) {
+            FPDF_CloseDocument(reader);
+        }
+        if (handle != nullptr) {
+            FPDF_CloseDocument(handle);
+        }
+    });
 }
 
 const PdfDocumentInfo& PdfiumDocument::info() const {
@@ -252,18 +252,20 @@ core::Result<PdfPageInfo> PdfiumDocument::pageInfo(std::size_t pageIndex) const 
 core::Result<core::Bitmap> PdfiumDocument::renderPage(std::size_t pageIndex,
                                                       const core::Rect& pageRectPoints,
                                                       double devicePixelsPerPoint) {
-    return renderPageImpl(pageIndex, nullptr, pageRectPoints, devicePixelsPerPoint);
+    return renderPageImpl(pageIndex, nullptr, {}, pageRectPoints, devicePixelsPerPoint);
 }
 
 core::Result<core::Bitmap> PdfiumDocument::renderPageInView(std::size_t pageIndex,
                                                             const PdfPageView& view,
+                                                            std::span<const std::uint32_t> hiddenAnnotations,
                                                             const core::Rect& pageRectPoints,
                                                             double devicePixelsPerPoint) {
-    return renderPageImpl(pageIndex, &view, pageRectPoints, devicePixelsPerPoint);
+    return renderPageImpl(pageIndex, &view, hiddenAnnotations, pageRectPoints, devicePixelsPerPoint);
 }
 
 core::Result<core::Bitmap> PdfiumDocument::renderPageImpl(std::size_t pageIndex,
                                                           const PdfPageView* view,
+                                                          std::span<const std::uint32_t> hiddenAnnotations,
                                                           const core::Rect& pageRectPoints,
                                                           double devicePixelsPerPoint) {
     // Public entry operation: one gate acquisition for the whole body. Every
@@ -444,10 +446,66 @@ core::Result<core::Bitmap> PdfiumDocument::renderPageImpl(std::size_t pageIndex,
         const FS_RECTF bitmapClip{0.0f, 0.0f, static_cast<float>(bitmap.width()),
                                   static_cast<float>(bitmap.height())};
 
-        FPDF_RenderPageBitmapWithMatrix(fpdfBitmap.get(), page.get(), &matrix, &bitmapClip,
-                                        FPDF_ANNOT | FPDF_LCD_TEXT);
+        // Annotations Rivet draws itself (edited ones, deleted ones) are
+        // hidden for this render only: /F is toggled on the live dictionaries
+        // and restored by the guard before the page closes, all inside this
+        // gate acquisition.
+        {
+            HiddenAnnotationsGuard hidden(page.get(), hiddenAnnotations);
+            FPDF_RenderPageBitmapWithMatrix(fpdfBitmap.get(), page.get(), &matrix, &bitmapClip,
+                                            FPDF_ANNOT | FPDF_LCD_TEXT);
+        }
 
         return bitmap;
+    });
+}
+
+core::Result<PdfPageAnnotationsPtr> PdfiumDocument::annotations(std::size_t pageIndex) const {
+    // Public entry operation: one gate acquisition for the whole read.
+    return globalPdfiumCallGate().invoke([&]() -> core::Result<PdfPageAnnotationsPtr> {
+        if (pageIndex >= info_.pageCount) {
+            return std::unexpected(core::makeError(core::ErrorCode::InvalidArgument,
+                                                   "page index " + std::to_string(pageIndex) +
+                                                       " out of range (document has " +
+                                                       std::to_string(info_.pageCount) + " pages)",
+                                                   "pdf"));
+        }
+        if (const auto cached = annotationCache_.find(pageIndex); cached != annotationCache_.end()) {
+            return cached->second;
+        }
+        if (annotationReader_ != nullptr && annotationReaderReadPages_.contains(pageIndex)) {
+            // Read before and evicted since: this reader's copy of the page
+            // was altered by the read, start over from the file.
+            FPDF_CloseDocument(annotationReader_);
+            annotationReader_ = nullptr;
+            annotationReaderReadPages_.clear();
+        }
+        if (annotationReader_ == nullptr) {
+            // The same bytes the live document was opened from (shared file
+            // source), decrypted with the same password.
+            FPDF_FILEACCESS access = source_->fileAccess();
+            annotationReader_ = FPDF_LoadCustomDocument(&access, password_.c_str());
+            if (annotationReader_ == nullptr) {
+                const int lastError = static_cast<int>(FPDF_GetLastError());
+                return std::unexpected(core::makeError(core::ErrorCode::InvalidDocument,
+                                                       "could not reopen the document to read its annotations"
+                                                       " (FPDF error " + std::to_string(lastError) + ")",
+                                                       "pdf"));
+            }
+        }
+        auto read = internal::readPageAnnotations(annotationReader_, pageIndex);
+        annotationReaderReadPages_.insert(pageIndex); // even a failed read may have altered it
+        if (!read.has_value()) {
+            return std::unexpected(read.error());
+        }
+        PdfPageAnnotationsPtr result = std::make_shared<const PdfPageAnnotations>(std::move(*read));
+        if (annotationCache_.size() >= kAnnotationCacheCapacity && !annotationCacheOrder_.empty()) {
+            annotationCache_.erase(annotationCacheOrder_.front());
+            annotationCacheOrder_.pop_front();
+        }
+        annotationCache_.emplace(pageIndex, result);
+        annotationCacheOrder_.push_back(pageIndex);
+        return result;
     });
 }
 

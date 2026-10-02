@@ -109,6 +109,80 @@ timestamps, MediaBox on every page dictionary):
                            100..130 x 570..600 (display 0..30 x 0..30) and
                            "OFFSET" (24 pt) at user (120, 400).
 
+Annotation fixture (read/write/preservation tests; no compression, no
+timestamps; every page MediaBox 0 0 612 792 with an empty content stream, so
+the page is plain white and annotations are the only ink):
+
+  annots.pdf     3 pages.
+                   page 1 (/Rotate 0): /Annots (direct array), in order -
+                     0 Highlight   Rect [100 700 300 720], 1 quad, /C [1 1 0],
+                                   /CA 0.5, /Contents "Highlighted", AP
+                     1 Underline   Rect [100 660 300 680], /C [0 .5 0], NO /AP
+                     2 StrikeOut   Rect [100 620 300 640], /C [1 0 0], AP
+                     3 Text note   Rect [400 700 420 720], /C [1 .8 0], AP,
+                                   /Contents "Привет, мир" (UTF-16BE with
+                                   BOM), /T (Tester), /NM (note-1), /Popup 4
+                     4 Popup       /Parent 3, Rect [430 600 600 700]
+                     5 Ink         2 strokes (3 points each), /C [0 0 1],
+                                   /BS << /W 2 >>, AP stroked at 2
+                     6 Square      Rect [300 500 400 560], /C [0 .5 0],
+                                   /IC [.8 1 .8], /Border [0 0 3], AP
+                     7 Circle      Rect [420 500 520 560], /C [1 0 1],
+                                   /BS << /W 4 >>, AP stroked at 4
+                     8 Line        third-party /Subtype /Line with /L and
+                                   /LE [/None /OpenArrow]: must stay Other
+                     9 Stamp       /Name /Approved, Rect [100 300 250 350],
+                                   /C [0 .6 0], AP
+                    10 FreeText    /DA + AP: unsupported, must stay Other
+                    11 Squiggly    Rect [100 250 300 270], 1 quad, AP:
+                                   unsupported, must stay Other
+                   page 2 (/Rotate 90): /Annots is an INDIRECT array object
+                     (so two imported copies of the page would share it
+                     without per-copy import groups), one Square
+                     Rect [100 100 200 160], /C [1 0 0], /Border [0 0 2].
+                   page 3 (/CropBox [100 100 500 700]): one Square
+                     Rect [150 150 250 250], /C [0 0 1], /Border [0 0 2].
+
+Hostile-input fixtures (Phase 4 hardening; read/preserve tests, never edited by
+Rivet; every page MediaBox 0 0 612 792 with a shared empty content stream):
+
+  annots-many.pdf     1 page whose /Annots holds 4200 entries (> the 4096
+                      Rivet reads in detail). Compact: every entry is the SAME
+                      indirect Square annotation (/Rect [100 100 140 140],
+                      /C [1 0 0], one shared /AP stream).
+  annots-hostile.pdf  PDF 1.5 file (annotation objects live in a compressed
+                      object stream so over-limit payloads stay tiny). 8 pages:
+                        0 string limits: Text notes with /Contents of 65537
+                          bytes (0), /T of 1025 bytes (1), /NM of 257 bytes
+                          (2); a note with /Contents of exactly 65536 bytes
+                          (3, editable boundary); a plain note (4).
+                        1 geometry limits: Highlight with 4097 quads (0), with
+                          exactly 4096 quads (1), with 7 /QuadPoints numbers
+                          (2), with non-numeric /QuadPoints entries (3),
+                          without /QuadPoints (4); Ink with one 10001-point
+                          stroke (5), 257 strokes (6), empty /InkList (7),
+                          /InkList [1 2 3] (8), a stroke of 3 numbers (9),
+                          54000 points in total (10), and a valid Ink (11).
+                        2 malformed /Annots entries: null, an integer, a
+                          dangling reference, a string, then dictionaries
+                          without /Rect, with an inverted /Rect, with huge and
+                          non-numeric /Rect entries, without /Subtype, with an
+                          unknown subtype, and a valid Square last (index 11).
+                        3 /Annots is an integer (not an array).
+                        4 /Annots is a dictionary (not an array).
+                        5 relations and actions: a Text whose /Popup is itself
+                          (0), a Popup whose /Parent is itself (1), a Text
+                          whose /Popup lives on page 6 (2), an /IRT cycle
+                          (3, 4), FileAttachment (5), Link with a /JavaScript
+                          action (6), Link with a /Launch action (7), a
+                          Widget (8).
+                        6 the foreign Popup (index 0) page 5's annotation 2
+                          points at, plus its parent Text (1).
+                        7 text encoding: /Contents with an unpaired high
+                          surrogate (0), an unpaired low surrogate (1) and a
+                          valid supplementary-plane pair (2); all Text notes
+                          with /C.
+
 The committed .pdf files ARE the fixtures; tests never run this script. It
 exists only so the bytes can be regenerated and audited.
 """
@@ -463,6 +537,271 @@ def cropbox_pdf() -> bytes:
     ])
 
 
+# ---------------- annotation fixture ----------------
+
+
+def annots_pdf() -> bytes:
+    objects: list[bytes] = [b""] * 9  # 1 catalog, 2 pages, 3-5 pages, 6-8 content, 9 page-2 /Annots
+
+    def add(obj: bytes) -> int:
+        objects.append(obj)
+        return len(objects)
+
+    def stream(content: bytes, bbox: tuple[float, float, float, float]) -> int:
+        dict_ = b"<< /Type /XObject /Subtype /Form /BBox [%s] /Length %d >>" % (
+            b" ".join(b"%g" % v for v in bbox), len(content))
+        return add(dict_ + b"\nstream\n" + content + b"\nendstream")
+
+    def box(rect: tuple[float, float, float, float]) -> bytes:
+        return b"[" + b" ".join(b"%g" % v for v in rect) + b"]"
+
+    def quad(rect: tuple[float, float, float, float]) -> bytes:
+        l, b, r, t = rect  # PDFium/Acrobat order: TL TR BL BR
+        return b"[%g %g %g %g %g %g %g %g]" % (l, t, r, t, l, b, r, b)
+
+    def annot(subtype: bytes, rect, extra: bytes, ap: int | None, flags: int = 4) -> int:
+        entry = b"<< /Type /Annot /Subtype /" + subtype + b" /Rect " + box(rect) + b" /F %d " % flags + extra
+        if ap is not None:
+            entry += b" /AP << /N %d 0 R >>" % ap
+        return add(entry + b" >>")
+
+    annots1: list[int] = []
+
+    r = (100, 700, 300, 720)
+    annots1.append(annot(b"Highlight", r, b"/QuadPoints " + quad(r) + b" /C [1 1 0] /CA 0.5 /Contents (Highlighted)",
+                         stream(b"1 1 0 rg 100 700 200 20 re f", r)))
+    r = (100, 660, 300, 680)
+    annots1.append(annot(b"Underline", r, b"/QuadPoints " + quad(r) + b" /C [0 0.5 0]", None))
+    r = (100, 620, 300, 640)
+    annots1.append(annot(b"StrikeOut", r, b"/QuadPoints " + quad(r) + b" /C [1 0 0]",
+                         stream(b"1 0 0 RG 1 w 100 630 m 300 630 l S", r)))
+    r = (400, 700, 420, 720)
+    note_ap = stream(b"1 0.8 0 rg 400 700 20 20 re f", r)
+    note_num = len(objects) + 1
+    contents = "\ufeffПривет, мир".encode("utf-16-be").hex().upper().encode()
+    annots1.append(annot(b"Text", r, b"/C [1 0.8 0] /Contents <" + contents + b"> /T (Tester) /NM (note-1) "
+                         b"/Popup %d 0 R" % (note_num + 1), note_ap))
+    annots1.append(add(b"<< /Type /Annot /Subtype /Popup /Parent %d 0 R /Rect [430 600 600 700] /F 0 /Open false >>"
+                       % note_num))
+    r = (99, 499, 221, 561)
+    annots1.append(annot(b"Ink", r, b"/InkList [[100 500 130 540 160 560] [180 560 200 520 220 500]] "
+                         b"/C [0 0 1] /BS << /W 2 >>",
+                         stream(b"0 0 1 RG 2 w 100 500 m 130 540 l 160 560 l S 180 560 m 200 520 l 220 500 l S", r)))
+    r = (300, 500, 400, 560)
+    annots1.append(annot(b"Square", r, b"/C [0 0.5 0] /IC [0.8 1 0.8] /Border [0 0 3]",
+                         stream(b"0.8 1 0.8 rg 0 0.5 0 RG 3 w 301.5 501.5 97 57 re B", r)))
+    r = (420, 500, 520, 560)
+    annots1.append(annot(b"Circle", r, b"/C [1 0 1] /BS << /W 4 >>",
+                         stream(b"1 0 1 RG 4 w 422 502 m 518 502 l 518 558 l 422 558 l h S", r)))
+    r = (95, 395, 305, 455)
+    annots1.append(annot(b"Line", r, b"/L [100 400 300 450] /LE [/None /OpenArrow] /C [0 0 0]",
+                         stream(b"0 0 0 RG 1 w 100 400 m 300 450 l S", r)))
+    r = (100, 300, 250, 350)
+    annots1.append(annot(b"Stamp", r, b"/Name /Approved /C [0 0.6 0] /NM (stamp-1)",
+                         stream(b"0 0.6 0 RG 3 w 102 302 146 46 re S", r)))
+    r = (300, 300, 450, 350)
+    annots1.append(annot(b"FreeText", r, b"/DA (0 0 0 rg /Helv 12 Tf) /Contents (Free)",
+                         stream(b"0.9 0.9 0.9 rg 300 300 150 50 re f", r)))
+    r = (100, 250, 300, 270)
+    annots1.append(annot(b"Squiggly", r, b"/QuadPoints " + quad(r) + b" /C [0 0 0]",
+                         stream(b"0 0 0 RG 1 w 100 252 m 300 252 l S", r)))
+
+    r = (100, 100, 200, 160)
+    sq2 = annot(b"Square", r, b"/C [1 0 0] /Border [0 0 2]", stream(b"1 0 0 RG 2 w 101 101 98 58 re S", r))
+    objects[8] = b"[%d 0 R]" % sq2
+    r = (150, 150, 250, 250)
+    sq3 = annot(b"Square", r, b"/C [0 0 1] /Border [0 0 2]", stream(b"0 0 1 RG 2 w 151 151 98 98 re S", r))
+
+    empty = b"<< /Length 0 >>\nstream\n\nendstream"
+    objects[0] = b"<< /Type /Catalog /Pages 2 0 R >>"
+    objects[1] = b"<< /Type /Pages /Kids [3 0 R 4 0 R 5 0 R] /Count 3 >>"
+    objects[2] = (b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << >> /Contents 6 0 R /Rotate 0 "
+                  b"/Annots [" + b" ".join(b"%d 0 R" % n for n in annots1) + b"] >>")
+    objects[3] = (b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << >> /Contents 7 0 R "
+                  b"/Rotate 90 /Annots 9 0 R >>")
+    objects[4] = (b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /CropBox [100 100 500 700] "
+                  b"/Resources << >> /Contents 8 0 R /Annots [%d 0 R] >>" % sq3)
+    objects[5] = objects[6] = objects[7] = empty
+    return build_pdf(objects)
+
+
+# ---------------- hostile annotation fixtures ----------------
+
+
+def objstm_pdf(objects: list[tuple[bytes, bool]]) -> bytes:
+    """PDF 1.5 file; entries flagged True (plain non-stream objects) are packed
+    into one Flate-compressed object stream, the xref is a Flate xref stream."""
+    import zlib
+    header = b"%PDF-1.5\n%\xe2\xe3\xcf\xd3\n"
+    count = len(objects)
+    stm_num, xref_num = count + 1, count + 2
+    body = b""
+    entries: list[tuple[int, int, int]] = []  # (type, field2, field3) for objects 1..count
+    packed: list[tuple[int, bytes]] = []
+    for number, (obj, compress) in enumerate(objects, start=1):
+        if compress:
+            entries.append((2, stm_num, len(packed)))
+            packed.append((number, obj))
+        else:
+            entries.append((1, len(header) + len(body), 0))
+            body += b"%d 0 obj\n" % number + obj + b"\nendobj\n"
+    head = b""
+    data = b""
+    for number, obj in packed:
+        head += b"%d %d " % (number, len(data))
+        data += obj + b"\n"
+    payload = zlib.compress(head + data, 9)
+    stm_offset = len(header) + len(body)
+    body += (b"%d 0 obj\n<< /Type /ObjStm /N %d /First %d /Filter /FlateDecode /Length %d >>\nstream\n"
+             % (stm_num, len(packed), len(head), len(payload)) + payload + b"\nendstream\nendobj\n")
+    xref_offset = len(header) + len(body)
+    rows = b"\x00" + (0).to_bytes(4, "big") + (65535).to_bytes(2, "big")
+    for kind, f2, f3 in entries:
+        rows += bytes([kind]) + f2.to_bytes(4, "big") + f3.to_bytes(2, "big")
+    rows += b"\x01" + stm_offset.to_bytes(4, "big") + (0).to_bytes(2, "big")
+    rows += b"\x01" + xref_offset.to_bytes(4, "big") + (0).to_bytes(2, "big")
+    xref = zlib.compress(rows, 9)
+    body += (b"%d 0 obj\n<< /Type /XRef /Size %d /W [1 4 2] /Root 1 0 R /Filter /FlateDecode /Length %d >>\n"
+             b"stream\n" % (xref_num, count + 3, len(xref)) + xref + b"\nendstream\nendobj\n")
+    return header + body + b"startxref\n%d\n%%%%EOF\n" % xref_offset
+
+
+def annots_many_pdf() -> bytes:
+    count = 4200
+    ap = b"1 0 0 RG 1 w 101 101 38 38 re S"
+    objects = [
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << >> /Contents 4 0 R /Annots ["
+        + b" ".join([b"5 0 R"] * count) + b"] >>",
+        b"<< /Length 0 >>\nstream\n\nendstream",
+        b"<< /Type /Annot /Subtype /Square /Rect [100 100 140 140] /F 4 /C [1 0 0] /Border [0 0 1] "
+        b"/AP << /N 6 0 R >> >>",
+        b"<< /Type /XObject /Subtype /Form /BBox [100 100 140 140] /Length %d >>\nstream\n" % len(ap)
+        + ap + b"\nendstream",
+    ]
+    return build_pdf(objects)
+
+
+def hostile_pdf() -> bytes:
+    page_count = 8
+    first_page, content = 3, 3 + page_count
+    objects: list[tuple[bytes, bool]] = [(b"", False)] * (content)  # 1..content
+    annots_of: dict[int, bytes] = {}
+
+    def add(obj: bytes, compress: bool = True) -> int:
+        objects.append((obj, compress))
+        return len(objects)
+
+    def annot(subtype: bytes, extra: bytes = b"", rect: bytes = b"[100 100 140 140]") -> bytes:
+        return b"<< /Type /Annot /Subtype /" + subtype + b" /Rect " + rect + b" /F 4 " + extra + b" >>"
+
+    def numbers(values) -> bytes:
+        return b"[" + b" ".join(b"%g" % v for v in values) + b"]"
+
+    def quads(n: int) -> bytes:
+        # Identical quads: compresses to almost nothing.
+        return b"[" + b" ".join([b"10 16 18 16 10 10 18 10"] * n) + b"]"
+
+    def stroke(n: int) -> bytes:
+        return b"[" + b" ".join([b"10 20"] * n) + b"]"
+
+    # --- page 0: string limits
+    annots_of[0] = b" ".join(b"%d 0 R" % add(o) for o in (
+        annot(b"Text", b"/C [1 0.8 0] /Contents (" + b"x" * 65537 + b")"),
+        annot(b"Text", b"/C [1 0.8 0] /T (" + b"a" * 1025 + b")"),
+        annot(b"Text", b"/C [1 0.8 0] /NM (" + b"n" * 257 + b")"),
+        annot(b"Text", b"/C [1 0.8 0] /Contents (" + b"y" * 65536 + b")"),
+        annot(b"Text", b"/C [1 0.8 0] /Contents (plain) /T (Tester) /NM (plain-1)"),
+    ))
+
+    # --- page 1: geometry limits
+    big_ink = b"[" + b" ".join([stroke(9000)] * 6) + b"]"
+    annots_of[1] = b" ".join(b"%d 0 R" % add(o) for o in (
+        annot(b"Highlight", b"/C [1 1 0] /QuadPoints " + quads(4097)),
+        annot(b"Highlight", b"/C [1 1 0] /QuadPoints " + quads(4096)),
+        annot(b"Highlight", b"/C [1 1 0] /QuadPoints [1 2 3 4 5 6 7]"),
+        annot(b"Highlight", b"/C [1 1 0] /QuadPoints [(a) /b null true 1 2 3 4]"),
+        annot(b"Highlight", b"/C [1 1 0]"),
+        annot(b"Ink", b"/C [0 0 1] /InkList [" + stroke(10001) + b"]"),
+        annot(b"Ink", b"/C [0 0 1] /InkList [" + b" ".join([b"[10 10 20 20]"] * 257) + b"]"),
+        annot(b"Ink", b"/C [0 0 1] /InkList []"),
+        annot(b"Ink", b"/C [0 0 1] /InkList [1 2 3]"),
+        annot(b"Ink", b"/C [0 0 1] /InkList [[1 2 3]]"),
+        annot(b"Ink", b"/C [0 0 1] /InkList " + big_ink),
+        annot(b"Ink", b"/C [0 0 1] /InkList [[100 500 130 540 160 560]]"),
+    ))
+
+    # --- page 2: malformed entries (direct objects and dangling references)
+    valid = add(annot(b"Square", b"/C [0 0.5 0] /Border [0 0 2]", b"[300 300 360 360]"))
+    annots_of[2] = (b"null 42 9999 0 R (string) true "
+                    + b"<< /Type /Annot /Subtype /Square /C [1 0 0] >> "
+                    + b"<< /Type /Annot /Subtype /Square /Rect [200 200 100 100] /C [0 0 1] >> "
+                    + b"<< /Type /Annot /Subtype /Square /Rect [0 0 340282346638528859811704183484516925440 "
+                    + b"1000000000000000000000000000000] /C [0 0 1] >> "
+                    + b"<< /Type /Annot /Subtype /Square /Rect [(a) /b null 10] /C [0 0 1] >> "
+                    + b"<< /Type /Annot /Rect [10 10 50 50] >> "
+                    + b"<< /Type /Annot /Subtype /Bogus /Rect [10 10 50 50] >> "
+                    + b"<< /Type /Annot /Subtype /Square /Rect [10 10 20] /C [0 0 1] >> "
+                    + b"%d 0 R" % valid)
+
+    # --- pages 3, 4: /Annots of the wrong type
+    annots_of[3] = None  # patched below
+    annots_of[4] = None
+
+    # --- page 5: relations and actions. Object numbers are allocated first so
+    # that the annotations can reference each other.
+    base = len(objects) + 1
+    self_text, self_popup, foreign_text = base, base + 1, base + 2
+    irt_a, irt_b = base + 3, base + 4
+    foreign_popup = base + 9 + 0  # patched after the page-6 objects exist
+    group = [
+        annot(b"Text", b"/C [1 0.8 0] /Popup %d 0 R" % self_text),
+        annot(b"Popup", b"/Parent %d 0 R /Open true" % self_popup),
+        annot(b"Text", b"/C [1 0.8 0] /Popup %d 0 R" % (base + 9)),
+        annot(b"Text", b"/C [1 0.8 0] /IRT %d 0 R /RT /R" % irt_b),
+        annot(b"Text", b"/C [1 0.8 0] /IRT %d 0 R /RT /R" % irt_a),
+        annot(b"FileAttachment", b"/FS << /Type /Filespec /F (payload.bin) >> /Name /PushPin"),
+        annot(b"Link", b"/Border [0 0 0] /A << /S /JavaScript /JS (app.alert\\(1\\)) >>"),
+        annot(b"Link", b"/Border [0 0 0] /A << /S /Launch /F (calc.exe) >>"),
+        annot(b"Widget", b"/FT /Tx /T (field1) /V (value)"),
+    ]
+    nums = [add(o) for o in group]
+    assert nums[0] == self_text and nums[1] == self_popup and nums[2] == foreign_text and nums[3] == irt_a
+    annots_of[5] = b" ".join(b"%d 0 R" % n for n in nums)
+
+    # --- page 6: the foreign popup + its parent (the page-5 note above)
+    popup6 = add(b"<< /Type /Annot /Subtype /Popup /Rect [400 400 500 480] /Parent %d 0 R /Open true >>" % foreign_text)
+    assert popup6 == base + 9
+    parent6 = add(annot(b"Text", b"/C [0.5 0.5 1] /Popup %d 0 R /Contents (parent)" % popup6))
+    annots_of[6] = b"%d 0 R %d 0 R" % (popup6, parent6)
+
+    # --- page 7: UTF-16BE contents with surrogate problems
+    def utf16(units: list[int]) -> bytes:
+        return b"<FEFF" + b"".join(b"%04X" % u for u in units) + b">"
+
+    annots_of[7] = b" ".join(b"%d 0 R" % add(o) for o in (
+        annot(b"Text", b"/C [1 0.8 0] /Contents " + utf16([0x41, 0xD800, 0x42])),
+        annot(b"Text", b"/C [1 0.8 0] /Contents " + utf16([0x43, 0xDC00, 0x44])),
+        annot(b"Text", b"/C [1 0.8 0] /Contents " + utf16([0x45, 0xD83D, 0xDE00, 0x46])),
+    ))
+
+    objects[0] = (b"<< /Type /Catalog /Pages 2 0 R >>", False)
+    kids = b" ".join(b"%d 0 R" % (first_page + i) for i in range(page_count))
+    objects[1] = (b"<< /Type /Pages /Kids [" + kids + b"] /Count %d >>" % page_count, False)
+    for i in range(page_count):
+        if i == 3:
+            annots = b" /Annots 42"
+        elif i == 4:
+            annots = b" /Annots << /Subtype /Square /Rect [10 10 50 50] >>"
+        else:
+            annots = b" /Annots [" + annots_of[i] + b"]"
+        objects[first_page - 1 + i] = (b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << >> "
+                                       b"/Contents %d 0 R" % content + annots + b" >>", False)
+    objects[content - 1] = (b"<< /Length 0 >>\nstream\n\nendstream", False)
+    return objstm_pdf(objects)
+
+
 def main() -> None:
     # corners.pdf / rot90 / rot180 / rot270: one content stream, varying /Rotate
     # on the (inherited) Pages node.
@@ -619,6 +958,11 @@ def main() -> None:
     write("markers-5.pdf", markers_pdf())
     write("import-3.pdf", import_pdf())
     write("cropbox.pdf", cropbox_pdf())
+
+    # Annotation fixture (see the module docstring).
+    write("annots.pdf", annots_pdf())
+    write("annots-many.pdf", annots_many_pdf())
+    write("annots-hostile.pdf", hostile_pdf())
 
 
 if __name__ == "__main__":

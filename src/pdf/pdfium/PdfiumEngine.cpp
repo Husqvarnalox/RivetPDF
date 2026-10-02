@@ -125,8 +125,9 @@ core::Result<std::unique_ptr<PdfDocument>> PdfiumEngine::reopenWithCredentialsOf
     return openDocument(path, pdfium->openPassword());
 }
 
-core::Status PdfiumEngine::assembleDocument(const PdfAssemblyRequest& request, IPdfByteSink& sink) {
-    return assembleWithPdfium(*this, request, sink);
+core::Status PdfiumEngine::assembleDocument(const PdfAssemblyRequest& request, IPdfByteSink& sink,
+                                           std::vector<PdfAssembledPageAnnotations>* annotationReport) {
+    return assembleWithPdfium(*this, request, sink, annotationReport);
 }
 
 } // namespace rivet::pdf

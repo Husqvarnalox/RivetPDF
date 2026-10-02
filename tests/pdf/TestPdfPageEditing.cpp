@@ -212,7 +212,7 @@ PdfAssemblyRequest request(PdfAssemblyRequest::Mode mode, const PdfDocument* bas
 }
 
 void addPage(PdfAssemblyRequest& req, const PdfDocument& source, std::size_t index) {
-    req.pages.push_back(PdfAssemblyPage{&source, index, nativeView(source, index)});
+    req.pages.push_back(PdfAssemblyPage{&source, index, nativeView(source, index), nullptr});
 }
 
 } // namespace
@@ -554,14 +554,14 @@ RIVET_TEST(pdfiumAssemblyAppliesRotationAndCrop) {
     if (!base || !crop) return;
 
     auto req = request(PdfAssemblyRequest::Mode::PreserveBase, base.get());
-    req.pages.push_back({base.get(), 0, PdfPageView{core::PageRotation::Clockwise90, PdfBox{0, 0, 612, 792}}});
-    req.pages.push_back({base.get(), 1, PdfPageView{core::PageRotation::None, PdfBox{50, 80, 200, 200}}});
-    req.pages.push_back({base.get(), 2, PdfPageView{core::PageRotation::Clockwise270, PdfBox{10, 20, 300, 400}}});
+    req.pages.push_back({base.get(), 0, PdfPageView{core::PageRotation::Clockwise90, PdfBox{0, 0, 612, 792}}, nullptr});
+    req.pages.push_back({base.get(), 1, PdfPageView{core::PageRotation::None, PdfBox{50, 80, 200, 200}}, nullptr});
+    req.pages.push_back({base.get(), 2, PdfPageView{core::PageRotation::Clockwise270, PdfBox{10, 20, 300, 400}}, nullptr});
     // cropbox.pdf page 2 is natively /Rotate 90 with a crop box: un-rotate
     // it and widen the view to the whole media box.
-    req.pages.push_back({crop.get(), 1, PdfPageView{core::PageRotation::None, PdfBox{0, 0, 612, 792}}});
+    req.pages.push_back({crop.get(), 1, PdfPageView{core::PageRotation::None, PdfBox{0, 0, 612, 792}}, nullptr});
     // A duplicate of base page 1 with a different view than the reused one.
-    req.pages.push_back({base.get(), 1, PdfPageView{core::PageRotation::Clockwise180, PdfBox{0, 0, 612, 792}}});
+    req.pages.push_back({base.get(), 1, PdfPageView{core::PageRotation::Clockwise180, PdfBox{0, 0, 612, 792}}, nullptr});
 
     MemorySink sink;
     const auto status = engine->assembleDocument(req, sink);
@@ -613,7 +613,7 @@ RIVET_TEST(pdfiumAssemblyFreshExtract) {
     addPage(req, *base, 3);
     addPage(req, *base, 3);
     addPage(req, *other, 0);
-    req.pages.push_back({base.get(), 0, PdfPageView{core::PageRotation::Clockwise180, PdfBox{0, 0, 300, 300}}});
+    req.pages.push_back({base.get(), 0, PdfPageView{core::PageRotation::Clockwise180, PdfBox{0, 0, 300, 300}}, nullptr});
     MemorySink sink;
     CHECK(engine->assembleDocument(req, sink).has_value());
     auto out = reload(*engine, sink);
@@ -705,11 +705,11 @@ RIVET_TEST(pdfiumAssemblyRejectsBadRequests) {
     CHECK(isCode(engine->assembleDocument(empty, sink), invalid));
 
     auto outOfRange = request(PdfAssemblyRequest::Mode::PreserveBase, base.get());
-    outOfRange.pages.push_back({base.get(), 5, nativeView(*base, 0)});
+    outOfRange.pages.push_back({base.get(), 5, nativeView(*base, 0), nullptr});
     CHECK(isCode(engine->assembleDocument(outOfRange, sink), invalid));
 
     auto nullSource = request(PdfAssemblyRequest::Mode::PreserveBase, base.get());
-    nullSource.pages.push_back({nullptr, 0, PdfPageView{}});
+    nullSource.pages.push_back({nullptr, 0, PdfPageView{}, nullptr});
     CHECK(isCode(engine->assembleDocument(nullSource, sink), invalid));
 
     auto nullBase = request(PdfAssemblyRequest::Mode::PreserveBase, nullptr);
@@ -725,12 +725,12 @@ RIVET_TEST(pdfiumAssemblyRejectsBadRequests) {
     CHECK(isCode(engine->assembleDocument(foreignBase, sink), invalid));
 
     auto badView = request(PdfAssemblyRequest::Mode::Fresh, nullptr);
-    badView.pages.push_back({base.get(), 0, PdfPageView{core::PageRotation::None, PdfBox{0, 0, 700, 792}}});
+    badView.pages.push_back({base.get(), 0, PdfPageView{core::PageRotation::None, PdfBox{0, 0, 700, 792}}, nullptr});
     CHECK(isCode(engine->assembleDocument(badView, sink), invalid));
 
     auto badRotation = request(PdfAssemblyRequest::Mode::PreserveBase, base.get());
     badRotation.pages.push_back(
-        {base.get(), 0, PdfPageView{static_cast<core::PageRotation>(9), PdfBox{0, 0, 612, 792}}});
+        {base.get(), 0, PdfPageView{static_cast<core::PageRotation>(9), PdfBox{0, 0, 612, 792}}, nullptr});
     CHECK(isCode(engine->assembleDocument(badRotation, sink), invalid));
 
     CHECK(sink.bytes().empty()); // nothing was written for rejected requests

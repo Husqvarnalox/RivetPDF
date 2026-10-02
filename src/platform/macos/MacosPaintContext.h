@@ -33,11 +33,19 @@ public:
     void drawLine(core::Point from, core::Point to, const rivet::ui::Color& color,
                   double strokeWidth) override;
 
+    void strokeDashedRect(const core::Rect& rect, const rivet::ui::Color& color,
+                          double strokeWidth, double dash) override;
+    void fillPath(const rivet::ui::Path& path, const rivet::ui::Color& color) override;
+    void strokePath(const rivet::ui::Path& path, const rivet::ui::Color& color, double strokeWidth,
+                    rivet::ui::LineCap cap, rivet::ui::LineJoin join) override;
+
     void drawBitmap(const core::Bitmap& bitmap, const core::Rect& destLogicalRect) override;
 
     core::Size measureText(std::string_view text, const rivet::ui::Font& font) const override;
     void drawText(std::string_view text, const core::Rect& rect, const rivet::ui::Font& font,
                   const rivet::ui::Color& color, rivet::ui::TextAlign align) override;
+    void drawTextInBox(std::string_view text, const core::Rect& box, int quarterTurns,
+                       const rivet::ui::Font& font, const rivet::ui::Color& color) override;
 
 private:
     CGContextRef context_;

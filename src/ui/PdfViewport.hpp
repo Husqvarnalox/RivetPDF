@@ -136,13 +136,24 @@ public:
     // the index is unchanged: the page behind the index may differ).
     void documentLayoutChanged(std::optional<std::size_t> anchorIndex, double fraction);
 
-    // Viewport tool layer (crop, ...): the active tool gets pointer (except
-    // wheel), key and paint calls first. Non-owning; null uninstalls.
+    // Viewport tool (crop, ...): the active tool gets pointer (except
+    // wheel), key and paint calls first, then the annotation layer. Non-owning;
+    // null uninstalls.
     void setActiveTool(ViewportTool* tool);
     ViewportTool* activeTool() const { return activeTool_; }
 
+    // Annotation layer slot (see ViewportLayer for the event order). Non-owning;
+    // null uninstalls.
+    void setAnnotationLayer(ViewportLayer* layer);
+    ViewportLayer* annotationLayer() const { return annotationLayer_; }
+
     // ViewportToolHost
     std::optional<core::Rect> pageRectInViewport(std::size_t pageIndex) const override;
+    std::size_t pageCount() const override;
+    std::optional<std::pair<std::size_t, core::Point>>
+    pageAt(core::Point viewportPoint) const override {
+        return pagePointAt(viewportPoint);
+    }
     double zoomFactor() const override { return state_->zoom().zoom(); }
     core::Rect viewportBounds() const override { return bounds(); }
     void requestRepaint() override { invalidate(); }
@@ -229,6 +240,9 @@ private:
     // Page display points under a viewport-local point, or nullopt when the
     // point is outside every visible page.
     std::optional<std::pair<std::size_t, core::Point>> pagePointAt(const core::Point& localPoint) const;
+    // The viewport's own pointer handling (wheel, links, text selection,
+    // scrollbars), run after the tool and the annotation layer passed.
+    bool handlePointer(const PointerEvent& event);
 
     core::DocumentId documentId_;
     const render::PageLayout* layout_ = nullptr;
@@ -243,6 +257,7 @@ private:
     core::PageId anchorPage_;
     double anchorFraction_ = 0.0;
     ViewportTool* activeTool_ = nullptr;
+    ViewportLayer* annotationLayer_ = nullptr;
 
     std::function<void(double)> onZoomChanged_;
     std::function<void(std::size_t)> onPageChanged_;

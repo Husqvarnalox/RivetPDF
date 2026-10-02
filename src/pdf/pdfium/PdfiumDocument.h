@@ -11,8 +11,13 @@
 #include "pdf/PdfTypes.hpp"
 
 #include <cstddef>
+#include <cstdint>
+#include <deque>
 #include <memory>
+#include <span>
 #include <string>
+#include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 // PDFium public headers. Allowed here only: this file lives inside
@@ -77,6 +82,10 @@ public:
 
     core::Result<std::vector<PdfPageLink>> pageLinks(std::size_t pageIndex) const override;
 
+    // Read from a private reader document (see below), never from the live
+    // handle; the result per page is cached.
+    core::Result<PdfPageAnnotationsPtr> annotations(std::size_t pageIndex) const override;
+
     core::Result<std::shared_ptr<const PdfTextPage>> textPage(std::size_t pageIndex) const override;
 
     // Adapter-internal accessors for the assembly (PdfiumAssembly.cpp), which
@@ -90,6 +99,7 @@ public:
 protected:
     core::Result<core::Bitmap> renderPageInView(std::size_t pageIndex,
                                                 const PdfPageView& view,
+                                                std::span<const std::uint32_t> hiddenAnnotations,
                                                 const core::Rect& pageRectPoints,
                                                 double devicePixelsPerPoint) override;
 
@@ -105,6 +115,7 @@ private:
     // acquires the gate exactly once.
     core::Result<core::Bitmap> renderPageImpl(std::size_t pageIndex,
                                               const PdfPageView* view,
+                                              std::span<const std::uint32_t> hiddenAnnotations,
                                               const core::Rect& pageRectPoints,
                                               double devicePixelsPerPoint);
     core::Result<std::shared_ptr<const PdfTextPage>> textPageImpl(std::size_t pageIndex,
@@ -131,6 +142,24 @@ private:
     // PdfDocument, and it is wiped on destruction.
     std::string password_;
     const PdfiumEngine* owner_ = nullptr;
+
+    // Annotation reading (annotations()). PDFium mutates the dictionaries of
+    // a live document when it renders (generated appearance streams, Text
+    // /Rect forced to 20x20, /F toggles) and reading colors through the
+    // public API requires removing the appearance stream, so annotations
+    // are read from a SEPARATE document loaded over the same file source,
+    // which is never rendered. Created lazily; created, used and closed only
+    // under the PDFium gate (the destructor closes it there), which also
+    // serializes access to the mutable members. Reading destroys what it
+    // reads, so a page is never read twice from the same reader instance:
+    // results are cached (bounded FIFO, kAnnotationCacheCapacity pages) and
+    // a page that was read before but has been evicted is read from a
+    // freshly loaded reader (cheap: PDFium parses lazily).
+    static constexpr std::size_t kAnnotationCacheCapacity = 64;
+    mutable FPDF_DOCUMENT annotationReader_ = nullptr;
+    mutable std::unordered_map<std::size_t, PdfPageAnnotationsPtr> annotationCache_;
+    mutable std::deque<std::size_t> annotationCacheOrder_;      // insertion order
+    mutable std::unordered_set<std::size_t> annotationReaderReadPages_; // read from the current reader
 };
 
 } // namespace rivet::pdf
