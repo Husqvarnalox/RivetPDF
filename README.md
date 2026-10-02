@@ -118,6 +118,15 @@ Planned functionality includes:
 
 Editing existing PDF text is one of the most technically difficult parts of the project and will be developed gradually.
 
+#### Using the content tools (macOS)
+
+* **Edit** (toolbar, Content menu, Cmd+Shift+E) selects page objects. Click selects the topmost object (a text block as a unit); the status bar says what it allows (read-only with the reason, move/delete only, or retype with a bundled substitute font). Drag moves it with a live preview; arrow keys nudge by 1 pt (Shift: 10 pt, a quick burst of one key is a single undo step); Delete or Backspace removes it; Esc clears the selection.
+* Images and paths show eight handles. A corner handle keeps the aspect ratio of an image (hold Shift to resize freely; for paths it is the other way round). Text is never scaled: the handle on the right side of a text block sets its wrap width.
+* **Double-click** (or Return) on an editable text block opens the inline editor over the block. Esc cancels; clicking outside or Cmd+Return commits as one undo step. Text a bundled font cannot write is refused with the offending code points. Save, close and quit commit an open edit first. Rotated blocks are edited unrotated and keep their rotation.
+* **Add Text** (toolbar, Content menu, Cmd+Shift+T): click the page to type a new block, or drag to draw a box (its width becomes the wrap width). Font family (Sans, Serif, Mono), Bold, size and color are in the properties bar; an empty commit creates nothing.
+* The properties bar also restyles a selected text block, shows an image's pixel size, offers **Replace Image...** (PNG or JPEG, decoded in the background within size limits) and Bring to Front for text added by Rivet.
+* Limitation: Undo/Redo menu items do not yet show the name of the content command.
+
 ### Annotations
 
 * Highlight
