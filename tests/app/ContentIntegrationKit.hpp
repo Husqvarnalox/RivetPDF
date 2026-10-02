@@ -147,7 +147,16 @@ public:
     std::string_view backendName() const override { return inner_.backendName(); }
     core::Result<std::unique_ptr<pdf::PdfDocument>> openDocument(const fs::path& path,
                                                                  std::string_view password) override {
+        {
+            std::lock_guard<std::mutex> lock(openMutex_);
+            opened_.push_back(path);
+        }
         return inner_.openDocument(path, password);
+    }
+    // Every path the engine was asked to open (any thread).
+    std::vector<fs::path> openedPaths() const {
+        std::lock_guard<std::mutex> lock(openMutex_);
+        return opened_;
     }
     core::Result<std::unique_ptr<pdf::PdfDocument>> reopenWithCredentialsOf(const pdf::PdfDocument& credentialsOf,
                                                                             const fs::path& path) override {
@@ -188,6 +197,8 @@ public:
 
 private:
     pdf::PdfEngine& inner_;
+    mutable std::mutex openMutex_;
+    std::vector<fs::path> opened_;
     std::mutex mutex_;
     std::condition_variable cv_;
     bool gateClosed_ = false;
