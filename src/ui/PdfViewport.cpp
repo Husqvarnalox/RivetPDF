@@ -556,7 +556,11 @@ bool PdfViewport::onKey(const KeyEvent& event) {
         event.accepted = true;
         return true;
     }
-    if (annotationLayer_ != nullptr && !presentationMode_ && annotationLayer_->onKey(*this, event)) {
+    // An active tool owns the keyboard: the annotation layer must not act on
+    // keys the tool left alone (Delete would remove the selected annotation
+    // while the user is cropping).
+    if (activeTool_ == nullptr && annotationLayer_ != nullptr && !presentationMode_ &&
+        annotationLayer_->onKey(*this, event)) {
         event.accepted = true;
         return true;
     }

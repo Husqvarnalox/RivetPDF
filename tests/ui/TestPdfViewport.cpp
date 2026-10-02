@@ -928,33 +928,43 @@ RIVET_TEST(layerNeverSeesWheelScrollOrPinch) {
     CHECK(log.empty());
 }
 
-RIVET_TEST(layerKeysComeAfterTheToolAndBeforeTheViewport) {
+RIVET_TEST(layerKeysComeBeforeTheViewportAndAnActiveToolOwnsTheKeyboard) {
     Fixture f;
     EventLog log;
     LoggingTool tool(log);
     LoggingLayer layer(log);
-    f.viewport.setActiveTool(&tool);
     f.viewport.setAnnotationLayer(&layer);
 
     KeyEvent zoomIn;
     zoomIn.key = Key::Plus;
-    // Neither consumes: the viewport zooms.
+    // No tool, the layer declines: the viewport zooms.
     CHECK_EQ(f.viewport.onKey(zoomIn), true);
-    CHECK(log == (EventLog{"tool.key", "layer.key"}));
+    CHECK(log == (EventLog{"layer.key"}));
     CHECK_NEAR(f.viewport.zoom().zoom(), 1.25, 1e-12);
 
     // The layer consumes: the viewport does not zoom.
     log.clear();
     layer.consumeKey = true;
     CHECK_EQ(f.viewport.onKey(zoomIn), true);
-    CHECK(log == (EventLog{"tool.key", "layer.key"}));
+    CHECK(log == (EventLog{"layer.key"}));
     CHECK_NEAR(f.viewport.zoom().zoom(), 1.25, 1e-12);
 
-    // The tool consumes: the layer is skipped.
+    // An active tool owns the keyboard: a key it leaves alone never reaches
+    // the layer (Delete must not remove an annotation while cropping); it
+    // falls through to the viewport's own handling.
     log.clear();
+    f.viewport.setActiveTool(&tool);
+    CHECK_EQ(f.viewport.onKey(zoomIn), true);
+    CHECK(log == (EventLog{"tool.key"}));
+    CHECK(f.viewport.zoom().zoom() > 1.25);
+
+    // The tool consumes: nothing else runs.
+    log.clear();
+    const double zoom = f.viewport.zoom().zoom();
     tool.consume = true;
     CHECK_EQ(f.viewport.onKey(zoomIn), true);
     CHECK(log == (EventLog{"tool.key"}));
+    CHECK_NEAR(f.viewport.zoom().zoom(), zoom, 1e-12);
 }
 
 RIVET_TEST(presentationModePaintsTheLayerButSendsItNoInput) {

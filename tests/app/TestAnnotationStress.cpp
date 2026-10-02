@@ -1088,3 +1088,39 @@ RIVET_TEST(stressQuitWhileASaveWithAnnotationEditsIsInFlightLeavesNothingDanglin
     CHECK(shell.statusLog.empty());
     CHECK_EQ(shell.engine.assemblies.load(), 1);
 }
+
+// --- Keyboard ownership ------------------------------------------------------------
+
+RIVET_TEST(deleteAndBackspaceWhileCroppingKeepTheSelectedAnnotation) {
+    PageShell shell(3);
+    CHECK(shell.open("cropkeys") != nullptr);
+    const core::AnnotationId id = createRect(shell);
+    CHECK(id);
+    CHECK_EQ(shell.countOn(0), 1u);
+
+    shell.editing->beginCrop();
+    CHECK(shell.editing->isCropping());
+    const std::size_t depth = shell.depth();
+    for (const ui::Key key : {ui::Key::Delete, ui::Key::Backspace}) {
+        const ui::KeyEvent event = keyEvent(key);
+        if (!shell.editing->handleToolKey(event)) (void)shell.viewport->onKey(event);
+    }
+    CHECK_EQ(shell.countOn(0), 1u);
+    CHECK(shell.viewOf(id, 0).has_value());
+    CHECK_EQ(shell.depth(), depth);
+
+    // Once the crop is cancelled the layer owns the keyboard again.
+    CHECK(shell.editing->handleToolKey(keyEvent(ui::Key::Escape)));
+    CHECK(!shell.editing->isCropping());
+    CHECK(shell.viewport->onKey(keyEvent(ui::Key::Delete)));
+    CHECK_EQ(shell.countOn(0), 0u);
+}
+
+RIVET_TEST(pageEditingControllerDestructionUninstallsItsCropTool) {
+    PageShell shell(3);
+    CHECK(shell.open("croptool") != nullptr);
+    shell.editing->beginCrop();
+    CHECK(shell.viewport->activeTool() != nullptr);
+    shell.editing.reset();
+    CHECK(shell.viewport->activeTool() == nullptr);
+}

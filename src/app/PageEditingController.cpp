@@ -84,6 +84,16 @@ PageEditingController::~PageEditingController() {
             tab->session()->setOnPageModelChanged(nullptr);
         }
     }
+    // The viewport outlives this controller and the crop tool is our member:
+    // uninstall it so the viewport never keeps a dangling tool pointer. The
+    // thumbnail list is owned by the sidebar, which also outlives us.
+    if (context_.viewport.activeTool() == &cropTool_) context_.viewport.setActiveTool(nullptr);
+    thumbnails_.setOnRowClicked(nullptr);
+    thumbnails_.setOnNavigate(nullptr);
+    thumbnails_.setOnDeleteRequested(nullptr);
+    thumbnails_.setOnSelectAllRequested(nullptr);
+    thumbnails_.setOnMoveRequested(nullptr);
+    thumbnails_.setOnFocusRequested(nullptr);
 }
 
 DocumentTab* PageEditingController::activeTab() const { return context_.readyActiveTab(); }
