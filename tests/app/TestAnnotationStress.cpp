@@ -1072,9 +1072,16 @@ RIVET_TEST(stressQuitWhileASaveWithAnnotationEditsIsInFlightLeavesNothingDanglin
     shell.statusLog.clear();
 
     const int posted = shell.dispatcher.posted.load();
+    // Quitting destroys the controllers first; FileController's destructor
+    // fences its workers (AsyncScope), so it waits for the parked save. Open
+    // the gate from another thread while quit is waiting on it.
+    std::thread releaser([&shell] {
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        shell.engine.release();
+    });
     shell.quit(); // controllers, then the workspace and its sessions, mid-save
-    shell.engine.release();
-    // The worker finishes and posts its completion; the dead controller ignores it.
+    releaser.join();
+    // The worker finished and posted its completion; the dead controller ignores it.
     CHECK(shell.dispatcher.waitPosted(posted + 1));
     shell.dispatcher.pump();
     CHECK(shell.dispatcher.waitUntil([] { return true; }));
