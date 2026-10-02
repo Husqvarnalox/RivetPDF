@@ -22,6 +22,7 @@ add_executable(rivet_pdf_tests
     # and bundled-font tables (Phase 5): run in both build modes.
     TestPdfContent.cpp
     TestPdfTextLayout.cpp
+    TestBundledFonts.cpp
     # View-aware reads and document assembly round trips (page editing
     # foundation): PDFium-ON bodies only.
     TestPdfPageEditing.cpp
