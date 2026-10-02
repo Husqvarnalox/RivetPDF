@@ -26,10 +26,14 @@ streams/resources are cloned before modification.
 
 ### Regeneration fidelity probe
 
-Before a page's objects become editable, the backend probes the SOURCE page
-on a private never-rendered copy: render it at low resolution, mark every
-top-level object dirty, `GenerateContent`, serialize, re-parse, render
-again, and compare object count/types/bounds and pixels (exact match
+Before a page's objects become editable, the backend probes the SOURCE page:
+the page is imported into a scratch document from a private never-rendered
+copy, its object count is checked against the page as stored (a second
+private copy renders the reference: an import that drops unreadable
+content would shift indices and is refused), then the imported page is
+rendered at low resolution, every top-level object is marked dirty,
+`GenerateContent` runs, the document is serialized, re-parsed and rendered
+again, and object count/types/bounds and pixels are compared (exact match
 required, small tolerance for anti-aliasing noise only). Any difference, or
 any object type known to be lost (shading, inline image, Type3 text), makes
 the page `regenerationSafe = false` with a short reason; its objects are

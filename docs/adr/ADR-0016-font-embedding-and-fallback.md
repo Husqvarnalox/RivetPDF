@@ -42,7 +42,10 @@ script; installable embedding).
 
 Fallback selection for an existing block: Mono when the original font is
 monospace, Serif when it is serif, else Sans; Bold when the original is
-bold. Italic is not shipped: italic originals fall back to the upright
+bold. A block re-set in a bundled font is written as new text objects
+appended on top of the page content (its original objects are removed), so
+its z-order changes: it is drawn above everything else on the page. The
+same applies to lines a block gains beyond its original object count. Italic is not shipped: italic originals fall back to the upright
 face (documented).
 
 ### Embedding

@@ -108,7 +108,8 @@ Per object / text block, a class and a human-readable reason:
 | ReadOnly | nothing | regeneration probe failed for the page (ADR-0017), page truncated (> 20000 objects), invisible text (render mode 3, OCR layers), objects of unknown type |
 
 Images: move/resize/replace/delete unless the page is read-only. Paths:
-move/delete. Annotations (including widgets and links) are not page content
+move/resize/delete (geometric scaling of the path's matrix; stroke widths
+scale with it). Annotations (including widgets and links) are not page content
 objects and are never listed, selected or deleted by content tools.
 
 ### Security

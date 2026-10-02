@@ -125,11 +125,11 @@ Everything needed to turn a document into pixels, independent of any UI toolkit 
 
 ### `rivet_pdf` (`src/pdf/`)
 
-Engine-independent interfaces: `PdfEngine` (backend availability, `openDocument`), `PdfDocument` (owned document handle; `pageInfo`, `renderPage`), `PdfTypes` (`PdfDocumentInfo`, `PdfPageInfo`), `PdfPageGeometry` (`PdfBox`, `PdfPageView`, pure user/display-space mapping), `PdfAssembly` (`PdfAssemblyRequest`, `IPdfByteSink`; `PdfEngine::assembleDocument`), and the `createEngine()` factory (`PdfSystem.hpp`). When `RIVET_WITH_PDFIUM=OFF`, `createEngine()` returns a null backend: `isAvailable()` is `false` and every operation reports `NotAvailable`. The application shell still launches in this configuration.
+Engine-independent interfaces: `PdfEngine` (backend availability, `openDocument`), `PdfDocument` (owned document handle; `pageInfo`, `renderPage`), `PdfTypes` (`PdfDocumentInfo`, `PdfPageInfo`), `PdfPageGeometry` (`PdfBox`, `PdfPageView`, pure user/display-space mapping), `PdfAssembly` (`PdfAssemblyRequest`, `IPdfByteSink`; `PdfEngine::assembleDocument`), the content contracts `PdfContent` (`PdfPageContent` records, `PdfPageContentEdits` + `validate`, limits), `PdfTextLayout` (deterministic line breaking over measured advances) and `BundledFonts` (the three Apache-2.0 fallback faces and their coverage tables), and the `createEngine()` factory (`PdfSystem.hpp`). When `RIVET_WITH_PDFIUM=OFF`, `createEngine()` returns a null backend: `isAvailable()` is `false` and every operation reports `NotAvailable`. The application shell still launches in this configuration.
 
 ### `rivet_pdfium` (`src/pdf/pdfium/`)
 
-The PDFium adapter, built only when `RIVET_WITH_PDFIUM=ON`. Implements the `rivet_pdf` interfaces on top of PDFium and links the imported target `PDFium::PDFium` created by `cmake/FindPDFium.cmake`. All `FPDF_*` usage is confined to this directory. Beyond rendering it provides text extraction (`PdfTextPage` in displayed-page coordinates), document outline (depth/node/cycle-bounded), page labels, and per-page links (internal destinations and scheme-validated external URLs), and document assembly for save/extract (`PdfiumAssembly`: `FPDF_CreateNewDocument`, `FPDF_ImportPagesByIndex`, `FPDF_MovePages`, `FPDFPage_Delete`, `FPDFPage_SetRotation`, `FPDFPage_SetCropBox`, `FPDF_SaveAsCopy`). Documents are opened through `FPDF_LoadCustomDocument` over a shared `PdfiumFileSource` (an open file descriptor), so a document keeps reading its original bytes even after a save atomically replaces the path. See [ADR-0003](adr/ADR-0003-pdfium-abstraction-boundary.md) and `docs/BUILDING_PDFIUM.md`.
+The PDFium adapter, built only when `RIVET_WITH_PDFIUM=ON`. Implements the `rivet_pdf` interfaces on top of PDFium and links the imported target `PDFium::PDFium` created by `cmake/FindPDFium.cmake`. All `FPDF_*` usage is confined to this directory. Beyond rendering it provides text extraction (`PdfTextPage` in displayed-page coordinates), document outline (depth/node/cycle-bounded), page labels, and per-page links (internal destinations and scheme-validated external URLs), and document assembly for save/extract (`PdfiumAssembly`: `FPDF_CreateNewDocument`, `FPDF_ImportPagesByIndex`, `FPDF_MovePages`, `FPDFPage_Delete`, `FPDFPage_SetRotation`, `FPDFPage_SetCropBox`, `FPDF_SaveAsCopy`). `PdfiumContent` extracts page content (`pageContent`), applies content edits (`applyContentEdits`: one function used by the per-page materializer for display and by assembly for save) and runs the regeneration fidelity probe (section 14). Documents are opened through `FPDF_LoadCustomDocument` over a shared `PdfiumFileSource` (an open file descriptor), so a document keeps reading its original bytes even after a save atomically replaces the path. See [ADR-0003](adr/ADR-0003-pdfium-abstraction-boundary.md) and `docs/BUILDING_PDFIUM.md`.
 
 ### `rivet_editor` (`src/editor/`)
 
@@ -139,6 +139,7 @@ The PDFium adapter, built only when `RIVET_WITH_PDFIUM=ON`. Implements the `rive
 - **`DocumentSession`** - owns one open document: its `DocumentId`, the base PDF handle, the `PageModel`, the `PageLayout` (rebuilt from the snapshot after every model change), the `CommandStack`, dirty state, the editing lock, `rebaseOnto`, and a `SerialExecutor`-driven `DocumentRenderer`.
 - **`DocumentSaver`** - `makeSaveJob` / `makeExtractJob` (main thread) and `runDocumentWrite` (worker): assembly into an `AtomicFileWriter`, plus reopening the written file for rebase; see section 11.
 - **`DocumentRenderer`** - implements `IRenderSource`: dedupes requests, serializes PDF access through the session's `SerialExecutor`, stores results in the `TileCache`, and returns bitmaps via main-thread callbacks.
+- **`ContentService` / `TextBlocks` / `ContentGeometry` / `ContentCommands`** - page content as the editor sees it: lazy extraction per (page, edits) into an LRU, the `ObjectId` registry, display-space object views, reconstructed text blocks with capabilities, z-order hit testing, and the undoable content edit factories; see section 14.
 
 ### `rivet_ui` (`src/ui/`)
 
@@ -160,6 +161,7 @@ Application shell wiring: `DocumentWorkspace`/`DocumentTab` (multi-tab workspace
 - `PasswordPromptController` — the masked prompt for NeedsPassword tabs; the field is cleared before `retryWithPassword`.
 - `PageEditingController` — page selection (per tab, by `PageId`), thumbnail intents, rotate/delete/duplicate/move/crop/undo/redo as commands on the session's `CommandStack`, the crop tool, and the reaction to every page-model change (selection policy, text-selection invalidation, search restart, layout anchoring). Refuses edits while the session is editing-locked.
 - `FileController` — Save / Save As / Extract / Split / Import / Merge, the save-in-flight bookkeeping and the dirty close/quit orchestration (section 11).
+- `ContentController` / `ContentBarController` — the Edit (select object) and Add Text tools over a `ContentBackend` seam (section 14): hover/selection, drag-move and resize previews, nudges, delete, the inline on-page text editor, Add Text, Replace Image (decoded off the main thread by the platform `IImageDecoder`), and the properties bar.
 - `StatusBarController` — the status message and the "Page [field] / N" indicator with strict page-number parsing.
 
 Controllers are main-thread only and every feature no-ops when no Ready tab is active. The shell constructs them after the members they reference and destroys them first (reverse declaration order). `DocumentWorkspace::closeTab` keeps the closed tab alive until its host hooks have run, so bound views can unbind from a live session.
@@ -451,7 +453,39 @@ Full rationale: [ADR-0011](adr/ADR-0011-annotation-model-identity-and-rendering.
 
 ---
 
-## 14. Directory layout
+## 14. Content editing
+
+Full rationale: [ADR-0014](adr/ADR-0014-content-object-model.md) (object model, identity, capabilities), [ADR-0015](adr/ADR-0015-text-editing-strategy.md) (in-place text editing, blocks, reflow), [ADR-0016](adr/ADR-0016-font-embedding-and-fallback.md) (fonts), [ADR-0017](adr/ADR-0017-content-regeneration-and-save.md) (regeneration, display materialization, save, rebase).
+
+```text
+ pdf:     PdfPageContent (user space records: type, matrix, bounds/quad, font, origin Source(i)|Created(tag))
+          PdfPageContentEdits {objects: remove/transform/replaceImage; textBlocks: tag, members, text, font,
+          size, color, rigid placement, wrapWidth, lineAdvance} + validate(edits, sourceObjectCount) + limits
+          PdfTextLayout (deterministic wrapping) | BundledFonts (Arimo/Tinos/Cousine subsets, coverage)
+ pdfium:  pageContent(index, edits) | renderPage/textPage(..., edits) through a per-page materializer
+          | applyContentEdits (shared by materializer and assembly) | regeneration fidelity probe
+          | assembly contentEdits -> PdfAssembledPageContent {origins, blockTags} report
+ editor:  PageEntry.contentEdits (immutable pointer) + contentRevision + rasterRevision
+          ContentService (lazy extraction, LRU, ObjectId registry, display-space views, blocks, hitTest, rebased)
+          ContentCommands (factories in display space -> ContentEditsCommand on the one CommandStack)
+ ui:      ContentLayer (ViewportLayer after the annotation layer), TextArea reused for the inline editor
+ app:     ContentInteraction (pure state machine) -> ContentController -> ContentBackend -> commands
+          ContentBarController (properties), platform IImageDecoder + openImage
+```
+
+- **Model**: a page is its source page plus one immutable `PdfPageContentEdits` (null = untouched). Object edits are keyed by the SOURCE object index (remove, accumulated affine transform, image replacement); text edits are blocks keyed by a tag that is the block's `ObjectId` value. Commands swap the pointer and mint a fresh `contentRevision` and `rasterRevision` for that page only (tiles, text, search and links of the page are invalidated; annotations, which are keyed by `/Annots` index, are not). Undo is O(changed pages).
+- **Identity**: `core::ObjectId` is minted by the editor; the registry maps `(PageId, source index)` and `(PageId, tag)` to ids and is never evicted or reissued, so undo/redo and re-extraction keep ids. After a save the registry is re-keyed from the assembly report (`ContentService::rebased`); a page without a report drops its entries and ids are minted afresh on the next resolve.
+- **Coordinates**: edits and records live in the source page's user space; everything above the editor is display space of the entry's current view through `ContentGeometry` (one tested mapping for translation, resize, upright placement and quads). Rotation and crop never rewrite content.
+- **Display**: the backend renders and extracts an edited page from a scratch document (the page imported from a private, never-rendered copy, edits applied, saved to memory and reloaded) so the viewed raster is exactly what a save produces. Extraction after an edit is asynchronous; the resolved view is marked stale (`loaded = false`) until it lands, and the factories that only need identities (move, delete, retype, Add Text, replace, bring to front) keep working on the stale view while resize waits for fresh geometry.
+- **Text**: blocks are reconstructed from text objects (same font/size/baseline run, consistent line advance) and classified: FullyEditable (own embedded/standard font with a Unicode mapping), Replaceable (retype re-sets the block in a bundled substitute when the font cannot encode the text), MoveOnly, ReadOnly (with a reason shown in the UI). Editing replaces the block's own objects in place with the same font when possible; reflow is a deterministic local wrap within the block's width; a longer text extends the block downward (explicit overflow policy, never clipped silently).
+- **Fonts**: existing text keeps its font when the font can write the new text; otherwise a metric-compatible bundled face (Sans/Serif/Mono, Regular/Bold, Apache-2.0 subsets in `third_party/fonts/`) is embedded through the backend. No platform text APIs in the portable layers; no synthetic bold.
+- **Safety**: the regeneration probe refuses pages whose content PDFium cannot rewrite faithfully (shading, inline images, Type3, patterns, hidden optional content, ...), so edits never silently destroy content. Per-page object, text and image limits make over-limit pages read-only. Annotations, widgets and links are never listed as content; nested Form XObjects are read-only. Nothing in a document's content is logged.
+- **Interaction**: one tool state per shell; the content layer sits after the annotation layer. Selection is single and per tab; drag-move, resize and nudge bursts are one command each (nudges coalesce within 500 ms by undo + combined move, guarded by the command-stack state id). The inline editor commits as one undo step and is committed by Save, close and quit.
+- **Save**: assembly applies the page's edits after the view through the same `applyContentEdits`; the report re-keys identities; the written document is reloaded and shows the same content without a tile flush.
+
+---
+
+## 15. Directory layout
 
 ```text
 rivet/
@@ -468,13 +502,14 @@ rivet/
 │   │   ├── io/               # AtomicFileWriter (temp file + rename)
 │   │   └── async/            # TaskScheduler, SerialExecutor, IMainThreadDispatcher
 │   ├── render/               # rivet_render
-│   ├── pdf/                  # rivet_pdf (interfaces, page geometry, assembly contracts, null engine)
+│   ├── pdf/                  # rivet_pdf (interfaces, page geometry, assembly + content contracts, bundled fonts, null engine)
 │   │   └── pdfium/           # rivet_pdfium (only with RIVET_WITH_PDFIUM=ON); FPDF_* confined here
 │   ├── editor/               # rivet_editor (page model, commands, session, saver, render/text/link/annotation services)
 │   ├── ui/                   # rivet_ui
 │   ├── platform/             # rivet_platform (abstraction headers)
 │   │   └── macos/            # rivet_platform_macos (AppKit host, CoreGraphics PaintContext, rivet executable)
-│   └── app/                  # rivet_app (shell, workspace, controllers, crop tool, annotation tools)
+│   └── app/                  # rivet_app (shell, workspace, controllers, crop tool, annotation and content tools)
+├── third_party/fonts/        # bundled fallback fonts (Apache-2.0 subsets) + tools/fonts/subset_fonts.py
 ├── tests/
 │   ├── harness/              # RivetTest.h, TestMain.cpp (internal micro-harness)
 │   ├── core/  render/  pdf/  editor/  ui/  app/  platform/
@@ -487,12 +522,12 @@ incrementally during development.
 
 ---
 
-## 15. Planned evolution
+## 16. Planned evolution
 
 Within the approved scope, the architecture leaves room for:
 
 - **Multi-document tabs** - one `DocumentSession` per open document, each with its own `SerialExecutor` and revision counter. No new machinery is required: `TileKey` already includes `DocumentId`, the shared `TaskScheduler` already multiplexes executors, and one cache can serve all sessions. Session lifetime follows tab lifetime.
-- **Page editing** - landed in Phase 3, now closed (sections 10-12, [ADR-0008](adr/ADR-0008-page-model-and-stable-page-identity.md), [ADR-0009](adr/ADR-0009-background-save-rebase-and-file-lifecycle.md)). Content editing (text/objects) is expected to be the hardest part and will be developed gradually on the same command foundation.
+- **Page editing** - landed in Phase 3, now closed (sections 10-12, [ADR-0008](adr/ADR-0008-page-model-and-stable-page-identity.md), [ADR-0009](adr/ADR-0009-background-save-rebase-and-file-lifecycle.md)). Content editing landed in Phase 5 on the same command foundation (section 14).
 
 Known limitations of the current foundation, recorded as future
 architectural requirements:
@@ -551,8 +586,35 @@ UX notes:
   `-Wnull-dereference` inside `<streambuf>` for `istreambuf_iterator` is
   likewise a false positive; tests read files with `read()`/`gcount()`.
 
-Features beyond this (forms, content editing, ...) are roadmap items in
-the README and are not yet part of the architecture described here. Page
-labels, outline/bookmarks, links, text selection/search and the workspace
-model landed in Phase 2 (2026-09-25); page editing and the file lifecycle in Phase 3; annotations (section 13) in Phase 4
-(integrated; the Phase 4 manual QA pass is still pending).
+### Phase 5 status: CLOSED (2026-10-03)
+
+Content editing (section 14) is complete for the approved scope: object
+selection, move/resize/delete/nudge, in-place text editing with the inline
+editor, Add Text, font fallback, deterministic reflow, image replacement,
+undo/redo, display materialization and save. Known limitations, recorded
+honestly:
+
+- **Z-order**: existing objects cannot be reordered; only text added by
+  Rivet can be brought to the front. A block re-set in a bundled font, or
+  one that needs more lines than it had objects, gets its new text objects
+  appended on top of the page content.
+- **Rotated text** is edited unrotated in the inline editor and keeps its
+  rotation on commit; the editor is not clipped to the viewport.
+- **Read-only pages**: pages whose content fails the regeneration probe
+  (shading, inline images, Type3 fonts, patterns, hidden optional content,
+  CMYK text, character spacing, text clipping, TrueType fonts without
+  widths, shared image streams) are shown with the reason and cannot be
+  edited at all; nested Form XObjects are read-only everywhere.
+- **Fonts**: italic originals fall back to the upright bundled face; the
+  bundled subsets cover Latin, Greek and Cyrillic only (other scripts are
+  refused with the offending code points).
+- **Undo/Redo menu titles** are static (do not show the command name).
+- **Outline snap-back**: after an edit the selection outline shows the
+  previous geometry for one extraction round trip.
+
+Features beyond this (forms, ...) are roadmap items in the README and are
+not yet part of the architecture described here. Page labels,
+outline/bookmarks, links, text selection/search and the workspace model
+landed in Phase 2 (2026-09-25); page editing and the file lifecycle in
+Phase 3; annotations (section 13) in Phase 4; content editing (section 14)
+in Phase 5.

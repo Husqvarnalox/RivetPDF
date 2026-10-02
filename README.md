@@ -19,11 +19,11 @@ Your documents stay on your computer.
 
 ## Status
 
-> **Early development** - Phase 3 (Page Editing) is **CLOSED**.
+> **Early development** - Phase 5 (Content Editing) is **CLOSED**.
 
-Rivet is under active development. The macOS build currently provides a PDF viewer (tabs, thumbnails, outline, search, text selection, printing) and page-level editing: multi-select, drag reorder, rotate, delete, duplicate, crop, import/merge, extract of selected pages, split by page ranges into separate files, undo/redo, and background Save / Save As with atomic file replacement and unsaved-changes prompts. Content, annotation and form editing are not implemented yet.
+Rivet is under active development. The macOS build currently provides a PDF viewer (tabs, thumbnails, outline, search, text selection, printing), page-level editing (multi-select, drag reorder, rotate, delete, duplicate, crop, import/merge, extract, split, undo/redo, background Save / Save As with atomic file replacement and unsaved-changes prompts), annotations (markup, notes, ink, shapes, stamps) and content editing (select, move, resize, delete page objects; retype existing text in place; add text; replace images). Form editing is not implemented yet.
 
-Known limitations of the page-editing release (details in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#phase-3-status-closed-2026-10-02)): extract and split do not carry document-level structure (outline, metadata, forms, labels); undo history does not survive a save; editing is paused while a save runs; reviewing several unsaved tabs on window close saves only one of them per pass; split never overwrites existing files (atomically on macOS, best effort elsewhere).
+Known limitations (details in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#phase-3-status-closed-2026-10-02) and its [Phase 5 status](docs/ARCHITECTURE.md#phase-5-status-closed-2026-10-03)): extract and split do not carry document-level structure (outline, metadata, forms, labels); undo history does not survive a save; editing is paused while a save runs; reviewing several unsaved tabs on window close saves only one of them per pass; split never overwrites existing files (atomically on macOS, best effort elsewhere); pages whose content PDFium cannot regenerate faithfully are read-only for content tools; existing objects cannot be reordered in z; bundled fallback fonts cover Latin, Greek and Cyrillic only.
 
 The project is not ready for daily use yet. Windows and Linux shells are not implemented; only the portable layers build and are tested there.
 
@@ -99,24 +99,17 @@ Desktop is the current priority.
 
 ### Content Editing
 
-The long-term goal is to support actual PDF content editing, not only annotations.
+Rivet edits actual PDF content, not only annotations:
 
-Planned functionality includes:
+* Edit existing text in place (the block keeps its own font when that font can write the new text; otherwise a bundled metric-compatible font is embedded)
+* Add text (bundled Sans / Serif / Mono, Regular / Bold)
+* Move and delete text blocks
+* Change the font of text added by Rivet, the font size and the text color of any editable block
+* Deterministic reflow inside the block's width; longer text extends the block downward, never clipped silently
+* Move, resize, replace (PNG / JPEG) and delete images
+* Move, resize and delete vector paths
 
-* Edit existing text
-* Add text
-* Move text
-* Delete text
-* Change fonts
-* Change font size
-* Change text color
-* Move images
-* Resize images
-* Replace images
-* Delete images
-* Move PDF objects
-
-Editing existing PDF text is one of the most technically difficult parts of the project and will be developed gradually.
+What is deliberately not done: editing text set in Type3 fonts, text with unmappable glyphs, text under a clip, or anything on a page that PDFium cannot regenerate faithfully (shading, inline images, patterns, hidden optional content, ...). Such objects are selectable and the status bar explains why they are read-only. Annotations, form widgets and links are never treated as page content, and nested Form XObjects are read-only.
 
 #### Using the content tools (macOS)
 
@@ -450,24 +443,24 @@ Supported compilers are expected to include:
 
 ### Phase 4 — Annotations
 
-* [ ] Highlight
-* [ ] Underline
-* [ ] Strikeout
-* [ ] Notes
-* [ ] Drawing
-* [ ] Shapes
-* [ ] Stamps
+* [x] Highlight
+* [x] Underline
+* [x] Strikeout
+* [x] Notes
+* [x] Drawing
+* [x] Shapes
+* [x] Stamps
 
-### Phase 5 — Content Editing
+### Phase 5 — Content Editing (closed)
 
-* [ ] Page object selection
-* [ ] Text block reconstruction
-* [ ] Text editing
-* [ ] Font handling
-* [ ] Text reflow
-* [ ] Image editing
-* [ ] Object movement
-* [ ] Object deletion
+* [x] Page object selection
+* [x] Text block reconstruction
+* [x] Text editing
+* [x] Font handling
+* [x] Text reflow
+* [x] Image editing
+* [x] Object movement
+* [x] Object deletion
 
 ### Phase 6 — Advanced Features
 
