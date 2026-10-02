@@ -97,12 +97,16 @@ public:
     void previous();
     void setCurrentIndex(std::optional<std::size_t> index);
 
-    // Post-edit policy: after ANY page-model change (reorder, delete,
-    // insert, duplicate, rotate, crop - and their undo/redo) a search with a
+    // Post-edit policy: after a page-model change that alters the page order,
+    // the page set or a page's content/view (reorder, delete, insert,
+    // duplicate, rotate, crop - and their undo/redo) a search with a
     // non-empty query is RESTARTED with the same query and options over the
     // new snapshot (matches cleared and re-found in the new reading order;
     // the active match reset), so matches never point at deleted pages or
-    // stale page content. No-op when the query is empty. Main thread.
+    // stale page content. Changes that only touch annotations or raster
+    // state (annotationsChanged / rasterChanged) do NOT restart: the text
+    // layer is unchanged, so the matches and the active one are kept. No-op
+    // when the query is empty. Main thread.
     void handlePageModelChanged(const PageModelChange& change);
 
     // Fired on the main thread whenever matches, the searching state or the

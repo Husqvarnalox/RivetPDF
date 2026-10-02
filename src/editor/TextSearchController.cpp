@@ -90,8 +90,12 @@ bool TextSearchController::searching() const {
 }
 
 void TextSearchController::handlePageModelChanged(const PageModelChange& change) {
-    (void)change; // every kind of change restarts (see header)
     if (query_.empty()) return;
+    // Annotation and raster-only changes leave the text layer and the page
+    // order untouched, so the found matches stay valid (see header).
+    if (!change.orderChanged && change.removed.empty() && change.added.empty() && change.contentChanged.empty()) {
+        return;
+    }
     start(query_, options_);
 }
 
