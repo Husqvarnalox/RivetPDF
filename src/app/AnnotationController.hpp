@@ -105,11 +105,20 @@ public:
     void setFillEnabled(bool enabled);
     void setStampName(pdf::PdfStampName name);
 
+    // One tool state with the content tools (ContentController): while
+    // suspended the annotation layer paints but ignores input.
+    void setSuspended(bool suspended) { layer_.setInputEnabled(!suspended); }
+    bool suspended() const { return !layer_.inputEnabled(); }
+    // Fired when setTool() CHANGED the tool (the content tool then yields).
+    void setOnToolActivated(std::function<void()> onToolActivated) { onToolActivated_ = std::move(onToolActivated); }
+
     // Fired when anything the toolbar shows changed (tool, style, selection).
     void setOnStateChanged(std::function<void()> onStateChanged) { onStateChanged_ = std::move(onStateChanged); }
 
     // --- Selection and operations (all no-ops without a Ready active tab) ---
     std::optional<core::AnnotationId> selectedId() const;
+    // Drops the selection and any running gesture (a content tool took over).
+    void clearSelection();
     void deleteSelected();
     void editSelectedNote();
     // Markup from the active tab's text selection with a markup tool.
@@ -177,6 +186,7 @@ private:
     // Selected annotation per tab; mutable: pruned by const reads.
     mutable std::unordered_map<TabId, core::AnnotationId> selected_;
     std::function<void()> onStateChanged_;
+    std::function<void()> onToolActivated_;
 
     // Raw pointers into widgets owned by the parent's tree.
     ui::Container* notePanel_ = nullptr;

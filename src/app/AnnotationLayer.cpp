@@ -52,6 +52,7 @@ AnnotationInteraction::PointerInput AnnotationLayer::inputFor(const ui::Viewport
 }
 
 bool AnnotationLayer::onMouse(ui::ViewportToolHost& host, const ui::PointerEvent& event) {
+    if (!inputEnabled_) return false;
     AnnotationInteraction& machine = client_.interaction();
     switch (event.type) {
     case ui::PointerEventType::Down: {
@@ -101,6 +102,7 @@ bool AnnotationLayer::onMouse(ui::ViewportToolHost& host, const ui::PointerEvent
 }
 
 void AnnotationLayer::afterMouse(ui::ViewportToolHost& host, const ui::PointerEvent& event) {
+    if (!inputEnabled_) return;
     if (event.type != ui::PointerEventType::Up || !isPrimary(event)) return;
     const Intent intent = client_.interaction().afterUnconsumedUp(client_.textSelectionNonEmpty());
     if (intent.kind == Intent::Kind::ConvertTextSelection) {
@@ -110,6 +112,7 @@ void AnnotationLayer::afterMouse(ui::ViewportToolHost& host, const ui::PointerEv
 }
 
 bool AnnotationLayer::onKey(ui::ViewportToolHost& host, const ui::KeyEvent& event) {
+    if (!inputEnabled_) return false;
     if (event.modifiers.command || event.modifiers.control || event.modifiers.option) return false;
     AnnotationInteraction::KeyInput input;
     switch (event.key) {

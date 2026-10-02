@@ -125,6 +125,13 @@ void AnnotationController::layout(const core::Rect& viewportFrame) {
     placeNotePanel();
 }
 
+void AnnotationController::clearSelection() {
+    interaction_.cancelGesture();
+    select(std::nullopt);
+    notifyState();
+    repaint();
+}
+
 void AnnotationController::notifyState() {
     if (onStateChanged_) onStateChanged_();
 }
@@ -138,6 +145,7 @@ void AnnotationController::setTool(AnnotationTool tool) {
     const bool changed = tool != interaction_.tool();
     interaction_.setTool(tool); // cancels a running gesture
     if (changed) select(std::nullopt);
+    if (onToolActivated_) onToolActivated_();
     if (isMarkupTool(tool) && textSelectionNonEmpty()) convertTextSelection(tool);
     notifyState();
     repaint();

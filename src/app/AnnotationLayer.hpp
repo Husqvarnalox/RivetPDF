@@ -51,6 +51,11 @@ public:
 
     explicit AnnotationLayer(AnnotationLayerClient& client, Clock clock = {});
 
+    // False: the layer paints but ignores pointer and key input (a content
+    // tool is active; ADR-0014 one-tool-at-a-time).
+    void setInputEnabled(bool enabled) { inputEnabled_ = enabled; }
+    bool inputEnabled() const { return inputEnabled_; }
+
     bool onMouse(ui::ViewportToolHost& host, const ui::PointerEvent& event) override;
     void afterMouse(ui::ViewportToolHost& host, const ui::PointerEvent& event) override;
     bool onKey(ui::ViewportToolHost& host, const ui::KeyEvent& event) override;
@@ -69,6 +74,7 @@ private:
     double lastDownTime_ = -1.0e9;
     core::Point lastDownPoint_;
     int lastClickCount_ = 0;
+    bool inputEnabled_ = true;
 };
 
 } // namespace rivet::app
