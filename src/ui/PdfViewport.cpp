@@ -248,6 +248,16 @@ void PdfViewport::documentLayoutChanged(std::optional<std::size_t> anchorIndex, 
     invalidate();
 }
 
+void PdfViewport::setAnnotationLayer(ViewportLayer* layer) {
+    if (annotationLayer_ == layer) return;
+    annotationLayer_ = layer;
+    // Selection/link interactions in flight belong to the old routing.
+    selecting_ = false;
+    linkPressed_ = false;
+    pressedLink_.reset();
+    invalidate();
+}
+
 void PdfViewport::setActiveTool(ViewportTool* tool) {
     if (activeTool_ == tool) return;
     activeTool_ = tool;
@@ -257,6 +267,10 @@ void PdfViewport::setActiveTool(ViewportTool* tool) {
     pressedLink_.reset();
     linkHovered_ = false;
     invalidate();
+}
+
+std::size_t PdfViewport::pageCount() const {
+    return layout_ != nullptr ? layout_->pageCount() : 0;
 }
 
 std::optional<core::Rect> PdfViewport::pageRectInViewport(std::size_t pageIndex) const {
@@ -395,6 +409,29 @@ void PdfViewport::revealContentRect(std::size_t pageIndex, const core::Rect& pag
 }
 
 bool PdfViewport::onMouse(const PointerEvent& event) {
+    // Event order (non-wheel): active tool, annotation layer, the viewport's
+    // own handling, then the layer's afterMouse for an event it did not
+    // consume. Wheel scroll/pinch keeps navigating and never reaches either.
+    if (event.type == PointerEventType::Scroll) return handlePointer(event);
+
+    if (activeTool_ != nullptr && activeTool_->onMouse(*this, event)) {
+        event.accepted = true;
+        return true;
+    }
+    ViewportLayer* const layer = presentationMode_ ? nullptr : annotationLayer_;
+    if (layer != nullptr && layer->onMouse(*this, event)) {
+        event.accepted = true;
+        return true;
+    }
+    const bool consumed = handlePointer(event);
+    // The layer may have been uninstalled by a callback during handling.
+    if (layer != nullptr && layer == annotationLayer_ && !presentationMode_) {
+        layer->afterMouse(*this, event);
+    }
+    return consumed;
+}
+
+bool PdfViewport::handlePointer(const PointerEvent& event) {
     if (event.type == PointerEventType::Scroll) {
         if (layout_ == nullptr) return false;
 
@@ -419,12 +456,6 @@ bool PdfViewport::onMouse(const PointerEvent& event) {
         // Plain scroll: wheel delta is in logical pixels; convert to content
         // points (positive delta = content moves up/left = offset grows).
         scrollByContentPoints(event.scrollDelta / state_->zoom().zoom());
-        event.accepted = true;
-        return true;
-    }
-
-    // The active tool (crop, ...) sees every non-wheel pointer event first.
-    if (activeTool_ != nullptr && activeTool_->onMouse(*this, event)) {
         event.accepted = true;
         return true;
     }
@@ -522,6 +553,10 @@ bool PdfViewport::onMouse(const PointerEvent& event) {
 
 bool PdfViewport::onKey(const KeyEvent& event) {
     if (activeTool_ != nullptr && activeTool_->onKey(*this, event)) {
+        event.accepted = true;
+        return true;
+    }
+    if (annotationLayer_ != nullptr && !presentationMode_ && annotationLayer_->onKey(*this, event)) {
         event.accepted = true;
         return true;
     }
@@ -694,12 +729,17 @@ void PdfViewport::paintSelf(PaintContext& context) const {
             context.fillRect(pageInViewport, kPageBackground);
             context.strokeRect(pageInViewport, kPageBorder, 1.0);
             paintPageTiles(i, pageFrame, pageInViewport, contentRect, revision, context);
+            if (annotationLayer_ != nullptr) {
+                annotationLayer_->paintPage(*this, i, pageInViewport, context);
+            }
             paintPageOverlays(i, pageFrame, context);
         }
         // Limited nearby prefetch: one viewport-height band of the pages
         // adjacent to the visible range, scheduled behind visible tiles.
         prefetchNeighborPages(*visible, contentRect, revision, context);
     }
+    // Annotation layer chrome above every page overlay, below the tool.
+    if (annotationLayer_ != nullptr) annotationLayer_->paintAbove(*this, context);
     // Tool layer above tiles and text overlays.
     if (activeTool_ != nullptr) activeTool_->paint(*this, context);
     context.popClip();
