@@ -172,13 +172,11 @@ RIVET_TEST(integAddTextIsOnTopEmbedsItsFontAndSurvivesDeleteUndoRedo) {
     CHECK_NEAR(static_cast<double>(added->color.g), 0.0, 0.01);
     CHECK(added->tag != 0);
     CHECK(contains(added->font.baseName, "Tinos")); // the bundled serif
-    // KNOWN BUG PDFIUM-FONT-SERIF: the bundled serif font (Tinos) is
-    // classified as sans by describeFont (src/pdf/pdfium/PdfiumContent.cpp:276,
-    // no serif flag in the descriptor and no "Times" in the name), so the
-    // content bar shows "Sans" for a Serif block and the retype coverage
-    // check uses the sans font.
-    KNOWN_BUG("PDFIUM-FONT-SERIF", added->font.serif && rig.content->displayedStyle().family == app::ContentController::FontFamily::Serif,
-              "bundled Serif block reports serif=false / displayed family Sans");
+    // PDFium writes no serif flag for fonts loaded from bytes: describeFont
+    // classifies the bundled serif (Tinos) by name, so the content bar shows
+    // Serif for the block and the retype coverage check uses the serif face.
+    CHECK(added->font.serif);
+    CHECK(rig.content->displayedStyle().family == app::ContentController::FontFamily::Serif);
     {
         // Topmost: the new block's objects hold the highest z-indices.
         const auto now = rig.contentNow(0);
