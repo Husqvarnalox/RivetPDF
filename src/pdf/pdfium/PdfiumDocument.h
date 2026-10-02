@@ -88,6 +88,9 @@ public:
 
     core::Result<std::shared_ptr<const PdfTextPage>> textPage(std::size_t pageIndex) const override;
 
+    core::Result<PdfPageContentPtr> pageContent(std::size_t pageIndex,
+                                                const PdfPageContentEditsPtr& edits) const override;
+
     // Adapter-internal accessors for the assembly (PdfiumAssembly.cpp), which
     // runs inside its own gate acquisition. Nothing here is reachable through
     // the PdfDocument interface.
@@ -100,11 +103,12 @@ protected:
     core::Result<core::Bitmap> renderPageInView(std::size_t pageIndex,
                                                 const PdfPageView& view,
                                                 std::span<const std::uint32_t> hiddenAnnotations,
+                                                const PdfPageContentEditsPtr& content,
                                                 const core::Rect& pageRectPoints,
                                                 double devicePixelsPerPoint) override;
 
-    core::Result<std::shared_ptr<const PdfTextPage>> textPageInView(std::size_t pageIndex,
-                                                                    const PdfPageView& view) const override;
+    core::Result<std::shared_ptr<const PdfTextPage>> textPageInView(
+        std::size_t pageIndex, const PdfPageView& view, const PdfPageContentEditsPtr& content) const override;
 
     core::Result<std::vector<PdfPageLink>> pageLinksInView(std::size_t pageIndex,
                                                            const PdfPageView& view) const override;
@@ -116,10 +120,12 @@ private:
     core::Result<core::Bitmap> renderPageImpl(std::size_t pageIndex,
                                               const PdfPageView* view,
                                               std::span<const std::uint32_t> hiddenAnnotations,
+                                              const PdfPageContentEditsPtr& content,
                                               const core::Rect& pageRectPoints,
                                               double devicePixelsPerPoint);
     core::Result<std::shared_ptr<const PdfTextPage>> textPageImpl(std::size_t pageIndex,
-                                                                  const PdfPageView* view) const;
+                                                                  const PdfPageView* view,
+                                                                  const PdfPageContentEditsPtr& content) const;
     core::Result<std::vector<PdfPageLink>> pageLinksImpl(std::size_t pageIndex,
                                                          const PdfPageView* view) const;
 

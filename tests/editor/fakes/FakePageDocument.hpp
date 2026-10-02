@@ -12,12 +12,14 @@
 #include "core/geometry/Rotation.hpp"
 #include "core/geometry/Size.hpp"
 #include "pdf/PdfAnnotation.hpp"
+#include "pdf/PdfContent.hpp"
 #include "pdf/PdfEngine.hpp"
 #include "pdf/PdfNavigation.hpp"
 #include "pdf/PdfPageGeometry.hpp"
 #include "pdf/PdfText.hpp"
 #include "pdf/PdfTypes.hpp"
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -77,11 +79,11 @@ public:
     core::Result<core::Bitmap> renderPage(std::size_t pageIndex, const core::Rect& rect,
                                           double scale) override {
         return renderPageInView(pageIndex, pdf::PdfPageView{core::PageRotation::None, mediaBox(pageIndex)}, {},
-                                rect, scale);
+                                nullptr, rect, scale);
     }
 
     core::Result<std::shared_ptr<const pdf::PdfTextPage>> textPage(std::size_t pageIndex) const override {
-        return textPageInView(pageIndex, pdf::PdfPageView{core::PageRotation::None, mediaBox(pageIndex)});
+        return textPageInView(pageIndex, pdf::PdfPageView{core::PageRotation::None, mediaBox(pageIndex)}, nullptr);
     }
 
     core::Result<std::vector<pdf::PdfPageLink>> pageLinks(std::size_t pageIndex) const override {
@@ -165,6 +167,89 @@ public:
         return lastRenderView_;
     }
 
+    // --- Content editing (Phase 5) -----------------------------------------
+    // Page content returned by pageContent(): configure per page BEFORE the
+    // document is shared (not synchronized). Pages without an entry have an
+    // empty, regeneration-safe content.
+    std::map<std::size_t, pdf::PdfPageContent> pageContents;
+
+    // pageContent(page, null/empty) returns the configured content as is.
+    // With edits it returns the configured content with the removed objects
+    // dropped and the transforms applied to matrix / bounds / quad (the
+    // remaining objects are renumbered, origin = Source(original index)).
+    // Text blocks and image replacement are NOT simulated: tests that need
+    // created objects configure the expected content themselves.
+    core::Result<pdf::PdfPageContentPtr> pageContent(std::size_t pageIndex,
+                                                     const pdf::PdfPageContentEditsPtr& edits) const override {
+        if (pageIndex >= info_.pageCount) {
+            return std::unexpected(core::makeError(core::ErrorCode::InvalidArgument, "page", "test"));
+        }
+        ++contentLoads;
+        pdf::PdfPageContent content;
+        if (const auto it = pageContents.find(pageIndex); it != pageContents.end()) content = it->second;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            lastContentEdits_ = edits;
+        }
+        if (edits == nullptr || edits->empty()) {
+            for (std::size_t i = 0; i < content.objects.size(); ++i) {
+                content.objects[i].index = static_cast<std::uint32_t>(i);
+                content.objects[i].origin = {pdf::PdfContentOrigin::Kind::Source, static_cast<std::uint32_t>(i), 0};
+            }
+            return std::make_shared<const pdf::PdfPageContent>(std::move(content));
+        }
+        std::vector<pdf::PdfContentObject> out;
+        for (const pdf::PdfContentObject& source : content.objects) {
+            const pdf::PdfObjectEdit* edit = nullptr;
+            for (const pdf::PdfObjectEdit& candidate : edits->objects) {
+                if (candidate.sourceIndex == source.index) edit = &candidate;
+            }
+            if (edit != nullptr && edit->remove) continue;
+            pdf::PdfContentObject object = source;
+            object.origin = {pdf::PdfContentOrigin::Kind::Source, source.index, 0};
+            if (edit != nullptr && edit->transform.has_value()) {
+                const core::Matrix& m = *edit->transform;
+                object.matrix = m * object.matrix;
+                pdf::PdfBox box{1e300, 1e300, -1e300, -1e300};
+                const core::Point corners[4] = {{source.bounds.left, source.bounds.bottom},
+                                                {source.bounds.right, source.bounds.bottom},
+                                                {source.bounds.left, source.bounds.top},
+                                                {source.bounds.right, source.bounds.top}};
+                for (const core::Point& corner : corners) {
+                    const core::Point mapped = m.map(corner);
+                    box.left = std::min(box.left, mapped.x);
+                    box.bottom = std::min(box.bottom, mapped.y);
+                    box.right = std::max(box.right, mapped.x);
+                    box.top = std::max(box.top, mapped.y);
+                }
+                object.bounds = box;
+                for (pdf::PdfPoint& corner : object.quad) {
+                    const core::Point mapped = m.map(core::Point{corner.x, corner.y});
+                    corner = pdf::PdfPoint{mapped.x, mapped.y};
+                }
+            }
+            out.push_back(std::move(object));
+        }
+        for (std::size_t i = 0; i < out.size(); ++i) out[i].index = static_cast<std::uint32_t>(i);
+        content.objects = std::move(out);
+        return std::make_shared<const pdf::PdfPageContent>(std::move(content));
+    }
+
+    // The content edits seen by the last render / text / pageContent call.
+    pdf::PdfPageContentEditsPtr lastRenderContentEdits() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return lastRenderContent_;
+    }
+    pdf::PdfPageContentEditsPtr lastTextContentEdits() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return lastTextContent_;
+    }
+    pdf::PdfPageContentEditsPtr lastPageContentEdits() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return lastContentEdits_;
+    }
+    mutable std::atomic<int> contentLoads{0};
+
     mutable std::atomic<int> renders{0};
     mutable std::atomic<int> extractions{0};
     mutable std::atomic<int> linkLoads{0};
@@ -175,6 +260,7 @@ public:
 protected:
     core::Result<core::Bitmap> renderPageInView(std::size_t pageIndex, const pdf::PdfPageView& view,
                                                 std::span<const std::uint32_t> hiddenAnnotations,
+                                                const pdf::PdfPageContentEditsPtr& content,
                                                 const core::Rect& rect, double scale) override {
         if (pageIndex >= info_.pageCount) {
             return std::unexpected(core::makeError(core::ErrorCode::InvalidArgument, "page", "test"));
@@ -184,6 +270,7 @@ protected:
             std::lock_guard<std::mutex> lock(mutex_);
             lastRenderView_ = view;
             lastHidden_.assign(hiddenAnnotations.begin(), hiddenAnnotations.end());
+            lastRenderContent_ = content;
         }
         const auto width = static_cast<std::uint32_t>(rect.size.width * scale + 0.5);
         const auto height = static_cast<std::uint32_t>(rect.size.height * scale + 0.5);
@@ -192,12 +279,17 @@ protected:
         return bitmap;
     }
 
-    core::Result<std::shared_ptr<const pdf::PdfTextPage>> textPageInView(std::size_t pageIndex,
-                                                                         const pdf::PdfPageView& view) const override {
+    core::Result<std::shared_ptr<const pdf::PdfTextPage>> textPageInView(
+        std::size_t pageIndex, const pdf::PdfPageView& view,
+        const pdf::PdfPageContentEditsPtr& content) const override {
         if (pageIndex >= info_.pageCount) {
             return std::unexpected(core::makeError(core::ErrorCode::InvalidArgument, "page", "test"));
         }
         ++extractions;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            lastTextContent_ = content;
+        }
         return makeText(textFor(pageIndex, view));
     }
 
@@ -219,6 +311,9 @@ private:
     std::map<std::size_t, std::vector<pdf::PdfPageLink>> links_;
     pdf::PdfPageView lastRenderView_;
     std::vector<std::uint32_t> lastHidden_;
+    pdf::PdfPageContentEditsPtr lastRenderContent_;
+    mutable pdf::PdfPageContentEditsPtr lastTextContent_;
+    mutable pdf::PdfPageContentEditsPtr lastContentEdits_;
     std::map<std::size_t, pdf::PdfPageAnnotationsPtr> annotations_;
     mutable std::condition_variable cv_;
     bool annotationGated_ = false;

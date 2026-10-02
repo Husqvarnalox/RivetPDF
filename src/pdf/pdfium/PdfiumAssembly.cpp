@@ -697,7 +697,9 @@ core::Status assembleFresh(const std::vector<ResolvedPage>& pages, ImportSources
 core::Status assembleWithPdfium(const PdfiumEngine& engine,
                                 const PdfAssemblyRequest& request,
                                 IPdfByteSink& sink,
-                                std::vector<PdfAssembledPageAnnotations>* annotationReport) {
+                                std::vector<PdfAssembledPageAnnotations>* annotationReport,
+                                std::vector<PdfAssembledPageContent>* contentReport) {
+    (void)contentReport;
     try {
         // Public entry operation: ONE gate acquisition for the whole
         // assembly (see the gate strategy at the top of this file). Every

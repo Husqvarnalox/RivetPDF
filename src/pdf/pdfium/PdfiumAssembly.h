@@ -15,10 +15,12 @@ class PdfiumEngine;
 // acquires the PDFium call gate exactly once (see PdfiumAssembly.cpp), so it
 // must never be called while the gate is held - and `sink` must not call
 // back into the PDF layer. `annotationReport` (optional) gets one entry per
-// request page, see PdfEngine::assembleDocument.
+// request page; `contentReport` (optional) likewise, see
+// PdfEngine::assembleDocument.
 core::Status assembleWithPdfium(const PdfiumEngine& engine,
                                 const PdfAssemblyRequest& request,
                                 IPdfByteSink& sink,
-                                std::vector<PdfAssembledPageAnnotations>* annotationReport = nullptr);
+                                std::vector<PdfAssembledPageAnnotations>* annotationReport = nullptr,
+                                std::vector<PdfAssembledPageContent>* contentReport = nullptr);
 
 } // namespace rivet::pdf

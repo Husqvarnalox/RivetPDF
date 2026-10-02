@@ -5,6 +5,7 @@
 #include "core/geometry/Rect.hpp"
 #include "pdf/PdfAnnotation.hpp"
 #include "pdf/PdfAssembly.hpp"
+#include "pdf/PdfContent.hpp"
 #include "pdf/PdfPageGeometry.hpp"
 #include "pdf/PdfText.hpp"
 #include "pdf/PdfNavigation.hpp"
@@ -65,7 +66,7 @@ public:
                                           const PdfPageView& view,
                                           const core::Rect& pageRectPoints,
                                           double devicePixelsPerPoint) {
-        return renderPageInView(pageIndex, view, {}, pageRectPoints, devicePixelsPerPoint);
+        return renderPageInView(pageIndex, view, {}, nullptr, pageRectPoints, devicePixelsPerPoint);
     }
 
     // Same, but the annotations at the given /Annots indices of the page are
@@ -78,12 +79,37 @@ public:
                                           std::span<const std::uint32_t> hiddenAnnotations,
                                           const core::Rect& pageRectPoints,
                                           double devicePixelsPerPoint) {
-        return renderPageInView(pageIndex, view, hiddenAnnotations, pageRectPoints, devicePixelsPerPoint);
+        return renderPageInView(pageIndex, view, hiddenAnnotations, nullptr, pageRectPoints,
+                                devicePixelsPerPoint);
+    }
+
+    // Same, but the page's content is first transformed by `content` (see
+    // PdfContent.hpp; a null or empty pointer = the page as stored). The
+    // edits are applied by the backend to a private copy of the SOURCE page
+    // - the live document is never changed - exactly as a save would write
+    // them, so the bitmap shows what the saved file will show. Backends
+    // without content support return NotAvailable for non-empty edits.
+    core::Result<core::Bitmap> renderPage(std::size_t pageIndex,
+                                          const PdfPageView& view,
+                                          std::span<const std::uint32_t> hiddenAnnotations,
+                                          const PdfPageContentEditsPtr& content,
+                                          const core::Rect& pageRectPoints,
+                                          double devicePixelsPerPoint) {
+        return renderPageInView(pageIndex, view, hiddenAnnotations, content, pageRectPoints,
+                                devicePixelsPerPoint);
     }
 
     core::Result<std::shared_ptr<const PdfTextPage>> textPage(std::size_t pageIndex,
                                                               const PdfPageView& view) const {
-        return textPageInView(pageIndex, view);
+        return textPageInView(pageIndex, view, nullptr);
+    }
+
+    // Text of the page after `content` was applied (null/empty = as stored);
+    // see the renderPage overload above.
+    core::Result<std::shared_ptr<const PdfTextPage>> textPage(std::size_t pageIndex,
+                                                              const PdfPageView& view,
+                                                              const PdfPageContentEditsPtr& content) const {
+        return textPageInView(pageIndex, view, content);
     }
 
     core::Result<std::vector<PdfPageLink>> pageLinks(std::size_t pageIndex,
@@ -125,6 +151,20 @@ public:
                                                "this backend has no link support", "pdf"));
     }
 
+    // The top-level content objects of a page (PdfContent.hpp). With null or
+    // empty `edits`: the page as stored in its file (read from a private,
+    // never-rendered copy; includes the regeneration fidelity probe result).
+    // With edits: the page after they were applied to the SOURCE page, with
+    // PdfContentObject::origin / blockTag / fontSubstituted filled. The
+    // result is immutable data with no engine handles. Default: NotAvailable.
+    virtual core::Result<PdfPageContentPtr> pageContent(std::size_t pageIndex,
+                                                        const PdfPageContentEditsPtr& edits) const {
+        (void)pageIndex;
+        (void)edits;
+        return std::unexpected(core::makeError(core::ErrorCode::NotAvailable,
+                                               "this backend has no content editing support", "pdf"));
+    }
+
     // Extracts the text of a page. The returned PdfTextPage is immutable,
     // Rivet-owned data with no engine handles, so it may outlive any call and
     // be cached freely. Default: NotAvailable (backends without text support).
@@ -137,21 +177,31 @@ public:
 protected:
     // Hooks behind the view-aware overloads. The defaults IGNORE the view and
     // forward to the native-view overloads: that is test-backend behavior
-    // (fakes that never present pages through a different view). Real
-    // backends override all three.
+    // (fakes that never present pages through a different view). Non-empty
+    // `content` edits are NotAvailable by default. Real backends override all
+    // three.
     virtual core::Result<core::Bitmap> renderPageInView(std::size_t pageIndex,
                                                         const PdfPageView& view,
                                                         std::span<const std::uint32_t> hiddenAnnotations,
+                                                        const PdfPageContentEditsPtr& content,
                                                         const core::Rect& pageRectPoints,
                                                         double devicePixelsPerPoint) {
         (void)view;
         (void)hiddenAnnotations;
+        if (content != nullptr && !content->empty()) {
+            return std::unexpected(core::makeError(core::ErrorCode::NotAvailable,
+                                                   "this backend has no content editing support", "pdf"));
+        }
         return renderPage(pageIndex, pageRectPoints, devicePixelsPerPoint);
     }
 
-    virtual core::Result<std::shared_ptr<const PdfTextPage>> textPageInView(std::size_t pageIndex,
-                                                                            const PdfPageView& view) const {
+    virtual core::Result<std::shared_ptr<const PdfTextPage>> textPageInView(
+        std::size_t pageIndex, const PdfPageView& view, const PdfPageContentEditsPtr& content) const {
         (void)view;
+        if (content != nullptr && !content->empty()) {
+            return std::unexpected(core::makeError(core::ErrorCode::NotAvailable,
+                                                   "this backend has no content editing support", "pdf"));
+        }
         return textPage(pageIndex);
     }
 
@@ -207,11 +257,18 @@ public:
     // order, where the page's PdfAssemblyPage::annotationEdits creations
     // landed (empty entries for pages without edits). Only meaningful on
     // success.
+    //
+    // `contentReport` (optional) receives, per output page in request order,
+    // the origin of every top-level object of the written page (see
+    // PdfAssembledPageContent). An entry with empty `origins` means the page
+    // had no content edits: its object i is source object i.
     virtual core::Status assembleDocument(const PdfAssemblyRequest& request, IPdfByteSink& sink,
-                                          std::vector<PdfAssembledPageAnnotations>* annotationReport = nullptr) {
+                                          std::vector<PdfAssembledPageAnnotations>* annotationReport = nullptr,
+                                          std::vector<PdfAssembledPageContent>* contentReport = nullptr) {
         (void)request;
         (void)sink;
         (void)annotationReport;
+        (void)contentReport;
         return std::unexpected(core::makeError(core::ErrorCode::NotAvailable,
                                                "this backend cannot write documents", "pdf"));
     }

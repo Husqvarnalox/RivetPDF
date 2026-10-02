@@ -3,6 +3,7 @@
 
 #include "core/Error.hpp"
 #include "pdf/PdfAnnotation.hpp"
+#include "pdf/PdfContent.hpp"
 #include "pdf/PdfPageGeometry.hpp"
 
 #include <cstddef>
@@ -36,8 +37,15 @@ struct PdfAssemblyPage {
     std::size_t sourcePageIndex = 0;
     PdfPageView view;
     // Annotation changes against the SOURCE page's /Annots (null or empty =
-    // the page's annotations are copied unchanged). Applied after the view.
+    // the page's annotations are copied unchanged). Applied after the view
+    // and the content edits.
     std::shared_ptr<const PdfPageAnnotationEdits> annotationEdits;
+    // Content changes against the SOURCE page's top-level objects (null or
+    // empty = the page's content is copied untouched, byte for byte).
+    // Applied after the view and before the annotation edits; never changes
+    // the page's /Annots (PdfContent.hpp, ADR-0017). Declared last so the
+    // positional aggregate initializers that predate it keep compiling.
+    PdfPageContentEditsPtr contentEdits = nullptr;
 };
 
 // A request to materialize a page list into a new PDF.

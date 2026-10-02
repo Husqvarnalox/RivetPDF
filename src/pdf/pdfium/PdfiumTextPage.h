@@ -35,4 +35,10 @@ core::Result<std::shared_ptr<const PdfTextPage>> extractTextPage(FPDF_DOCUMENT d
                                                                  std::size_t pageCount,
                                                                  const PdfPageView* view = nullptr);
 
+// Same, for a page the caller already loaded (e.g. a materialized edited
+// page). The caller keeps ownership of `page`; the gate rules above apply.
+core::Result<std::shared_ptr<const PdfTextPage>> extractTextPageFromLoaded(FPDF_PAGE page,
+                                                                           std::size_t pageIndex,
+                                                                           const PdfPageView* view = nullptr);
+
 } // namespace rivet::pdf

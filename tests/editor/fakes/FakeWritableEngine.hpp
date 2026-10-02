@@ -150,14 +150,18 @@ public:
     }
 
     core::Status assembleDocument(const pdf::PdfAssemblyRequest& request, pdf::IPdfByteSink& sink,
-                                  std::vector<pdf::PdfAssembledPageAnnotations>* annotationReport = nullptr) override {
+                                  std::vector<pdf::PdfAssembledPageAnnotations>* annotationReport = nullptr,
+                                  std::vector<pdf::PdfAssembledPageContent>* contentReport = nullptr) override {
         const int ordinal = ++assemblies;
         {
             std::lock_guard<std::mutex> lock(mutex_);
             lastEdits.clear();
+            lastContentEdits.clear();
             for (const pdf::PdfAssemblyPage& page : request.pages) {
                 lastEdits.push_back(page.annotationEdits != nullptr ? *page.annotationEdits
                                                                     : pdf::PdfPageAnnotationEdits{});
+                lastContentEdits.push_back(page.contentEdits != nullptr ? *page.contentEdits
+                                                                        : pdf::PdfPageContentEdits{});
             }
         }
         waitAtGate();
@@ -192,6 +196,16 @@ public:
                     entry.annotsCount = count;
                     annotationReport->push_back(std::move(entry));
                 }
+            }
+        }
+        if (contentReport != nullptr) {
+            // Like a backend without edits would: empty entries (object i =
+            // source object i). Tests needing origins override the report.
+            contentReport->clear();
+            if (contentReportOverride.has_value()) {
+                *contentReport = *contentReportOverride;
+            } else {
+                contentReport->assign(request.pages.size(), pdf::PdfAssembledPageContent{});
             }
         }
         const std::string bytes = out.str();
@@ -235,6 +249,11 @@ public:
     std::optional<std::vector<pdf::PdfAssembledPageAnnotations>> reportOverride;
     // The annotation edits of the last assembly, one per page (empty = none).
     std::vector<pdf::PdfPageAnnotationEdits> lastEdits;
+    // The content edits of the last assembly, one per page (empty = none).
+    std::vector<pdf::PdfPageContentEdits> lastContentEdits;
+    // When set, returned as the content report of every assembly (else one
+    // empty entry per page).
+    std::optional<std::vector<pdf::PdfAssembledPageContent>> contentReportOverride;
 
     std::atomic<int> opens{0};
     std::atomic<int> reopens{0};

@@ -252,22 +252,25 @@ core::Result<PdfPageInfo> PdfiumDocument::pageInfo(std::size_t pageIndex) const 
 core::Result<core::Bitmap> PdfiumDocument::renderPage(std::size_t pageIndex,
                                                       const core::Rect& pageRectPoints,
                                                       double devicePixelsPerPoint) {
-    return renderPageImpl(pageIndex, nullptr, {}, pageRectPoints, devicePixelsPerPoint);
+    return renderPageImpl(pageIndex, nullptr, {}, nullptr, pageRectPoints, devicePixelsPerPoint);
 }
 
 core::Result<core::Bitmap> PdfiumDocument::renderPageInView(std::size_t pageIndex,
                                                             const PdfPageView& view,
                                                             std::span<const std::uint32_t> hiddenAnnotations,
+                                                            const PdfPageContentEditsPtr& content,
                                                             const core::Rect& pageRectPoints,
                                                             double devicePixelsPerPoint) {
-    return renderPageImpl(pageIndex, &view, hiddenAnnotations, pageRectPoints, devicePixelsPerPoint);
+    return renderPageImpl(pageIndex, &view, hiddenAnnotations, content, pageRectPoints, devicePixelsPerPoint);
 }
 
 core::Result<core::Bitmap> PdfiumDocument::renderPageImpl(std::size_t pageIndex,
                                                           const PdfPageView* view,
                                                           std::span<const std::uint32_t> hiddenAnnotations,
+                                                          const PdfPageContentEditsPtr& content,
                                                           const core::Rect& pageRectPoints,
                                                           double devicePixelsPerPoint) {
+    (void)content;
     // Public entry operation: one gate acquisition for the whole body. Every
     // step below (page load, dimension queries, bitmap fill, render) issues
     // FPDF_* calls that must not overlap with any other PDFium call.
@@ -510,16 +513,24 @@ core::Result<PdfPageAnnotationsPtr> PdfiumDocument::annotations(std::size_t page
 }
 
 core::Result<std::shared_ptr<const PdfTextPage>> PdfiumDocument::textPage(std::size_t pageIndex) const {
-    return textPageImpl(pageIndex, nullptr);
+    return textPageImpl(pageIndex, nullptr, nullptr);
 }
 
-core::Result<std::shared_ptr<const PdfTextPage>> PdfiumDocument::textPageInView(std::size_t pageIndex,
-                                                                                const PdfPageView& view) const {
-    return textPageImpl(pageIndex, &view);
+core::Result<std::shared_ptr<const PdfTextPage>> PdfiumDocument::textPageInView(
+    std::size_t pageIndex, const PdfPageView& view, const PdfPageContentEditsPtr& content) const {
+    return textPageImpl(pageIndex, &view, content);
 }
 
-core::Result<std::shared_ptr<const PdfTextPage>> PdfiumDocument::textPageImpl(std::size_t pageIndex,
-                                                                              const PdfPageView* view) const {
+core::Result<PdfPageContentPtr> PdfiumDocument::pageContent(std::size_t pageIndex,
+                                                            const PdfPageContentEditsPtr& edits) const {
+    (void)pageIndex;
+    (void)edits;
+    return std::unexpected(core::makeError(core::ErrorCode::NotAvailable, "not implemented yet", "pdf"));
+}
+
+core::Result<std::shared_ptr<const PdfTextPage>> PdfiumDocument::textPageImpl(
+    std::size_t pageIndex, const PdfPageView* view, const PdfPageContentEditsPtr& content) const {
+    (void)content;
     // Public entry operation: ONE gate acquisition for the whole extraction.
     // extractTextPage never acquires the gate itself (documented in
     // PdfiumTextPage.h) - the page load, text-page load, per-char queries and

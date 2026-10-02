@@ -56,15 +56,21 @@ core::Result<std::shared_ptr<const PdfTextPage>> extractTextPage(FPDF_DOCUMENT d
                                                "pdf"));
     }
 
+    return extractTextPageFromLoaded(page.get(), pageIndex, view);
+}
+
+core::Result<std::shared_ptr<const PdfTextPage>> extractTextPageFromLoaded(FPDF_PAGE pageHandle,
+                                                                           std::size_t pageIndex,
+                                                                           const PdfPageView* view) {
     // Char boxes come back in user space; they are mapped into the display
     // space of the requested view (the native one when view is null).
-    const auto resolved = internal::resolvePageGeometry(page.get(), pageIndex, view);
+    const auto resolved = internal::resolvePageGeometry(pageHandle, pageIndex, view);
     if (!resolved.has_value()) {
         return std::unexpected(resolved.error());
     }
     const internal::DisplayGeometry* geometry = &resolved->display;
 
-    internal::ScopedTextPage textPage(FPDFText_LoadPage(page.get()));
+    internal::ScopedTextPage textPage(FPDFText_LoadPage(pageHandle));
     if (textPage.get() == nullptr) {
         const int lastError = static_cast<int>(FPDF_GetLastError());
         return std::unexpected(core::makeError(core::ErrorCode::InvalidDocument,
