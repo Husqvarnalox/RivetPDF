@@ -35,6 +35,9 @@ add_executable(rivet_pdf_tests
     # Hostile / over-limit annotation inputs (annots-many.pdf, annots-hostile.pdf):
     # PDFium-ON bodies only.
     TestPdfiumAnnotationLimits.cpp
+    # Phase 5 content backend (extraction, probe, edits, assembly): PDFium-ON
+    # bodies only.
+    TestPdfiumContent.cpp
     # Compiled directly into the test binary rather than linked from
     # rivet_pdfium, so the gate tests run with RIVET_WITH_PDFIUM=OFF too. The
     # gate translation unit has no FPDF_* dependency. In PDFium-ON builds the
