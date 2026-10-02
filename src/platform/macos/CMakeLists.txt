@@ -3,6 +3,7 @@ add_library(rivet_platform_macos STATIC
     MacosClipboard.mm
     MacosExternalUrlOpener.mm
     MacosFileDialog.mm
+    MacosImageDecoder.mm
     MacosLifecycle.mm
     MacosMainThreadDispatcher.mm
     MacosPrintService.mm
@@ -29,7 +30,10 @@ target_compile_options(rivet_platform_macos PRIVATE -fobjc-arc)
 
 find_library(COCOA_FRAMEWORK Cocoa REQUIRED)
 find_library(CORETEXT_FRAMEWORK CoreText REQUIRED)
-target_link_libraries(rivet_platform_macos PUBLIC "${COCOA_FRAMEWORK}" "${CORETEXT_FRAMEWORK}")
+find_library(COREGRAPHICS_FRAMEWORK CoreGraphics REQUIRED)
+find_library(IMAGEIO_FRAMEWORK ImageIO REQUIRED)
+target_link_libraries(rivet_platform_macos PUBLIC "${COCOA_FRAMEWORK}" "${CORETEXT_FRAMEWORK}"
+    "${COREGRAPHICS_FRAMEWORK}" "${IMAGEIO_FRAMEWORK}")
 find_library(UTI_FRAMEWORK UniformTypeIdentifiers)
 if(UTI_FRAMEWORK)
     target_link_libraries(rivet_platform_macos PUBLIC "${UTI_FRAMEWORK}")

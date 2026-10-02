@@ -10,6 +10,7 @@ namespace rivet::platform {
 class MacosFileDialog final : public IFileDialog, public ISaveDialog {
 public:
     core::Result<std::filesystem::path> openPdf() override;
+    core::Result<std::filesystem::path> openImage() override;
     core::Result<std::vector<std::filesystem::path>> openPdfs(const OpenOptions& options) override;
     std::optional<std::filesystem::path> runSavePanel(const ISaveDialog::Options& options) override;
 };

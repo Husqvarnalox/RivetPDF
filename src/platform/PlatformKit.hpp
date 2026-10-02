@@ -7,6 +7,7 @@
 #include "platform/AppLifecycle.hpp"
 #include "platform/Clipboard.hpp"
 #include "platform/ExternalUrlOpener.hpp"
+#include "platform/ImageDecoder.hpp"
 #include "platform/Print.hpp"
 
 #include <filesystem>
@@ -46,6 +47,14 @@ public:
         auto one = openPdf();
         if (!one) return std::unexpected(one.error());
         return std::vector<std::filesystem::path>{std::move(*one)};
+    }
+
+    // Modal open dialog for ONE image (PNG or JPEG) for Replace Image.
+    // ErrorCode::Cancelled means the user dismissed the dialog; the default
+    // (a backend without an image chooser) reports Unsupported.
+    virtual core::Result<std::filesystem::path> openImage() {
+        return std::unexpected(core::makeError(core::ErrorCode::Unsupported,
+                                               "no image chooser on this platform backend", "platform"));
     }
 };
 
@@ -115,6 +124,10 @@ struct ShellServices {
     // the close button, -[NSWindow setDocumentEdited:]). May be null. Main
     // thread.
     std::function<void(bool)> setDocumentEdited;
+
+    // Image decoder for Replace Image. May be null (the command then reports
+    // that images cannot be read on this backend). Thread-safe.
+    IImageDecoder* imageDecoder = nullptr;
 };
 
 } // namespace rivet::platform

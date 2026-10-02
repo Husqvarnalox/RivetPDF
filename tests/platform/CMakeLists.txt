@@ -23,6 +23,7 @@ rivet_set_target_sanitizers(rivet_platform_portable_tests)
 if(APPLE)
     add_executable(rivet_platform_tests
         TestClipboard.cpp
+        TestImageDecoder.mm
         TestPrintService.mm
     )
 

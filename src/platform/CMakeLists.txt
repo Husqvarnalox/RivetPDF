@@ -4,7 +4,9 @@ add_library(rivet::platform ALIAS rivet_platform)
 
 target_include_directories(rivet_platform INTERFACE ${CMAKE_CURRENT_SOURCE_DIR})
 
-target_link_libraries(rivet_platform INTERFACE rivet::core)
+# rivet::pdf for the portable pixel description (pdf/PdfContent.hpp) the
+# image decoder interface returns.
+target_link_libraries(rivet_platform INTERFACE rivet::core rivet::pdf)
 
 # Desktop backends are selected by target platform, not by directory
 # existence. Unsupported platforms still configure the portable libraries
