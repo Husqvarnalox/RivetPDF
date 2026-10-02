@@ -276,18 +276,29 @@ bool TextField::onKey(const KeyEvent& event) {
         if (edited) notifyTextChanged(); // a no-op is not an edit
         break;
     }
+    case Key::Space:
+    case Key::Plus:
+    case Key::Minus:
     case Key::Character: {
-        if (event.text.empty()) return false;
+        // Space, '+' and '-' have dedicated keys (the viewport zooms on
+        // them); the platform fills event.text with the typed character, and
+        // a platform that does not gets the plain character here.
+        std::string typed = event.text;
+        if (typed.empty()) {
+            if (event.key == Key::Space) typed = " ";
+            else if (event.key == Key::Minus) typed = "-";
+            else if (event.key == Key::Plus) typed = event.modifiers.shift ? "+" : "=";
+            else return false;
+        }
         eraseSelection();
-        text_.insert(caret_, event.text); // may be multi-byte UTF-8
-        caret_ += event.text.size();
+        text_.insert(caret_, typed); // may be multi-byte UTF-8
+        caret_ += typed.size();
         anchor_ = caret_;
         notifyTextChanged();
         break;
     }
     default:
-        // Space/Tab arriving as bare keys without text, arrows we do not
-        // handle, etc. — not ours.
+        // Tab, arrows we do not handle, etc. — not ours.
         return false;
     }
 

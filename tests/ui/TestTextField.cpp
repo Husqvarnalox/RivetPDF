@@ -338,3 +338,23 @@ RIVET_TEST(preferredSizePadsMeasuredText) {
     CHECK_NEAR(size.width, 14.0 + 2.0 * TextField::kHorizontalPadding, 1e-9);
     CHECK_NEAR(size.height, TextField::kMinHeight, 1e-9);
 }
+
+RIVET_TEST(spacePlusAndMinusKeysTypeTheirCharacters) {
+    auto field = makeField("");
+    field->setFocused(true);
+    // The platform fills text for the dedicated keys.
+    CHECK_EQ(field->onKey(makeKey(Key::Minus, "-")), true);
+    CHECK_EQ(field->onKey(makeKey(Key::Space, " ")), true);
+    CHECK_EQ(field->onKey(makeKey(Key::Plus, "+")), true);
+    CHECK_EQ(field->text(), "- +");
+    // A platform that leaves text empty still types the plain character.
+    field->setText("");
+    CHECK_EQ(field->onKey(makeKey(Key::Space)), true);
+    CHECK_EQ(field->onKey(makeKey(Key::Minus)), true);
+    CHECK_EQ(field->text(), " -");
+    // Command/control combinations (zoom shortcuts) are not typed.
+    field->setText("");
+    CHECK_EQ(field->onKey(makeKey(Key::Minus, "-", commandMods())), false);
+    CHECK_EQ(field->onKey(makeKey(Key::Plus, "=", commandMods())), false);
+    CHECK_EQ(field->text(), "");
+}

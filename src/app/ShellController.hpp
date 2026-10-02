@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0
 #pragma once
 
+#include "app/AnnotationBarController.hpp"
+#include "app/AnnotationController.hpp"
 #include "app/DocumentWorkspace.hpp"
 #include "app/FileController.hpp"
 #include "app/PageEditingController.hpp"
@@ -78,6 +80,11 @@ public:
     void performPageEdit(PageEditCommand command);
     bool canPerformPageEdit(PageEditCommand command) const;
 
+    // Annotation tools for platform menus (same validation pattern). A tool
+    // command also reveals the annotation strip.
+    void performAnnotation(AnnotationCommand command);
+    bool canPerformAnnotation(AnnotationCommand command) const;
+
     // File lifecycle for platform menus (same validation pattern).
     void performFile(FileCommand command);
     bool canPerformFile(FileCommand command) const;
@@ -139,6 +146,7 @@ private:
     std::unique_ptr<ShellRoot> root_;
     ui::TabStrip* tabStrip_ = nullptr;
     ui::Toolbar* toolbar_ = nullptr;
+    ui::Button* annotateButton_ = nullptr;
     ui::PdfViewport* viewport_ = nullptr;
     TextLabel* overlayLabel_ = nullptr; // loading / error state over the viewport
     TextLabel* zoomLabel_ = nullptr;
@@ -156,6 +164,8 @@ private:
     std::unique_ptr<StatusBarController> statusBar_;
     std::unique_ptr<PageEditingController> pageEditing_;
     std::unique_ptr<FileController> fileLifecycle_;
+    std::unique_ptr<AnnotationController> annotations_;
+    std::unique_ptr<AnnotationBarController> annotationBar_;
 
     // Print flow (panel -> worker spool -> platform print). Declared last:
     // destroyed first, while the sessions its worker borrows are alive.
