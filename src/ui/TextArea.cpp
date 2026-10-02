@@ -12,13 +12,11 @@
 namespace rivet::ui {
 namespace {
 
-constexpr Font kTextFont{13.0, Font::Weight::Regular};
 
 constexpr Color kUnfocusedBackground = Color::gray(0.96);
 constexpr Color kFocusedBackground = Color::white();
 constexpr Color kUnfocusedBorder = Color::rgba(0.0, 0.0, 0.0, 0.2);
 constexpr Color kFocusedBorder = Color::rgba(0.0, 0.47, 1.0, 1.0); // accent blue
-constexpr Color kTextColor = Color::black();
 constexpr Color kPlaceholderColor = Color::gray(0.55);
 constexpr Color kSelectionFill = Color::rgba(0.0, 0.47, 1.0, 0.25);
 constexpr Color kCaretColor = Color::rgba(0.0, 0.47, 1.0, 1.0);
@@ -40,6 +38,33 @@ TextArea::TextArea(std::string placeholder) : placeholder_(std::move(placeholder
 TextArea::Selection TextArea::selection() const {
     if (anchor_ == caret_) return Selection{caret_, caret_};
     return Selection{std::min(anchor_, caret_), std::max(anchor_, caret_)};
+}
+
+void TextArea::setMetrics(double fontSize, double lineHeight, double padding) {
+    fontSize = std::max(1.0, fontSize);
+    lineHeight = std::max(1.0, lineHeight);
+    padding = std::max(0.0, padding);
+    if (fontSize == fontSize_ && lineHeight == lineHeight_ && padding == padding_) return;
+    if (fontSize != fontSize_) {
+        // Cached widths belong to the old size: re-measured at the next paint.
+        glyphWidths_.clear();
+        ++glyphRevision_;
+    }
+    fontSize_ = fontSize;
+    lineHeight_ = lineHeight;
+    padding_ = padding;
+    ++textRevision_; // layout invalid
+    invalidate();
+}
+
+void TextArea::setTextColor(Color color) {
+    textColor_ = color;
+    invalidate();
+}
+
+void TextArea::setBackground(std::optional<Color> background) {
+    background_ = background;
+    invalidate();
 }
 
 void TextArea::setMaxBytes(std::size_t maxBytes) {
@@ -101,7 +126,7 @@ void TextArea::layout() {
 double TextArea::wrapWidth() const {
     const double width = frame().size.width;
     if (!(width > 0.0)) return std::numeric_limits<double>::infinity();
-    return std::max(0.0, width - 2.0 * kPadding);
+    return std::max(0.0, width - 2.0 * padding_);
 }
 
 double TextArea::glyphWidth(char32_t codePoint) const {
@@ -117,7 +142,7 @@ void TextArea::measureNewGlyphs(const PaintContext& context) const {
         const char32_t codePoint = utf8::decodeAt(text_, at);
         if (glyphWidths_.find(codePoint) == glyphWidths_.end()) {
             glyph.assign(text_, at, next - at);
-            glyphWidths_.emplace(codePoint, context.measureText(glyph, kTextFont).width);
+            glyphWidths_.emplace(codePoint, context.measureText(glyph, Font{fontSize_, Font::Weight::Regular}).width);
             added = true;
         }
         at = next;
@@ -223,12 +248,12 @@ std::size_t TextArea::boundaryOnLine(const VisualLine& line, double x) const {
 
 std::size_t TextArea::offsetForPoint(core::Point local, bool* upstream) const {
     const auto& all = lines();
-    const double contentY = local.y - kPadding + scrollY_;
-    const double row = std::floor(contentY / kLineHeight);
+    const double contentY = local.y - padding_ + scrollY_;
+    const double row = std::floor(contentY / lineHeight_);
     const std::size_t index =
         row <= 0.0 ? 0 : std::min(all.size() - 1, static_cast<std::size_t>(row));
     const VisualLine& line = all[index];
-    const std::size_t offset = boundaryOnLine(line, local.x - kPadding);
+    const std::size_t offset = boundaryOnLine(line, local.x - padding_);
     if (upstream != nullptr) *upstream = line.soft && offset == line.end;
     return offset;
 }
@@ -236,11 +261,11 @@ std::size_t TextArea::offsetForPoint(core::Point local, bool* upstream) const {
 // --- scrolling --------------------------------------------------------------
 
 double TextArea::contentHeight() const {
-    return static_cast<double>(lines().size()) * kLineHeight;
+    return static_cast<double>(lines().size()) * lineHeight_;
 }
 
 double TextArea::viewHeight() const {
-    return std::max(0.0, frame().size.height - 2.0 * kPadding);
+    return std::max(0.0, frame().size.height - 2.0 * padding_);
 }
 
 void TextArea::clampScroll() const {
@@ -253,8 +278,8 @@ void TextArea::ensureCaretVisible() {
         scrollY_ = 0.0;
         return;
     }
-    const double top = static_cast<double>(caretLine()) * kLineHeight;
-    const double bottom = top + kLineHeight;
+    const double top = static_cast<double>(caretLine()) * lineHeight_;
+    const double bottom = top + lineHeight_;
     const double view = viewHeight();
     if (top < scrollY_) {
         scrollY_ = top;
@@ -520,7 +545,8 @@ void TextArea::paintSelf(PaintContext& context) const {
     const auto& all = lines();
 
     const bool focused = isFocused();
-    context.fillRoundedRect(rect, focused ? kFocusedBackground : kUnfocusedBackground, kCornerRadius);
+    context.fillRoundedRect(rect, background_.has_value() ? *background_ : (focused ? kFocusedBackground : kUnfocusedBackground),
+                            kCornerRadius);
     context.strokeRect(rect.inset(core::Insets::uniform(0.5)),
                        focused ? kFocusedBorder : kUnfocusedBorder, kStrokeWidth);
 
@@ -528,17 +554,17 @@ void TextArea::paintSelf(PaintContext& context) const {
     if (text_.empty()) {
         if (!focused && !placeholder_.empty()) {
             context.drawText(placeholder_,
-                             core::Rect{core::Point{kPadding, kPadding},
-                                        core::Size{rect.size.width, kLineHeight}},
-                             kTextFont, kPlaceholderColor, TextAlign::Left);
+                             core::Rect{core::Point{padding_, padding_},
+                                        core::Size{rect.size.width, lineHeight_}},
+                             Font{fontSize_, Font::Weight::Regular}, kPlaceholderColor, TextAlign::Left);
         }
     } else {
         const Selection selected = selection();
         const std::size_t first =
-            std::min(all.size() - 1, static_cast<std::size_t>(std::floor(scrollY_ / kLineHeight)));
+            std::min(all.size() - 1, static_cast<std::size_t>(std::floor(scrollY_ / lineHeight_)));
         for (std::size_t index = first; index < all.size(); ++index) {
             const VisualLine& line = all[index];
-            const double top = kPadding + static_cast<double>(index) * kLineHeight - scrollY_;
+            const double top = padding_ + static_cast<double>(index) * lineHeight_ - scrollY_;
             if (top >= rect.size.height) break;
 
             if (selected.begin != selected.end && selected.begin <= line.end &&
@@ -546,30 +572,30 @@ void TextArea::paintSelf(PaintContext& context) const {
                 const std::size_t from = std::max(selected.begin, line.begin);
                 const std::size_t to = std::min(selected.end, line.end);
                 if (from <= to) {
-                    double left = kPadding + spanWidth(line.begin, from);
-                    double right = kPadding + spanWidth(line.begin, to);
+                    double left = padding_ + spanWidth(line.begin, from);
+                    double right = padding_ + spanWidth(line.begin, to);
                     // A selected line break shows as a small trailing stub.
                     if (!line.soft && selected.end > line.end) right += kNewlineSelectionWidth;
                     if (right > left) {
                         context.fillRect(core::Rect{core::Point{left, top},
-                                                    core::Size{right - left, kLineHeight}},
+                                                    core::Size{right - left, lineHeight_}},
                                          kSelectionFill);
                     }
                 }
             }
             if (line.end > line.begin) {
-                const core::Rect lineRect{core::Point{kPadding, top},
-                                          core::Size{std::max(0.0, rect.size.width - kPadding), kLineHeight}};
+                const core::Rect lineRect{core::Point{padding_, top},
+                                          core::Size{std::max(0.0, rect.size.width - padding_), lineHeight_}};
                 context.drawText(std::string_view{text_}.substr(line.begin, line.end - line.begin),
-                                 lineRect, kTextFont, kTextColor, TextAlign::Left);
+                                 lineRect, Font{fontSize_, Font::Weight::Regular}, textColor_, TextAlign::Left);
             }
         }
     }
     if (focused) {
         const VisualLine& line = all[caretLine()];
-        const double caretX = kPadding + spanWidth(line.begin, caret_);
-        const double top = kPadding + static_cast<double>(caretLine()) * kLineHeight - scrollY_;
-        context.drawLine(core::Point{caretX, top}, core::Point{caretX, top + kLineHeight},
+        const double caretX = padding_ + spanWidth(line.begin, caret_);
+        const double top = padding_ + static_cast<double>(caretLine()) * lineHeight_ - scrollY_;
+        context.drawLine(core::Point{caretX, top}, core::Point{caretX, top + lineHeight_},
                          kCaretColor, kCaretWidth);
     }
     context.popClip();

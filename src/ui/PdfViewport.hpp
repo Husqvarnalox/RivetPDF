@@ -19,6 +19,7 @@
 #include <memory>
 #include <optional>
 #include <utility>
+#include <vector>
 
 namespace rivet::render {
 class PageLayout;
@@ -147,6 +148,16 @@ public:
     void setAnnotationLayer(ViewportLayer* layer);
     ViewportLayer* annotationLayer() const { return annotationLayer_; }
 
+    // Additional ordered layers (the content layer). The annotation layer, when
+    // installed, is always first; added layers follow in insertion order. For
+    // events the first layer that consumes wins; every layer paints (earlier
+    // layers below later ones). A layer ignores input while its tool is not
+    // the active one, so only the active tool's layer ever handles input.
+    // Non-owning; removeLayer must run before the layer dies.
+    void addLayer(ViewportLayer* layer);
+    void removeLayer(ViewportLayer* layer);
+    std::size_t layerCount() const { return layers_.size(); }
+
     // ViewportToolHost
     std::optional<core::Rect> pageRectInViewport(std::size_t pageIndex) const override;
     std::size_t pageCount() const override;
@@ -210,6 +221,7 @@ public:
     void layout() override;
 
 private:
+    bool hasLayer(const ViewportLayer* layer) const;
     void paintPageTiles(std::size_t pageIndex, const core::Rect& pageFramePoints,
                         const core::Rect& pageInViewport, const core::Rect& contentRect,
                         std::uint64_t revision, PaintContext& context) const;
@@ -259,6 +271,7 @@ private:
     double anchorFraction_ = 0.0;
     ViewportTool* activeTool_ = nullptr;
     ViewportLayer* annotationLayer_ = nullptr;
+    std::vector<ViewportLayer*> layers_; // annotationLayer_ first when installed
 
     std::function<void(double)> onZoomChanged_;
     std::function<void(std::size_t)> onPageChanged_;

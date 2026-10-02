@@ -781,6 +781,7 @@ public:
     explicit LoggingLayer(EventLog& log) : log_(log) {}
     bool consumeMouse = false;
     bool consumeKey = false;
+    std::string tag = "layer";
 
     // Paint-time observations (paint is const on the interface).
     mutable std::vector<std::pair<std::size_t, Rect>> pageRects;
@@ -797,14 +798,14 @@ public:
     }
 
     bool onMouse(rivet::ui::ViewportToolHost&, const PointerEvent&) override {
-        log_.push_back("layer.mouse");
+        log_.push_back(tag + ".mouse");
         return consumeMouse;
     }
     void afterMouse(rivet::ui::ViewportToolHost&, const PointerEvent&) override {
-        log_.push_back("layer.after");
+        log_.push_back(tag + ".after");
     }
     bool onKey(rivet::ui::ViewportToolHost&, const KeyEvent&) override {
-        log_.push_back("layer.key");
+        log_.push_back(tag + ".key");
         return consumeKey;
     }
     void paintPage(const rivet::ui::ViewportToolHost&, std::size_t pageIndex,
@@ -813,10 +814,10 @@ public:
         pageRects.emplace_back(pageIndex, pageRectInViewport);
         bitmapsAtPage.push_back(fake.bitmaps.size());
         overlaysAtPage.push_back(countOverlays(fake));
-        log_.push_back("layer.page");
+        log_.push_back(tag + ".page");
     }
     void paintAbove(const rivet::ui::ViewportToolHost&, rivet::ui::PaintContext& context) const override {
-        log_.push_back("layer.above");
+        log_.push_back(tag + ".above");
         overlaysAtAbove = countOverlays(static_cast<const FakePaintContext&>(context));
     }
 
@@ -1065,6 +1066,60 @@ RIVET_TEST(layerPaintOrderPageAfterTilesBeforeOverlaysAboveBeforeTool) {
     CHECK_EQ(LoggingLayer::countOverlays(context), std::size_t{1});
     // Above-layer chrome precedes the active tool.
     CHECK(log == (EventLog{"layer.page", "layer.above", "tool.paint"}));
+}
+
+RIVET_TEST(addedLayersFollowTheAnnotationLayerAndAllPaint) {
+    Fixture f;
+    EventLog log;
+    LoggingLayer annotation(log);
+    LoggingLayer content(log);
+    annotation.tag = "ann";
+    content.tag = "content";
+    LoggingBridge bridge(log);
+    f.viewport.setTextBridge(&bridge);
+    // Installing the content layer BEFORE the annotation layer must still
+    // order the annotation layer first.
+    f.viewport.addLayer(&content);
+    f.viewport.setAnnotationLayer(&annotation);
+    CHECK_EQ(f.viewport.layerCount(), std::size_t{2});
+
+    // The first layer to consume wins; later layers never see the event.
+    annotation.consumeMouse = true;
+    CHECK_EQ(f.viewport.onMouse(mouseAt(PointerEventType::Down, Point{100.0, 100.0})), true);
+    CHECK(log == (EventLog{"ann.mouse"}));
+    log.clear();
+    annotation.consumeMouse = false;
+    content.consumeMouse = true;
+    CHECK_EQ(f.viewport.onMouse(mouseAt(PointerEventType::Down, Point{100.0, 100.0})), true);
+    CHECK(log == (EventLog{"ann.mouse", "content.mouse"}));
+    log.clear();
+
+    // Unconsumed: viewport handling, then afterMouse for every layer in order.
+    content.consumeMouse = false;
+    f.viewport.onMouse(mouseAt(PointerEventType::Down, Point{100.0, 100.0}));
+    CHECK(log == (EventLog{"ann.mouse", "content.mouse", "bridge.began", "ann.after", "content.after"}));
+    log.clear();
+
+    // Keys follow the same order.
+    content.consumeKey = true;
+    CHECK_EQ(f.viewport.onKey(KeyEvent{}), true);
+    CHECK(log == (EventLog{"ann.key", "content.key"}));
+    log.clear();
+
+    // Both paint, the annotation layer below the content layer.
+    FakePaintContext context;
+    f.viewport.paint(context);
+    CHECK(log == (EventLog{"ann.page", "content.page", "ann.above", "content.above"}));
+    log.clear();
+
+    // Removing one keeps the other; the annotation slot cannot be removed.
+    f.viewport.removeLayer(&content);
+    f.viewport.removeLayer(&annotation);
+    CHECK_EQ(f.viewport.layerCount(), std::size_t{1});
+    f.viewport.onMouse(mouseAt(PointerEventType::Move, Point{700.0, 590.0}));
+    CHECK(log == (EventLog{"ann.mouse", "ann.after"}));
+    f.viewport.setAnnotationLayer(nullptr);
+    CHECK_EQ(f.viewport.layerCount(), std::size_t{0});
 }
 
 RIVET_TEST(hostPageCountAndPageAtMapViewportPointsToPageDisplayPoints) {

@@ -74,6 +74,15 @@ public:
     void setMaxBytes(std::size_t maxBytes);
     std::size_t maxBytes() const { return maxBytes_; }
 
+    // Text metrics (default 13 pt / 18 pt line / 6 pt padding). Used by the
+    // inline content editor to match the zoomed page text. Changing the font
+    // size drops the glyph-width cache (re-measured at the next paint).
+    void setMetrics(double fontSize, double lineHeight, double padding);
+    void setTextColor(Color color);
+    // An explicit, opaque background (used both focused and not); nullopt =
+    // the default focus-dependent background.
+    void setBackground(std::optional<Color> background);
+
     void setOnTextChanged(std::function<void(const std::string&)> onTextChanged);
     void setOnCommit(std::function<void()> onCommit);
     void setOnEscape(std::function<void()> onEscape);
@@ -155,6 +164,11 @@ private:
     std::function<void()> onEscape_;
     std::function<void()> onFocusRequested_;
     bool pressed_ = false;
+    double fontSize_ = 13.0;
+    double lineHeight_ = kLineHeight;
+    double padding_ = kPadding;
+    Color textColor_ = Color::black();
+    std::optional<Color> background_;
 };
 
 } // namespace rivet::ui

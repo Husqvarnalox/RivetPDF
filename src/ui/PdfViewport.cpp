@@ -250,8 +250,29 @@ void PdfViewport::documentLayoutChanged(std::optional<std::size_t> anchorIndex, 
 
 void PdfViewport::setAnnotationLayer(ViewportLayer* layer) {
     if (annotationLayer_ == layer) return;
+    if (annotationLayer_ != nullptr) std::erase(layers_, annotationLayer_);
     annotationLayer_ = layer;
+    if (layer != nullptr) layers_.insert(layers_.begin(), layer);
     // Selection/link interactions in flight belong to the old routing.
+    selecting_ = false;
+    linkPressed_ = false;
+    pressedLink_.reset();
+    invalidate();
+}
+
+bool PdfViewport::hasLayer(const ViewportLayer* layer) const {
+    return std::find(layers_.begin(), layers_.end(), layer) != layers_.end();
+}
+
+void PdfViewport::addLayer(ViewportLayer* layer) {
+    if (layer == nullptr || std::find(layers_.begin(), layers_.end(), layer) != layers_.end()) return;
+    layers_.push_back(layer);
+    invalidate();
+}
+
+void PdfViewport::removeLayer(ViewportLayer* layer) {
+    if (layer == nullptr || layer == annotationLayer_) return;
+    if (std::erase(layers_, layer) == 0) return;
     selecting_ = false;
     linkPressed_ = false;
     pressedLink_.reset();
@@ -424,15 +445,21 @@ bool PdfViewport::onMouse(const PointerEvent& event) {
         event.accepted = true;
         return true;
     }
-    ViewportLayer* const layer = presentationMode_ ? nullptr : annotationLayer_;
-    if (layer != nullptr && layer->onMouse(*this, event)) {
-        event.accepted = true;
-        return true;
+    // A snapshot: a layer callback may install or uninstall layers.
+    const std::vector<ViewportLayer*> layers = presentationMode_ ? std::vector<ViewportLayer*>{} : layers_;
+    for (ViewportLayer* layer : layers) {
+        if (!hasLayer(layer)) continue;
+        if (layer->onMouse(*this, event)) {
+            event.accepted = true;
+            return true;
+        }
     }
     const bool consumed = handlePointer(event);
-    // The layer may have been uninstalled by a callback during handling.
-    if (layer != nullptr && layer == annotationLayer_ && !presentationMode_) {
-        layer->afterMouse(*this, event);
+    // A layer may have been uninstalled by a callback during handling.
+    if (!presentationMode_) {
+        for (ViewportLayer* layer : layers) {
+            if (hasLayer(layer)) layer->afterMouse(*this, event);
+        }
     }
     return consumed;
 }
@@ -562,10 +589,14 @@ bool PdfViewport::onKey(const KeyEvent& event) {
     // An active tool owns the keyboard: the annotation layer must not act on
     // keys the tool left alone (Delete would remove the selected annotation
     // while the user is cropping).
-    if (activeTool_ == nullptr && annotationLayer_ != nullptr && !presentationMode_ &&
-        annotationLayer_->onKey(*this, event)) {
-        event.accepted = true;
-        return true;
+    if (activeTool_ == nullptr && !presentationMode_) {
+        const std::vector<ViewportLayer*> layers = layers_;
+        for (ViewportLayer* layer : layers) {
+            if (hasLayer(layer) && layer->onKey(*this, event)) {
+                event.accepted = true;
+                return true;
+            }
+        }
     }
     const bool zoomInKey = event.key == Key::Plus ||
                            (event.key == Key::Character && event.text == "=");
@@ -736,9 +767,7 @@ void PdfViewport::paintSelf(PaintContext& context) const {
             context.fillRect(pageInViewport, kPageBackground);
             context.strokeRect(pageInViewport, kPageBorder, 1.0);
             paintPageTiles(i, pageFrame, pageInViewport, contentRect, revision, context);
-            if (annotationLayer_ != nullptr) {
-                annotationLayer_->paintPage(*this, i, pageInViewport, context);
-            }
+            for (ViewportLayer* layer : layers_) layer->paintPage(*this, i, pageInViewport, context);
             paintPageOverlays(i, pageFrame, context);
         }
         // Limited nearby prefetch: one viewport-height band of the pages
@@ -746,7 +775,7 @@ void PdfViewport::paintSelf(PaintContext& context) const {
         prefetchNeighborPages(*visible, contentRect, revision, context);
     }
     // Annotation layer chrome above every page overlay, below the tool.
-    if (annotationLayer_ != nullptr) annotationLayer_->paintAbove(*this, context);
+    for (ViewportLayer* layer : layers_) layer->paintAbove(*this, context);
     // Tool layer above tiles and text overlays.
     if (activeTool_ != nullptr) activeTool_->paint(*this, context);
     context.popClip();
