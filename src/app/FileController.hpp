@@ -5,6 +5,7 @@
 #include "app/ShellContext.hpp"
 #include "core/Error.hpp"
 #include "core/StrongId.hpp"
+#include "core/async/AsyncScope.hpp"
 #include "core/async/IMainThreadDispatcher.hpp"
 #include "core/async/TaskScheduler.hpp"
 #include "editor/DocumentSaver.hpp"
@@ -57,8 +58,9 @@ enum class FileCommand : std::uint8_t {
 //       files are never overwritten (checked before anything is written).
 //       Like Extract it is not tied to the tab: closing the tab does not
 //       stop it (the jobs own their snapshots); destroying the controller
-//       (app quit) cancels it cooperatively and drops the completion, and
-//       quit does not wait for it.
+//       (app quit) cancels it cooperatively (no output is committed after
+//       the cancellation) and drops the completion; the destructor waits
+//       for the worker to leave the task (see scope_).
 //   Import / Merge -> open panel -> worker: open the source PDF and read its
 //       page metadata -> completion: InsertPagesCommand (atomic on the model)
 //
@@ -85,6 +87,16 @@ enum class FileCommand : std::uint8_t {
 // in-flight save. A window close answered "Save" performs the saves and
 // leaves the window open (there is no programmatic window-close service to
 // re-trigger the close).
+//
+// Modal prompts and panels (alerts, save/open panels) pump the main queue on
+// some platforms, so completions - including a save that closes its tab -
+// can run while a prompt is up. The controller therefore never holds a
+// DocumentTab* across a prompt: it keeps the TabId and re-resolves it after
+// every prompt (a tab that vanished or is no longer dirty/Ready is skipped).
+//
+// Worker tasks borrow the engine, the dispatcher and the cancellation state:
+// each one holds a core::AsyncScope token, and the destructor closes the
+// scope (cancelling the writes) and waits for every task before returning.
 //
 // Main thread only.
 class FileController {
@@ -171,10 +183,24 @@ private:
     void handleImportCompleted(std::shared_ptr<core::Result<std::vector<editor::PageSource>>> result,
                                TabId tab, std::uint64_t generation,
                                std::optional<std::size_t> beforeIndex);
-    // The dirty tabs, oldest first (prompt/save order).
-    std::vector<DocumentTab*> dirtyTabs() const;
-    // Discards the tab's changes and closes it without prompting.
-    void discardAndClose(DocumentTab* tab);
+    // The tab when it still exists and has a session, otherwise null. Used to
+    // re-resolve a TabId after anything that can run completions (prompts).
+    DocumentTab* liveTab(TabId id) const;
+    // Like liveTab, additionally requiring the Ready state.
+    DocumentTab* readyTab(TabId id) const;
+    // Lifetime token for one worker task (null once the controller is being
+    // destroyed). Entered on the main thread when the task is posted.
+    using WorkerToken = std::shared_ptr<core::AsyncScope::Token>;
+    WorkerToken enterWorkerScope();
+    // Posts the write of a captured save job (shared by requestSave and
+    // startNextSave).
+    void postSaveWrite(editor::DocumentWriteJob job, SaveRequest request, WorkerToken token);
+    // The dirty tabs, oldest first (prompt/save order). Ids, not pointers:
+    // callers re-resolve after every prompt.
+    std::vector<TabId> dirtyTabs() const;
+    // Discards the tab's changes and closes it without prompting (a tab that
+    // is already gone is skipped).
+    void discardAndClose(TabId id);
     // A save of `tab` settled: runs the deferred close intent and, when
     // quitting, advances the outstanding set (completing the reply on the
     // last one) and starts the next chained save.
@@ -204,6 +230,10 @@ private:
     std::optional<PendingQuit> pendingQuit_;
     // Tabs the user chose to close behind their in-flight save.
     std::vector<TabId> closeAfterSave_;
+
+    // Fences the worker tasks (save, extract, split, import). Declared last:
+    // destroyed first, after ~FileController() closed it explicitly.
+    core::AsyncScope scope_;
 };
 
 } // namespace rivet::app

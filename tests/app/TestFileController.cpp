@@ -21,13 +21,17 @@
 
 #include <atomic>
 #include <algorithm>
+#include <chrono>
 #include <cstdio>
 #include <fstream>
+#include <functional>
+#include <iterator>
 #include <optional>
 #include <deque>
 #include <filesystem>
 #include <memory>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -105,37 +109,53 @@ private:
     std::deque<std::function<void()>> queue_;
 };
 
+// A modal prompt/panel pumps the main queue on some platforms, so completions
+// (a save closing its tab, ...) can run while it is up. The fakes model that
+// with a one-shot hook that runs inside the "modal".
+void runOnce(std::function<void()>& hook) {
+    if (!hook) return;
+    auto task = std::move(hook);
+    hook = nullptr;
+    task();
+}
+
 class FakeOpenDialog final : public rivet::platform::IFileDialog {
 public:
     Result<fs::path> openPdf() override {
+        runOnce(duringModal);
         auto next = next_;
         next_.reset();
         if (!next.has_value()) return std::unexpected(Error{ErrorCode::Cancelled, "cancelled", "test"});
         return *next;
     }
     std::optional<fs::path> next_;
+    std::function<void()> duringModal;
 };
 
 class FakeSaveDialog final : public rivet::platform::ISaveDialog {
 public:
     std::optional<fs::path> runSavePanel(const Options&) override {
+        runOnce(duringModal);
         auto next = next_;
         next_.reset();
         return next;
     }
     std::optional<fs::path> next_;
+    std::function<void()> duringModal;
 };
 
 class FakeAlerts final : public rivet::platform::IAlertService {
 public:
     rivet::platform::SaveChangesChoice askSaveChanges(std::string_view title) override {
         savePrompts.emplace_back(title);
+        runOnce(duringModal);
         if (saveAnswers.empty()) return rivet::platform::SaveChangesChoice::Cancel;
         auto answer = saveAnswers.front();
         saveAnswers.pop_front();
         return answer;
     }
     rivet::platform::ReviewChangesChoice askReviewUnsavedChanges(std::size_t) override {
+        runOnce(duringModal);
         if (reviewAnswers.empty()) return rivet::platform::ReviewChangesChoice::Cancel;
         auto answer = reviewAnswers.front();
         reviewAnswers.pop_front();
@@ -144,9 +164,11 @@ public:
     void showError(std::string_view, std::string_view message) override { errors.emplace_back(message); }
     std::optional<std::string> promptForText(std::string_view, std::string_view, std::string_view) override {
         ++textPrompts;
+        runOnce(duringModal);
         return textAnswer;
     }
 
+    std::function<void()> duringModal;
     std::optional<std::string> textAnswer;
     int textPrompts = 0;
     std::vector<std::string> errors;
@@ -218,6 +240,12 @@ struct Shell {
         const auto status = tab.session()->execute(std::make_unique<rivet::editor::RotatePagesCommand>(
             tab.session()->pageModel(), std::vector{tab.session()->pageId(0)}, 90));
         CHECK(status.has_value());
+    }
+
+    // What the modal's queued completions do to the workspace: close a tab.
+    void closeTabById(rivet::app::TabId id) {
+        const std::size_t index = workspace.indexOfTab(id);
+        if (index != DocumentWorkspace::kNoTab) workspace.closeTab(index);
     }
 
     std::string lastStatus() const { return statusLog.empty() ? std::string() : statusLog.back(); }
@@ -582,7 +610,34 @@ RIVET_TEST(splitSurvivesTabCloseAndUsesItsSnapshot) {
     CHECK((rivet::test::fakeFileMarkers(shell.dir("c_3-4.pdf")) == Markers{"doc-3", "doc-4"}));
 }
 
-RIVET_TEST(splitIsCancelledWhenTheControllerIsDestroyed) {
+namespace {
+
+std::string slurp(const fs::path& path) {
+    std::ifstream in(path, std::ios::binary);
+    return std::string(std::istreambuf_iterator<char>(in), {});
+}
+
+// Destroys the controller on another thread (its destructor blocks while a
+// worker is parked in the engine), lets it run into the wait, then releases
+// the engine. Returns whether the destructor was still blocked before the
+// release (it must wait for the worker).
+bool destroyControllerWhileParked(Shell& shell) {
+    std::atomic<bool> destroyed{false};
+    std::thread destroyer([&] {
+        shell.files.reset();
+        destroyed = true;
+    });
+    // Give the destructor time to cancel the scope and block on the worker.
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    const bool blocked = !destroyed.load();
+    shell.engine.release();
+    destroyer.join();
+    return blocked;
+}
+
+} // namespace
+
+RIVET_TEST(splitIsCancelledAndAwaitedWhenTheControllerIsDestroyed) {
     Shell shell;
     DocumentTab* tab = shell.open("doc.pdf", 10);
     shell.engine.closeGate();
@@ -590,15 +645,54 @@ RIVET_TEST(splitIsCancelledWhenTheControllerIsDestroyed) {
     shell.files->splitByRanges(*tab, "1-2, 3-4");
     CHECK(shell.engine.waitParked(1));
     shell.statusLog.clear();
-    const int postedBefore = shell.dispatcher.posted.load();
-    shell.files.reset(); // app quit: does not wait for the worker
-    shell.engine.release();
-    // The worker finishes (cancelled before its commit) and posts its
-    // completion, which the dead controller ignores.
-    CHECK(shell.dispatcher.waitUntil([&] { return shell.dispatcher.posted.load() > postedBefore; }));
+    // App quit: the destructor cancels the split and waits for the worker
+    // (it borrows the engine and the dispatcher); no completion is applied.
+    CHECK(destroyControllerWhileParked(shell));
+    shell.dispatcher.pump();
     CHECK(shell.statusLog.empty());
     CHECK((listDir(shell.dir.dir()) == std::vector<std::string>{"doc.pdf"}));
     CHECK_EQ(shell.engine.assemblies.load(), 1); // the second output was never started
+}
+
+RIVET_TEST(extractIsCancelledAndAwaitedWhenTheControllerIsDestroyed) {
+    Shell shell;
+    DocumentTab* tab = shell.open("doc.pdf");
+    shell.engine.closeGate();
+    shell.saveDialog.next_ = shell.dir("out.pdf");
+    const std::vector<rivet::core::PageId> pages = {tab->session()->pageId(0)};
+    shell.files->extract(*tab, pages);
+    CHECK(shell.engine.waitParked(1));
+    shell.statusLog.clear();
+    CHECK(destroyControllerWhileParked(shell));
+    shell.dispatcher.pump();
+    CHECK(shell.statusLog.empty());
+    // Neither the destination nor a temp file: the commit never happened.
+    CHECK((listDir(shell.dir.dir()) == std::vector<std::string>{"doc.pdf"}));
+}
+
+RIVET_TEST(saveIsCancelledAndAwaitedWhenTheControllerIsDestroyed) {
+    Shell shell;
+    DocumentTab* tab = shell.open("doc.pdf");
+    shell.rotateFirst(*tab);
+    const std::string original = slurp(shell.dir("doc.pdf"));
+    shell.engine.closeGate();
+    shell.files->save(*tab);
+    CHECK(shell.engine.waitParked(1));
+    CHECK(destroyControllerWhileParked(shell));
+    shell.dispatcher.pump();
+    CHECK_EQ(slurp(shell.dir("doc.pdf")), original); // untouched
+    CHECK((listDir(shell.dir.dir()) == std::vector<std::string>{"doc.pdf"}));
+    CHECK(tab->session()->isDirty()); // never marked saved
+}
+
+RIVET_TEST(importCompletesOrIsDroppedWhenTheControllerIsDestroyed) {
+    Shell shell;
+    DocumentTab* tab = shell.open("doc.pdf");
+    shell.openDialog.next_ = shell.dir("doc.pdf");
+    shell.files->importPages(*tab, std::nullopt);
+    shell.files.reset(); // returns once the worker left the task
+    shell.dispatcher.pump(); // the completion is dropped
+    CHECK_EQ(tab->session()->pageCount(), 5u);
 }
 
 // --- Close / quit lifecycle -------------------------------------------------------
@@ -789,4 +883,240 @@ RIVET_TEST(cleanCloseNeedsNoPrompt) {
     CHECK(shell.files->confirmCloseTab(*tab));
     CHECK(shell.alerts.savePrompts.empty());
     CHECK(shell.files->confirmCloseWindow());
+}
+
+// --- Close/quit across modal prompts (completions run while a prompt is up) ----
+
+RIVET_TEST(closeTabDontSaveClosesExactlyThatTab) {
+    Shell shell;
+    DocumentTab* first = shell.open("first.pdf");
+    DocumentTab* second = shell.open("second.pdf");
+    shell.rotateFirst(*first);
+    shell.rotateFirst(*second);
+    const rivet::app::TabId firstId = first->id();
+    const rivet::app::TabId secondId = second->id();
+
+    // ShellController::requestCloseTab(0): the controller closes the tab
+    // itself on Don't Save, so the shell must not close "index 0" again.
+    shell.alerts.saveAnswers.push_back(rivet::platform::SaveChangesChoice::DontSave);
+    CHECK(shell.files->confirmCloseTab(*first));
+    CHECK_EQ(shell.workspace.tabCount(), 1u);
+    // The shell re-resolves the id before closing: it is already gone.
+    CHECK(shell.workspace.indexOfTab(firstId) == DocumentWorkspace::kNoTab);
+    DocumentTab* remaining = shell.workspace.tabById(secondId);
+    CHECK(remaining != nullptr);
+    if (remaining == nullptr) return;
+    CHECK(remaining->session()->isDirty()); // the other dirty document survived, unprompted
+    CHECK_EQ(shell.alerts.savePrompts.size(), 1u);
+}
+
+RIVET_TEST(closeTabPromptSurvivesTheTabClosingDuringTheModal) {
+    Shell shell;
+    DocumentTab* tab = shell.open("doc.pdf");
+    shell.rotateFirst(*tab);
+    const rivet::app::TabId id = tab->id();
+    // A completion closes this very tab while the prompt is up; "Save" then
+    // has nothing left to save and nothing may touch the dead tab.
+    shell.alerts.duringModal = [&] { shell.closeTabById(id); };
+    shell.alerts.saveAnswers.push_back(rivet::platform::SaveChangesChoice::Save);
+    CHECK(shell.files->confirmCloseTab(*tab));
+    CHECK_EQ(shell.workspace.tabCount(), 0u);
+    CHECK(!shell.files->isSavingAnything());
+}
+
+RIVET_TEST(quitReviewSkipsATabThatClosedDuringThePrompts) {
+    Shell shell;
+    DocumentTab* first = shell.open("first.pdf");
+    DocumentTab* second = shell.open("second.pdf");
+    shell.rotateFirst(*first);
+    shell.rotateFirst(*second);
+    const rivet::app::TabId secondId = second->id();
+    shell.alerts.reviewAnswers.push_back(rivet::platform::ReviewChangesChoice::Review);
+    shell.alerts.saveAnswers.push_back(rivet::platform::SaveChangesChoice::Save);
+    // The second tab closes while the review prompt is up.
+    shell.alerts.duringModal = [&] { shell.closeTabById(secondId); };
+
+    bool replied = false;
+    bool proceed = false;
+    shell.files->handleQuitRequest([&](bool decision) {
+        replied = true;
+        proceed = decision;
+    });
+    CHECK(shell.dispatcher.waitUntil([&] { return replied; }));
+    CHECK(proceed);
+    CHECK_EQ(shell.alerts.savePrompts.size(), 1u); // the vanished tab is not prompted
+    CHECK(!first->session()->isDirty());
+}
+
+RIVET_TEST(quitSingleDirtyTabClosedDuringThePromptIsHarmless) {
+    Shell shell;
+    DocumentTab* tab = shell.open("doc.pdf");
+    shell.rotateFirst(*tab);
+    const rivet::app::TabId id = tab->id();
+    shell.alerts.duringModal = [&] { shell.closeTabById(id); };
+    shell.alerts.saveAnswers.push_back(rivet::platform::SaveChangesChoice::Save);
+    bool replied = false;
+    bool proceed = false;
+    shell.files->handleQuitRequest([&](bool decision) {
+        replied = true;
+        proceed = decision;
+    });
+    CHECK(shell.dispatcher.waitUntil([&] { return replied; }));
+    CHECK(proceed);
+    CHECK_EQ(shell.workspace.tabCount(), 0u);
+}
+
+RIVET_TEST(windowCloseReviewSkipsTabsThatClosedDuringAPrompt) {
+    Shell shell;
+    DocumentTab* first = shell.open("first.pdf");
+    DocumentTab* second = shell.open("second.pdf");
+    shell.rotateFirst(*first);
+    shell.rotateFirst(*second);
+    const rivet::app::TabId secondId = second->id();
+    shell.alerts.reviewAnswers.push_back(rivet::platform::ReviewChangesChoice::Review);
+    shell.alerts.saveAnswers.push_back(rivet::platform::SaveChangesChoice::Save);
+    // The review prompt arms a hook that closes the second tab while the
+    // FIRST tab's per-document prompt is up.
+    shell.alerts.duringModal = [&] {
+        shell.alerts.duringModal = [&] { shell.closeTabById(secondId); };
+    };
+    CHECK(!shell.files->confirmCloseWindow()); // "Save" defers the first tab's close
+    CHECK_EQ(shell.alerts.savePrompts.size(), 1u); // the second tab was closed before its turn
+    CHECK(shell.dispatcher.waitUntil([&] { return shell.workspace.tabCount() == 0; }));
+}
+
+RIVET_TEST(discardAllToleratesTabsThatClosedDuringTheReview) {
+    Shell shell;
+    DocumentTab* first = shell.open("first.pdf");
+    DocumentTab* second = shell.open("second.pdf");
+    shell.rotateFirst(*first);
+    shell.rotateFirst(*second);
+    const rivet::app::TabId firstId = first->id();
+    shell.alerts.reviewAnswers.push_back(rivet::platform::ReviewChangesChoice::DiscardAll);
+    shell.alerts.duringModal = [&] { shell.closeTabById(firstId); };
+    CHECK(shell.files->confirmCloseWindow());
+    CHECK_EQ(shell.workspace.tabCount(), 0u);
+}
+
+RIVET_TEST(panelsAbortQuietlyWhenTheTabClosedDuringThePanel) {
+    Shell shell;
+    DocumentTab* tab = shell.open("doc.pdf", 10);
+    shell.rotateFirst(*tab);
+    const rivet::app::TabId id = tab->id();
+
+    // Save As.
+    shell.saveDialog.next_ = shell.dir("renamed.pdf");
+    shell.saveDialog.duringModal = [&] { shell.closeTabById(id); };
+    shell.files->saveAs(*tab);
+    CHECK(shell.hasStatus("Save As cancelled"));
+    CHECK(!fs::exists(shell.dir("renamed.pdf")));
+    CHECK(!shell.files->isSavingAnything());
+
+    // Extract.
+    tab = shell.open("doc2.pdf", 10);
+    const rivet::app::TabId id2 = tab->id();
+    const std::vector<rivet::core::PageId> pages2 = {tab->session()->pageId(0)};
+    shell.saveDialog.next_ = shell.dir("out.pdf");
+    shell.saveDialog.duringModal = [&] { shell.closeTabById(id2); };
+    shell.files->extract(*tab, pages2);
+    CHECK(shell.hasStatus("Export cancelled"));
+    CHECK(!fs::exists(shell.dir("out.pdf")));
+
+    // Split: the save panel.
+    tab = shell.open("doc3.pdf", 10);
+    const rivet::app::TabId id3 = tab->id();
+    shell.saveDialog.next_ = shell.dir("s.pdf");
+    shell.saveDialog.duringModal = [&] { shell.closeTabById(id3); };
+    shell.files->splitByRanges(*tab, "1-2, 3-4");
+    CHECK(shell.hasStatus("Split cancelled"));
+
+    // Split: the range prompt.
+    tab = shell.open("doc4.pdf", 10);
+    const rivet::app::TabId id4 = tab->id();
+    shell.alerts.textAnswer = "1-2";
+    shell.alerts.duringModal = [&] { shell.closeTabById(id4); };
+    shell.files->split(*tab);
+    CHECK(shell.hasStatus("Split cancelled"));
+
+    // Import: the open panel.
+    tab = shell.open("doc5.pdf", 10);
+    const rivet::app::TabId id5 = tab->id();
+    shell.openDialog.next_ = shell.dir("doc.pdf");
+    shell.openDialog.duringModal = [&] { shell.closeTabById(id5); };
+    shell.files->importPages(*tab, std::nullopt);
+    CHECK(shell.hasStatus("Import cancelled"));
+
+    CHECK_EQ(shell.workspace.tabCount(), 0u);
+    shell.dispatcher.pump();
+    CHECK(!fs::exists(shell.dir("s_1-2.pdf")));
+    CHECK(!fs::exists(shell.dir("renamed.pdf")));
+}
+
+RIVET_TEST(splitRevalidatesRangesWhenThePageCountChangesDuringThePanel) {
+    Shell shell;
+    DocumentTab* tab = shell.open("doc.pdf", 10);
+    const rivet::app::TabId id = tab->id();
+    shell.saveDialog.next_ = shell.dir("v.pdf");
+    // While the panel is up, pages are deleted (a completion ran): the range
+    // text that was valid for 10 pages no longer is.
+    shell.saveDialog.duringModal = [&] {
+        DocumentTab* live = shell.workspace.tabById(id);
+        std::vector<rivet::core::PageId> doomed;
+        for (std::size_t page = 4; page < 10; ++page) doomed.push_back(live->session()->pageId(page));
+        const auto status = live->session()->execute(std::make_unique<rivet::editor::DeletePagesCommand>(
+            live->session()->pageModel(), std::move(doomed)));
+        CHECK(status.has_value());
+    };
+    shell.files->splitByRanges(*tab, "1-2, 7-9");
+    CHECK(shell.hasStatus("Invalid page ranges"));
+    CHECK_EQ(shell.alerts.errors.size(), 1u);
+    CHECK((listDir(shell.dir.dir()) == std::vector<std::string>{"doc.pdf"}));
+}
+
+// --- Save As when the written file cannot be reloaded --------------------------
+
+RIVET_TEST(saveAsWithUnreloadableResultStillRetargetsTheSession) {
+    Shell shell;
+    DocumentTab* tab = shell.open("source.pdf");
+    shell.rotateFirst(*tab);
+    const std::string sourceBytes = slurp(shell.dir("source.pdf"));
+    // The reopen of the written file fails: no rebase target for the session.
+    shell.engine.failOpen.insert("renamed.pdf");
+    shell.saveDialog.next_ = shell.dir("renamed.pdf");
+
+    shell.files->saveAs(*tab);
+    CHECK(shell.dispatcher.waitUntil([&] { return shell.hasStatus("Saved"); }));
+    CHECK(!tab->session()->isDirty());
+    CHECK(tab->path() == shell.dir("renamed.pdf"));
+    // The session follows the file it was just saved to.
+    CHECK(tab->session()->path() == shell.dir("renamed.pdf"));
+    CHECK_EQ(rivet::test::fakeFileMarkers(shell.dir("renamed.pdf")).size(), 5u);
+
+    // The next Save goes to the new file; the original is never overwritten.
+    shell.rotateFirst(*tab);
+    shell.statusLog.clear();
+    shell.files->save(*tab);
+    CHECK(shell.dispatcher.waitUntil([&] { return shell.hasStatus("Saved renamed.pdf"); }));
+    CHECK_EQ(slurp(shell.dir("source.pdf")), sourceBytes);
+}
+
+// --- Split never replaces an existing output ----------------------------------
+
+RIVET_TEST(splitJobsRefuseToReplaceFilesThatAppearBeforeTheCommit) {
+    Shell shell;
+    DocumentTab* tab = shell.open("doc.pdf", 10);
+    shell.saveDialog.next_ = shell.dir("p.pdf");
+    shell.engine.closeGate();
+    shell.files->splitByRanges(*tab, "1-2, 3-4");
+    CHECK(shell.engine.waitParked(1));
+    // Another process creates the second output after the pre-write check.
+    {
+        std::ofstream out(shell.dir("p_3-4.pdf"), std::ios::binary);
+        out << "WINNER";
+    }
+    shell.engine.release();
+    CHECK(shell.dispatcher.waitUntil([&] { return shell.hasStatus("Split failed at p_3-4.pdf"); }));
+    CHECK_EQ(slurp(shell.dir("p_3-4.pdf")), std::string("WINNER"));
+    CHECK_EQ(rivet::test::fakeFileMarkers(shell.dir("p_1-2.pdf")).size(), 2u);
+    CHECK((listDir(shell.dir.dir()) == std::vector<std::string>{"doc.pdf", "p_1-2.pdf", "p_3-4.pdf"}));
 }
