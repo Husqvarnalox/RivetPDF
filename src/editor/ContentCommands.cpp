@@ -204,12 +204,20 @@ public:
         return it != work_.objects.end() && it->remove;
     }
 
-    // Drops no-op object edits, validates against the source page and builds
-    // the command (before = the entry's current edits, after = the copy).
-    core::Result<ContentEdit> finish(std::string name, std::vector<core::ObjectId> ids) {
+    const PageEntry& entry() const { return *entry_; }
+
+    // Object edits that change nothing (emptied by an earlier step) must not
+    // reach validation or the backend.
+    void dropNoOpObjectEdits() {
         std::erase_if(work_.objects, [](const pdf::PdfObjectEdit& edit) {
             return !edit.remove && !edit.transform.has_value() && edit.replaceImage == nullptr;
         });
+    }
+
+    // Drops no-op object edits, validates against the source page and builds
+    // the command (before = the entry's current edits, after = the copy).
+    core::Result<ContentEdit> finish(std::string name, std::vector<core::ObjectId> ids) {
+        dropNoOpObjectEdits();
         if (core::Status status = pdf::validate(work_, content_->sourceObjectCount); !status) {
             return std::unexpected(status.error());
         }
@@ -460,6 +468,21 @@ core::Result<ContentEdit> editTextBlock(DocumentSession& session, core::PageId p
         *existing = std::move(edit);
     } else {
         work.textBlocks.push_back(std::move(edit));
+    }
+    if (ownFontMayCover) {
+        // The own font may not write the new text and the bundled fallback
+        // may not cover the original: a dry run through the backend refuses
+        // such an edit before it reaches the command stack.
+        editor->dropNoOpObjectEdits();
+        const PageEntry& entry = editor->entry();
+        const core::Status checked =
+            entry.source != nullptr ? entry.source->checkContentEdits(entry.sourcePageIndex, work) : core::ok();
+        if (!checked) {
+            if (checked.error().code == core::ErrorCode::InvalidArgument) {
+                return std::unexpected(invalid("the text contains characters that cannot be written"));
+            }
+            return std::unexpected(checked.error());
+        }
     }
     return editor->finish("Edit Text", {blockId});
 }

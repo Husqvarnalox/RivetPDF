@@ -660,6 +660,67 @@ RIVET_TEST(ContentCommands_edit_text_failure_paths) {
     CHECK(f.entry(0).contentEdits == nullptr);
 }
 
+RIVET_TEST(ContentCommands_edit_text_in_an_own_full_font_is_dry_run_by_the_backend) {
+    ContentFixture f;
+    pdf::PdfPageContent content = samplePage();
+    // A subset-font line below: its edit is fully checked up front.
+    addTextLine(content, 400.0);
+    for (std::size_t i = 5; i < 7; ++i) content.objects[i].font.subset = true;
+    f.setContent(0, std::move(content));
+    CHECK(f.load(0));
+    const PageContentViewPtr view = f.content(0);
+    CHECK_EQ(view->blocks.size(), std::size_t{2});
+    const ObjectId plain = view->blocks[0].id;
+    const ObjectId subset = view->blocks[1].id;
+
+    // The backend cannot write the text: refused up front, nothing executed.
+    std::vector<pdf::PdfPageContentEdits> seen;
+    f.document->checkContentEditsHook = [&seen](std::size_t, const pdf::PdfPageContentEdits& edits) -> core::Status {
+        seen.push_back(edits);
+        return std::unexpected(core::makeError(ErrorCode::InvalidArgument, "no glyphs", "test"));
+    };
+    auto refused = editTextBlock(*f.session, f.id(0), plain, textPatch("Hello x"));
+    CHECK(hasError(refused, ErrorCode::InvalidArgument));
+    if (!refused.has_value()) {
+        CHECK(refused.error().message.find("cannot be written") != std::string::npos);
+    }
+    CHECK_EQ(f.document->checkContentEditsCalls.load(), 1);
+    CHECK_EQ(seen.size(), std::size_t{1});
+    CHECK(f.entry(0).contentEdits == nullptr);
+    CHECK(!f.session->isDirty());
+
+    // Any other error is propagated unchanged.
+    f.document->checkContentEditsHook = [](std::size_t, const pdf::PdfPageContentEdits&) -> core::Status {
+        return std::unexpected(core::makeError(ErrorCode::OutOfMemory, "oom", "test"));
+    };
+    CHECK(hasError(editTextBlock(*f.session, f.id(0), plain, textPatch("Hello x")), ErrorCode::OutOfMemory));
+    CHECK_EQ(f.document->checkContentEditsCalls.load(), 2);
+    CHECK(f.entry(0).contentEdits == nullptr);
+
+    // The backend accepts: the edit is built and the hook saw the new text.
+    seen.clear();
+    f.document->checkContentEditsHook = [&seen](std::size_t, const pdf::PdfPageContentEdits& edits) -> core::Status {
+        seen.push_back(edits);
+        return core::ok();
+    };
+    CHECK(f.run(editTextBlock(*f.session, f.id(0), plain, textPatch("Hello x"))));
+    CHECK_EQ(f.document->checkContentEditsCalls.load(), 3);
+    CHECK_EQ(seen.size(), std::size_t{1});
+    if (seen.size() == 1) {
+        CHECK_EQ(seen[0].textBlocks.size(), std::size_t{1});
+        if (!seen[0].textBlocks.empty()) {
+            CHECK_EQ(seen[0].textBlocks[0].tag, plain.value());
+            CHECK_EQ(seen[0].textBlocks[0].text, std::string("Hello x"));
+        }
+    }
+    CHECK_EQ(editsOf(f).textBlocks.size(), std::size_t{1});
+
+    // A subset-font block is checked up front: the backend is not asked.
+    CHECK(f.load(0));
+    CHECK(f.run(editTextBlock(*f.session, f.id(0), subset, textPatch("Hello y"))));
+    CHECK_EQ(f.document->checkContentEditsCalls.load(), 3);
+}
+
 RIVET_TEST(ContentCommands_edit_rotated_text_keeps_the_rotation_in_the_placement) {
     ContentFixture f;
     pdf::PdfPageContent content;

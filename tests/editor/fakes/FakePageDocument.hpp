@@ -27,6 +27,7 @@
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
+#include <functional>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -282,6 +283,16 @@ public:
         content.objects = std::move(out);
         return std::make_shared<const pdf::PdfPageContent>(std::move(content));
     }
+
+    // Dry run: counted, then answered by the hook (ok when unset). Set the
+    // hook BEFORE the document is shared (not synchronized).
+    core::Status checkContentEdits(std::size_t pageIndex, const pdf::PdfPageContentEdits& edits) const override {
+        ++checkContentEditsCalls;
+        if (checkContentEditsHook) return checkContentEditsHook(pageIndex, edits);
+        return core::ok();
+    }
+    std::function<core::Status(std::size_t, const pdf::PdfPageContentEdits&)> checkContentEditsHook;
+    mutable std::atomic<int> checkContentEditsCalls{0};
 
     // The content edits seen by the last render / text / pageContent call.
     pdf::PdfPageContentEditsPtr lastRenderContentEdits() const {

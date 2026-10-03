@@ -94,6 +94,8 @@ public:
     core::Result<PdfPageContentPtr> pageContent(std::size_t pageIndex,
                                                 const PdfPageContentEditsPtr& edits) const override;
 
+    core::Status checkContentEdits(std::size_t pageIndex, const PdfPageContentEdits& edits) const override;
+
     // Adapter-internal accessors for the assembly (PdfiumAssembly.cpp), which
     // runs inside its own gate acquisition. Nothing here is reachable through
     // the PdfDocument interface.

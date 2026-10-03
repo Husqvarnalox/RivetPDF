@@ -776,6 +776,53 @@ RIVET_TEST(contentTextEditWithUnencodableCharactersSubstitutesTheBundledFont) {
     CHECK_LT(differingFraction(a, b), 0.001);
 }
 
+RIVET_TEST(contentCheckEditsIsADryRunThatReportsApplyErrors) {
+    auto engine = pdfiumEngine();
+    if (!engine) return;
+    auto document = openText(*engine, simplePdf());
+    if (!document) return;
+    const core::Bitmap before = renderFull(*document, 0, nullptr);
+    const auto contentBefore = contentOf(*document, 0);
+    if (!contentBefore) return;
+    const std::size_t objectsBefore = contentBefore->objects.size();
+
+    const std::string hebrew = "\xD7\xA9\xD7\x9C\xD7\x95\xD7\x9D"; // shalom
+    const core::Matrix where = core::Matrix::translation(20.0, 150.0);
+
+    // No bundled face has Hebrew: the apply error is reported.
+    PdfTextBlockEdit uncovered = textBlock(5, hebrew, bundled(PdfBundledFont::SansRegular), where);
+    Edits bad;
+    bad.text(uncovered);
+    const core::Status refused = document->checkContentEdits(0, *bad.value);
+    CHECK(!refused.has_value());
+    if (!refused.has_value()) CHECK(refused.error().code == core::ErrorCode::InvalidArgument);
+
+    // The block's own (Helvetica) font cannot write it either and the
+    // bundled fallback has no Hebrew: same error.
+    PdfTextBlockEdit ownUncovered = textBlock(6, hebrew, fromObject(1), where);
+    ownUncovered.members = {1};
+    Edits badOwn;
+    badOwn.text(ownUncovered);
+    const core::Status refusedOwn = document->checkContentEdits(0, *badOwn.value);
+    CHECK(!refusedOwn.has_value());
+    if (!refusedOwn.has_value()) CHECK(refusedOwn.error().code == core::ErrorCode::InvalidArgument);
+
+    // Ordinary Latin text is accepted.
+    PdfTextBlockEdit covered = textBlock(7, "Hello again", bundled(PdfBundledFont::SansRegular), where);
+    Edits good;
+    good.text(covered);
+    CHECK(document->checkContentEdits(0, *good.value).has_value());
+
+    // Out-of-range page index is refused.
+    CHECK(!document->checkContentEdits(99, *good.value).has_value());
+
+    // The dry run changed nothing: same objects, same render.
+    const auto contentAfter = contentOf(*document, 0);
+    if (contentAfter) CHECK_EQ(contentAfter->objects.size(), objectsBefore);
+    const core::Bitmap after = renderFull(*document, 0, nullptr);
+    CHECK_EQ(differingFraction(before, after, 0), 0.0);
+}
+
 RIVET_TEST(contentAddTextUsesEveryBundledFaceAndAppendsOnTop) {
     auto engine = pdfiumEngine();
     if (!engine) return;

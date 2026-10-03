@@ -54,7 +54,7 @@ top of the page. If the font cannot encode the whole new text (round trip
 of `FPDFText_SetText` + `FPDFTextObj_GetText` differs, Type3, or glyphs
 missing), ALL members are removed and every line is a new object in the
 bundled fallback font chosen by ADR-0016 (`fontSubstituted` is reported and
-the UI says so). The old glyphs never remain under the new text.
+the UI says so). The old glyphs never remain under the new text. Text re-set in the block's own full embedded font is dry-run through the backend at command build time (`PdfDocument::checkContentEdits`), so an edit the font cannot write is refused before it reaches the command stack.
 
 Editing an already edited block updates the same `PdfTextBlockEdit` (same
 tag). Moving an unedited block transforms its members (`PdfObjectEdit`);

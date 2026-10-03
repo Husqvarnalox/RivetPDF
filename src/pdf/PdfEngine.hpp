@@ -165,6 +165,16 @@ public:
                                                "this backend has no content editing support", "pdf"));
     }
 
+    // Dry run: applies `edits` to a private scratch copy of the SOURCE page
+    // exactly like materialization and returns the apply error. It never
+    // changes the document or any cache. Backends without a dry run accept
+    // (materialization reports later).
+    virtual core::Status checkContentEdits(std::size_t pageIndex, const PdfPageContentEdits& edits) const {
+        (void)pageIndex;
+        (void)edits;
+        return core::ok();
+    }
+
     // Extracts the text of a page. The returned PdfTextPage is immutable,
     // Rivet-owned data with no engine handles, so it may outlive any call and
     // be cached freely. Default: NotAvailable (backends without text support).

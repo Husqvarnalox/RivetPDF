@@ -577,6 +577,33 @@ core::Result<PdfPageContentPtr> PdfiumDocument::pageContent(std::size_t pageInde
     });
 }
 
+core::Status PdfiumDocument::checkContentEdits(std::size_t pageIndex, const PdfPageContentEdits& edits) const {
+    return globalPdfiumCallGate().invoke([&]() -> core::Status {
+        if (pageIndex >= info_.pageCount) {
+            return std::unexpected(core::makeError(core::ErrorCode::InvalidArgument,
+                                                   "page index " + std::to_string(pageIndex) +
+                                                       " out of range (document has " +
+                                                       std::to_string(info_.pageCount) + " pages)",
+                                                   "pdf"));
+        }
+        try {
+            const core::Result<FPDF_DOCUMENT> reader = contentReader();
+            if (!reader.has_value()) {
+                return std::unexpected(reader.error());
+            }
+            // The scratch page is discarded: no ContentState entry or cache is touched.
+            const auto page = internal::materializePage(*reader, static_cast<int>(pageIndex), edits);
+            if (!page.has_value()) {
+                return std::unexpected(page.error());
+            }
+            return core::ok();
+        } catch (const std::bad_alloc&) {
+            return std::unexpected(core::makeError(core::ErrorCode::OutOfMemory,
+                                                   "out of memory while checking the content edits", "pdf"));
+        }
+    });
+}
+
 core::Result<FPDF_DOCUMENT> PdfiumDocument::contentReader() const {
     if (content_->reader() == nullptr) {
         // The same bytes the live document was opened from (shared file
