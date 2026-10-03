@@ -15,6 +15,12 @@ if(RIVET_WITH_PDFIUM)
     target_link_libraries(rivet_perf_content_pdfium PRIVATE rivet::editor rivet::pdfium)
     target_include_directories(rivet_perf_content_pdfium PRIVATE "${CMAKE_SOURCE_DIR}/tests/pdf")
     rivet_set_target_warnings(rivet_perf_content_pdfium)
+
+    # Content editing over real PDFs supplied at run time (command line).
+    add_executable(rivet_probe_content_corpus ProbeContentCorpus.cpp)
+    target_link_libraries(rivet_probe_content_corpus PRIVATE rivet::editor rivet::pdfium)
+    rivet_set_target_warnings(rivet_probe_content_corpus)
+    rivet_set_target_sanitizers(rivet_probe_content_corpus)
 endif()
 
 # Content editing (Phase 5): PDFium-free, runs over the editor fakes. The

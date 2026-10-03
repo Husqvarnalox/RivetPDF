@@ -86,6 +86,28 @@ is deterministic (no timestamps, no randomness, no compression).
 | `denseContentPdf(n)` | one page with `n` small filled rectangles and `n / 10` short Helvetica 8 text lines on a grid; used by the stress and perf probes |
 | `blueJpeg()`         | the bytes of an 8x8 solid-blue baseline JPEG produced once with macOS `sips` (quality 60, 776 bytes) from a generated blank image; embedded as a byte array so tests need no image tooling and no decoder |
 
+## Running content editing over real PDFs
+
+`tests/perf/ProbeContentCorpus.cpp` is an opt-in command-line probe (target
+`rivet_probe_content_corpus`, built with `-DRIVET_BUILD_PERF_PROBES=ON` and
+PDFium; not a ctest). It takes PDFs at run time and never needs them in the
+repository:
+
+```
+build/p-perf/tests/perf/rivet_probe_content_corpus <dir-or-file>... [--max-pages N] [--timeout-ms N]
+```
+
+For each `*.pdf` (directories recursively, sorted) it opens a session, awaits
+the content of the first N pages (default 3), moves one movable object,
+retypes one editable text block, saves to a temporary file, reloads it in a
+fresh session and compares the object counts. It prints one line per file
+(name, open result, counts, error categories) and a summary; no document
+text, passwords or page content is ever printed, and the originals are only
+read (the probe works on a temporary copy). Factory refusals count as
+`refused`; crashes, sanitizer reports, timeouts, count inconsistencies and
+round-trip mismatches are failures (non-zero exit). Run it from an ASan
+build (`RIVET_ENABLE_SANITIZERS=ON`) for memory errors.
+
 ## Rendering contract
 
 `PdfDocument::renderPage` receives `pageRectPoints` in displayed-page space
