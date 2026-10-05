@@ -94,15 +94,14 @@ void ShellController::buildWidgets() {
     root_->addChild(std::move(viewport));
 
     // Content slot of Markdown tabs: hidden (empty frame) unless a Markdown
-    // tab is active. A later agent replaces the placeholder view behind
-    // createMarkdownHostView().
-    auto markdownView = createMarkdownHostView(MarkdownHostEnvironment{
-        services_.mainDispatcher,
-        &scheduler_,
-        &services_,
-        [this](std::string text) { setStatus(std::move(text)); },
-        [this](ui::Widget* widget) { setFocus(widget); },
-    });
+    // tab is active (Rendered / Source / Split, see MarkdownHostView).
+    MarkdownHostEnvironment markdownEnvironment;
+    markdownEnvironment.dispatcher = services_.mainDispatcher;
+    markdownEnvironment.scheduler = &scheduler_;
+    markdownEnvironment.services = &services_;
+    markdownEnvironment.setStatus = [this](std::string text) { setStatus(std::move(text)); };
+    markdownEnvironment.setFocus = [this](ui::Widget* widget) { setFocus(widget); };
+    auto markdownView = createMarkdownHostView(std::move(markdownEnvironment));
     markdownView_ = markdownView.get();
     markdownView_->setFrame(kHiddenFrame);
     root_->addChild(std::move(markdownView));
@@ -696,8 +695,8 @@ bool ShellController::handleShortcut(const ui::KeyEvent& event) {
                 return true;
             }
             if (event.text == "f") {
-                // Markdown: the bar drives the rendered view; other modes have no
-                // searchable view yet.
+                // Markdown: the bar drives the rendered text (Rendered mode) or the
+                // source text (Source/Split).
                 if (!chromeMarkdown_ || markdownView_->searchTarget() != nullptr) searchBar_->toggle();
                 return true;
             }
