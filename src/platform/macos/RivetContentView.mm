@@ -96,6 +96,7 @@ void ContentViewHost::requestRedraw() {
     std::unique_ptr<rivet::platform::ContentViewHost> host_;
     rivet::ui::Widget* rootWidget_;
     std::function<bool(const rivet::ui::KeyEvent&)> keyHandler_;
+    std::function<void(const std::vector<std::filesystem::path>&)> fileDropHandler_;
     NSTrackingArea* trackingArea_;
 }
 
@@ -103,6 +104,7 @@ void ContentViewHost::requestRedraw() {
     self = [super initWithFrame:frame];
     if (self != nil) {
         host_ = std::make_unique<rivet::platform::ContentViewHost>(self);
+        [self registerForDraggedTypes:@[ NSPasteboardTypeFileURL ]];
         [self refreshTrackingArea];
     }
     return self;
@@ -159,6 +161,31 @@ void ContentViewHost::requestRedraw() {
 
 - (void)setKeyHandler:(std::function<bool(const rivet::ui::KeyEvent&)>)handler {
     keyHandler_ = std::move(handler);
+}
+
+- (void)setFileDropHandler:(std::function<void(const std::vector<std::filesystem::path>&)>)handler {
+    fileDropHandler_ = std::move(handler);
+}
+
+#pragma mark Drag and drop
+
+- (NSDragOperation)draggingEntered:(id<NSDraggingInfo>)sender {
+    (void)sender;
+    return fileDropHandler_ != nullptr ? NSDragOperationCopy : NSDragOperationNone;
+}
+
+- (BOOL)performDragOperation:(id<NSDraggingInfo>)sender {
+    if (fileDropHandler_ == nullptr) return NO;
+    NSArray<NSURL*>* urls = [sender.draggingPasteboard
+        readObjectsForClasses:@[ [NSURL class] ]
+                      options:@{NSPasteboardURLReadingFileURLsOnlyKey : @YES}];
+    std::vector<std::filesystem::path> paths;
+    for (NSURL* url in urls) {
+        if (url.isFileURL && url.path != nil) paths.emplace_back(url.path.UTF8String);
+    }
+    if (paths.empty()) return NO;
+    fileDropHandler_(paths);
+    return YES;
 }
 
 - (void)applyRootFrame {
