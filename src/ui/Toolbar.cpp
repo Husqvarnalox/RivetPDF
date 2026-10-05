@@ -19,10 +19,29 @@ double Toolbar::spacingAfterItem(const Widget* item) const {
     return it == spacingAfter_.end() ? kDefaultItemSpacing : it->second;
 }
 
+void Toolbar::setItemVisible(const Widget* item, bool visible) {
+    for (const auto& child : children()) {
+        if (child.get() != item) continue;
+        if (visible == itemVisible(item)) return;
+        if (!visible) {
+            hiddenSizes_[item] = child->frame().size;
+            child->setFrame(core::Rect{-1.0, -1.0, 0.0, 0.0});
+        } else {
+            const core::Size size = hiddenSizes_[item];
+            hiddenSizes_.erase(item);
+            child->setFrame(core::Rect{0.0, 0.0, size.width, size.height});
+        }
+        layout();
+        invalidate();
+        return;
+    }
+}
+
 core::Size Toolbar::preferredSize(const PaintContext&) const {
     double width = 2.0 * kPadding;
     const auto& items = children();
     for (std::size_t i = 0; i < items.size(); ++i) {
+        if (!itemVisible(items[i].get())) continue;
         width += items[i]->frame().size.width;
         if (i + 1 < items.size()) width += spacingAfterItem(items[i].get());
     }
@@ -34,6 +53,7 @@ void Toolbar::layout() {
     // and are vertically centered in the bar (see the class comment).
     double x = kPadding;
     for (const auto& child : children()) {
+        if (!itemVisible(child.get())) continue; // keeps its hidden frame
         const core::Rect itemFrame = child->frame();
         const double y = std::max(0.0, (height_ - itemFrame.size.height) / 2.0);
         child->setFrame(core::Rect{x, y, itemFrame.size.width, itemFrame.size.height});

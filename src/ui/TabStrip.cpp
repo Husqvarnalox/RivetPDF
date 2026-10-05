@@ -21,6 +21,8 @@ constexpr Color kInactiveTabBorder = Color::rgba(0.0, 0.0, 0.0, 0.12);
 constexpr Color kTitleColor = Color::rgba(0.10, 0.10, 0.10, 1.0);
 constexpr Color kCloseGlyphColor = Color::gray(0.45);
 
+constexpr Color kDirtyDotColor = Color::gray(0.35);
+constexpr double kDirtyDotSize = 6.0;
 constexpr double kTabCornerRadius = 5.0;
 constexpr double kStrokeWidth = 1.0;
 
@@ -190,11 +192,20 @@ void TabStrip::paintSelf(PaintContext& context) const {
                            active ? kActiveTabBorder : kInactiveTabBorder, kStrokeWidth);
         context.drawText(kCloseGlyph, closeButtonRect(index), kCloseFont, kCloseGlyphColor,
                          TextAlign::Center);
-        const double titleWidth = tab.size.width - 2.0 * kTabLeftPadding - kCloseButtonSize;
+        const bool dirty = tabs_[index].dirty;
+        const double dotReserve = dirty ? kDirtyDotSize + 4.0 : 0.0;
+        if (dirty) {
+            const core::Rect close = closeButtonRect(index);
+            context.fillRoundedRect(
+                core::Rect{close.minX() - kDirtyDotSize - 3.0, tab.minY() + (kTabHeight - kDirtyDotSize) / 2.0,
+                           kDirtyDotSize, kDirtyDotSize},
+                kDirtyDotColor, kDirtyDotSize / 2.0);
+        }
+        const double titleWidth = tab.size.width - 2.0 * kTabLeftPadding - kCloseButtonSize - dotReserve;
         const core::Rect titleRect{
             core::Point{tab.minX() + kTabLeftPadding, tab.minY()},
             core::Size{std::max(0.0, titleWidth), kTabHeight}};
-        context.drawText(displayTitle(tabs_[index].title, tab.size.width, context), titleRect,
+        context.drawText(displayTitle(tabs_[index].title, tab.size.width - dotReserve, context), titleRect,
                          kTabFont, kTitleColor, TextAlign::Left);
     }
     context.popClip();
