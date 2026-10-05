@@ -30,6 +30,12 @@ struct Font {
     enum class Weight : std::uint8_t { Regular, Semibold, Bold };
     Weight weight = Weight::Regular;
 
+    // Italic uses the family's italic face when it has one, otherwise a
+    // synthetic oblique. Monospace selects the platform's fixed-pitch system
+    // font (weight and italic still apply).
+    bool italic = false;
+    bool monospace = false;
+
     bool operator==(const Font&) const = default;
 };
 
