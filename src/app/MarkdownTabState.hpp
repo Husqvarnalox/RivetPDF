@@ -126,6 +126,9 @@ public:
     // Fired (main thread, synchronously) after any observable change: source
     // mutation, mode change, dirty flip. Views and the shell repaint from it.
     void setOnChanged(std::function<void()> onChanged) { onChanged_ = std::move(onChanged); }
+    // For TextEditCommand::tryMerge(): an edit folded into an existing history
+    // entry still has to wake the views (the command stack is not involved).
+    void notifyEdited() { notifyChanged(); }
 
 private:
     void notifyChanged() {
@@ -156,6 +159,16 @@ public:
     std::string_view name() const override { return name_; }
     bool execute() override;
     bool undo() override;
+
+    // Folds a FOLLOWING edit (offsets in the source as it is now, i.e. after
+    // this command ran) into this command and applies it to the state, so one
+    // undo reverts both. Only for the newest history entry of a state that is
+    // not the saved one (the caller checks; otherwise the dirty state id would
+    // not change). Supported shapes: inside or touching the inserted text
+    // (typing, backspace within it), directly after it (typing on, forward
+    // delete) and directly before it (backspace before it). Returns false and
+    // changes nothing otherwise. Notifies the state like any edit.
+    bool tryMerge(std::size_t offset, std::size_t removeLength, std::string_view insert);
 
 private:
     MarkdownTabState& state_;

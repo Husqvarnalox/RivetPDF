@@ -227,4 +227,39 @@ bool TextEditCommand::execute() {
 
 bool TextEditCommand::undo() { return state_.applyEdit(offset_, insert_.size(), removed_); }
 
+bool TextEditCommand::tryMerge(std::size_t offset, std::size_t removeLength, std::string_view insert) {
+    const std::string& source = state_.source();
+    if (offset > source.size() || removeLength > source.size() - offset) return false;
+    const std::size_t insertEnd = offset_ + insert_.size();
+    std::string newInsert;
+    std::string newRemoved;
+    std::size_t newOffset = offset_;
+    if (offset >= offset_ && offset + removeLength <= insertEnd) { // inside / touching the inserted text
+        newInsert = insert_.substr(0, offset - offset_);
+        newInsert.append(insert);
+        newInsert.append(insert_, offset + removeLength - offset_, std::string::npos);
+        newRemoved = removed_;
+    } else if (offset == insertEnd) { // directly after it, possibly deleting forward
+        newInsert = insert_;
+        newInsert.append(insert);
+        newRemoved = removed_;
+        newRemoved.append(source, offset, removeLength);
+    } else if (offset + removeLength == offset_) { // directly before it (backspace)
+        newInsert.assign(insert);
+        newInsert.append(insert_);
+        newRemoved.assign(source, offset, removeLength);
+        newRemoved.append(removed_);
+        newOffset = offset;
+    } else {
+        return false;
+    }
+    if (!state_.applyEdit(offset, removeLength, insert)) return false;
+    offset_ = newOffset;
+    insert_ = std::move(newInsert);
+    removed_ = std::move(newRemoved);
+    removeLength_ = removed_.size();
+    state_.notifyEdited();
+    return true;
+}
+
 } // namespace rivet::app
