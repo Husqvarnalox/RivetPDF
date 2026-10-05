@@ -193,10 +193,7 @@ private:
                 if (s.kind == TextKind::Body || s.kind == TextKind::Quote || s.kind == TextKind::Table) s.kind = TextKind::Code;
                 s.monospace = true;
                 s.size = base.size * (t_.codeSize / t_.bodySize);
-                Inline tmp; // tokenizeText only needs text + range
-                tmp.text = in.text;
-                tmp.range = in.range;
-                tokenizeText(tmp, s, link, toks);
+                tokenizeText(in, s, link, toks); // tokens view in.text, which outlives the flow
                 break;
             }
             case InlineKind::Link: {
@@ -548,7 +545,7 @@ private:
                 }
                 shown = expanded;
             }
-            const double w = shown.empty() ? 0.0 : m_.measure(shown, style).width;
+            const double w = shown.empty() ? 0.0 : cache_.width(m_, shown, style);
             const auto lineIndex = static_cast<std::uint32_t>(out_.lines.size());
             const auto runIndex = static_cast<std::uint32_t>(out_.runs.size());
             if (!shown.empty()) {
@@ -744,7 +741,9 @@ private:
             }
             y += rowHeight;
         }
-        const core::Rect rect(ctx.x, top, tableWidth, y - top);
+        // The box is clipped to the available width; contentWidth reports the
+        // full table so callers can offer horizontal scrolling.
+        const core::Rect rect(ctx.x, top, std::min(tableWidth, ctx.width), y - top);
         endLeaf(idx, rect, std::max(tableWidth, 0.0));
         bottom = y;
         return true;
