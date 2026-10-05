@@ -26,4 +26,16 @@ struct FindMatch {
 std::vector<FindMatch> findInLayout(const markdown::MarkdownLayout& layout, std::string_view query,
                                     std::size_t maxMatches = 100'000);
 
+// One occurrence of the query in plain text: byte range [begin, end).
+struct TextMatch {
+    std::size_t begin = 0;
+    std::size_t end = 0;
+};
+
+// Plain-text find in raw text (the Markdown source): ASCII case-insensitive,
+// other bytes exact, non-overlapping, in order, capped at `maxMatches`. An
+// invalid-UTF-8 query matches nothing (so a match never splits a code point
+// of valid UTF-8 text). O(N).
+std::vector<TextMatch> findInText(std::string_view text, std::string_view query, std::size_t maxMatches = 100'000);
+
 } // namespace rivet::app

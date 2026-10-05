@@ -142,6 +142,20 @@ public:
     void scrollBlockBy(std::size_t blockIndex, double dx);
     // Visible y range in document space.
     double visibleTop() const { return scrollY_; }
+    // Fired (main thread) after every change of scrollY by wheel, scrollbar,
+    // keys, links, search or setScrollY. NOT fired by layout-driven
+    // adjustments (anchor restore, clamping on relayout) nor by a deferred
+    // scrollToSourceOffset(). Hosts that mirror the position elsewhere must
+    // suppress the echo of their own programmatic scrolls.
+    void setOnScrolled(std::function<void()> onScrolled) { onScrolled_ = std::move(onScrolled); }
+    // Source byte offset of the content at the top of the viewport; nullopt
+    // while there is no layout yet (before the first prepare/paint).
+    std::optional<std::size_t> topSourceOffset() const;
+    // Scrolls so the block holding source offset `offset` is at the top
+    // (block-granular, interpolated inside tall blocks). Without a current
+    // layout the request is remembered and applied silently by the next
+    // relayout.
+    void scrollToSourceOffset(std::size_t offset);
 
     // --- links ------------------------------------------------------------
     // Applies the link policy to `url` as a user click would (opens/scrolls/
@@ -250,6 +264,8 @@ private:
     mutable std::vector<std::uint8_t> warmed_; // per run: advances recorded
 
     double scrollY_ = 0.0;
+    std::function<void()> onScrolled_;
+    std::optional<std::size_t> pendingSourceOffset_;
     ui::ScrollBar* scrollBar_ = nullptr;
     std::unordered_map<std::uint32_t, double> blockScrollX_; // by LayoutBlock::blockId
 

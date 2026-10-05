@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0
 #include "app/MarkdownPreviewView.hpp"
 
+#include "markdown/MarkdownSourceMap.hpp"
+
 #include <algorithm>
 #include <cmath>
 #include <limits>
@@ -109,6 +111,7 @@ void MarkdownPreviewView::clearDocument() {
     query_.clear();
     matches_.clear();
     current_.reset();
+    pendingSourceOffset_.reset();
     syncScrollBar();
     invalidate();
 }
@@ -195,6 +198,10 @@ void MarkdownPreviewView::doRelayout(double width) {
         restoreAnchor(anchor);
     }
     scrollY_ = std::clamp(scrollY_, 0.0, maxScrollY());
+    if (pendingSourceOffset_) {
+        scrollY_ = std::clamp(markdown::previewYForSourceOffset(*layout_, *pendingSourceOffset_), 0.0, maxScrollY());
+        pendingSourceOffset_.reset();
+    }
     layoutDirty_ = false;
     keepAnchorOnRelayout_ = false;
 
@@ -255,6 +262,21 @@ void MarkdownPreviewView::setScrollY(double y) {
     scrollY_ = y;
     syncScrollBar();
     invalidate();
+    if (onScrolled_) onScrolled_();
+}
+
+std::optional<std::size_t> MarkdownPreviewView::topSourceOffset() const {
+    if (layout_ == nullptr || layoutDirty_ || replaced_) return std::nullopt;
+    return markdown::sourceOffsetForPreviewY(*layout_, scrollY_);
+}
+
+void MarkdownPreviewView::scrollToSourceOffset(std::size_t offset) {
+    if (layout_ == nullptr || layoutDirty_ || replaced_) {
+        pendingSourceOffset_ = offset;
+        return;
+    }
+    pendingSourceOffset_.reset();
+    setScrollY(markdown::previewYForSourceOffset(*layout_, offset));
 }
 
 void MarkdownPreviewView::syncScrollBar() {

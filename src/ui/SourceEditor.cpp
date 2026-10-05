@@ -134,6 +134,7 @@ void SourceEditor::setText(std::string_view text) {
     clampScroll();
     syncScrollbars();
     invalidate();
+    if (onTextChanged_) onTextChanged_();
 }
 
 bool SourceEditor::applyExternalEdit(std::size_t offset, std::size_t removeLength, std::string_view insert) {
@@ -151,6 +152,7 @@ bool SourceEditor::applyExternalEdit(std::size_t offset, std::size_t removeLengt
     clampScroll();
     syncScrollbars();
     invalidate();
+    if (onTextChanged_) onTextChanged_();
     return true;
 }
 
@@ -432,6 +434,7 @@ bool SourceEditor::commitEdit(std::size_t offset, std::size_t removeLength, std:
     track_ = EditTrack{mergeable, kind, caret_};
     ensureCaretVisible();
     invalidate();
+    if (onTextChanged_) onTextChanged_();
     return true;
 }
 
@@ -787,6 +790,13 @@ bool SourceEditor::onMouse(const PointerEvent& event) {
 
 // --- paint -----------------------------------------------------------------------------
 
+void SourceEditor::setHighlights(std::vector<Highlight> ranges, std::optional<std::size_t> current) {
+    highlights_ = std::move(ranges);
+    currentHighlight_ = current && *current < highlights_.size() ? current : std::nullopt;
+    highlightsRevision_ = buffer_.revision();
+    invalidate();
+}
+
 void SourceEditor::paintSelf(PaintContext& context) const {
     measureCell(context);
     Font font;
@@ -833,6 +843,20 @@ void SourceEditor::paintSelf(PaintContext& context) const {
                 context.fillRect(core::Rect{kPadding + static_cast<double>(from) * cellWidth_ - scrollX_, y,
                                             static_cast<double>(to - from) * cellWidth_, lineHeight_},
                                  focused ? kSelectionFocused : kSelectionUnfocused);
+            }
+        }
+
+        if (!highlights_.empty() && highlightsRevision_ == buffer_.revision()) {
+            auto it = std::lower_bound(highlights_.begin(), highlights_.end(), ls,
+                                       [](const Highlight& h, std::size_t value) { return h.end <= value; });
+            for (; it != highlights_.end() && it->begin <= le; ++it) {
+                const std::size_t from = columnBetween(ls, std::max(it->begin, ls));
+                const std::size_t to = columnBetween(ls, std::min(it->end, le));
+                if (to <= from) continue;
+                const bool isCurrent = currentHighlight_ && static_cast<std::size_t>(it - highlights_.begin()) == *currentHighlight_;
+                context.fillRect(core::Rect{kPadding + static_cast<double>(from) * cellWidth_ - scrollX_, y,
+                                            static_cast<double>(to - from) * cellWidth_, lineHeight_},
+                                 isCurrent ? Color::rgba(1.0, 0.55, 0.0, 0.6) : Color::rgba(1.0, 0.85, 0.0, 0.45));
             }
         }
 

@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0
 #include "app/MarkdownFind.hpp"
 
+#include "app/MarkdownTabState.hpp"
+
 #include <algorithm>
 #include <string>
 
@@ -77,6 +79,24 @@ std::vector<FindMatch> findInLayout(const markdown::MarkdownLayout& layout, std:
             matches.push_back(m);
             if (matches.size() >= maxMatches) return matches;
         }
+    }
+    return matches;
+}
+
+std::vector<TextMatch> findInText(std::string_view text, std::string_view query, std::size_t maxMatches) {
+    std::vector<TextMatch> matches;
+    if (query.empty() || maxMatches == 0 || text.size() < query.size() || !isValidUtf8(query)) return matches;
+    std::string needle(query);
+    std::transform(needle.begin(), needle.end(), needle.begin(), foldAscii);
+    std::string folded(text);
+    std::transform(folded.begin(), folded.end(), folded.begin(), foldAscii);
+    std::size_t from = 0;
+    while (from + needle.size() <= folded.size()) {
+        const std::size_t at = folded.find(needle, from);
+        if (at == std::string::npos) break;
+        matches.push_back(TextMatch{at, at + needle.size()});
+        if (matches.size() >= maxMatches) break;
+        from = at + needle.size();
     }
     return matches;
 }

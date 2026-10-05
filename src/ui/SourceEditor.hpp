@@ -14,6 +14,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace rivet::ui {
 
@@ -122,6 +123,10 @@ public:
     // Fired when the scroll position changed (wheel, scrollbar, caret
     // tracking, scrollToOffset) for sync-scroll.
     void setOnScrolled(std::function<void()> callback) { onScrolled_ = std::move(callback); }
+    // Fired after the widget's own text changed (an accepted user edit, an
+    // applyExternalEdit() or setText()), i.e. when buffer() is up to date.
+    // Hosts refresh text-derived state (search matches) from it.
+    void setOnTextChanged(std::function<void()> callback) { onTextChanged_ = std::move(callback); }
     // Test seam for multi-click timing.
     void setClock(std::function<std::chrono::steady_clock::time_point()> clock) { clock_ = std::move(clock); }
 
@@ -137,6 +142,19 @@ public:
     // widget's buffer without notifying the sink. Caret/anchor are remapped.
     // False when the range is invalid.
     bool applyExternalEdit(std::size_t offset, std::size_t removeLength, std::string_view insert);
+
+    // --- Search highlights ------------------------------------------------------
+    // Ranges [begin, end) in byte offsets of the current text, sorted and
+    // non-overlapping (e.g. find matches); `current` indexes the one drawn
+    // emphasized. They describe the text as it is NOW: any later edit of the
+    // buffer hides them until the host sets new ones.
+    struct Highlight {
+        std::size_t begin = 0;
+        std::size_t end = 0;
+    };
+    void setHighlights(std::vector<Highlight> ranges, std::optional<std::size_t> current = std::nullopt);
+    void clearHighlights() { setHighlights({}, std::nullopt); }
+    std::size_t highlightCount() const { return highlights_.size(); }
 
     // --- Caret / selection ----------------------------------------------------
     std::size_t caretOffset() const { return caret_; }
@@ -214,6 +232,9 @@ private:
     void invalidateTrack() { track_.valid = false; }
 
     TextBuffer buffer_;
+    std::vector<Highlight> highlights_;
+    std::optional<std::size_t> currentHighlight_;
+    std::uint64_t highlightsRevision_ = 0; // buffer revision the highlights describe
     std::size_t caret_ = 0;
     std::size_t anchor_ = 0;
     std::optional<double> preferredColumn_; // sticky cells for Up/Down
@@ -223,6 +244,7 @@ private:
     ITextClipboard* clipboard_ = nullptr;
     std::function<void()> onFocusRequested_;
     std::function<void()> onScrolled_;
+    std::function<void()> onTextChanged_;
     std::function<std::chrono::steady_clock::time_point()> clock_;
 
     ScrollBar* vScroll_ = nullptr;
