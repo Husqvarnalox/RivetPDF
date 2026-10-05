@@ -13,6 +13,10 @@ add_executable(rivet_app_tests
     TestContentBarController.cpp
     TestPageEditingController.cpp
     TestFileController.cpp
+    TestMarkdownShell.cpp
+    TestMarkdownPreview.cpp
+    TestMarkdownSourcePane.cpp
+    TestMarkdownLive.cpp
     TestSearchRestart.cpp
     TestPrintCoordinator.cpp
     # Phase 5 end-to-end content editing over the real engine (PDFium-ON
@@ -42,7 +46,7 @@ rivet_set_target_sanitizers(rivet_app_tests)
 # TestPageEditingController/TestFileController share the editor-layer fakes
 # (FakePageDocument, FakeWritableEngine).
 target_include_directories(rivet_app_tests PRIVATE "${CMAKE_SOURCE_DIR}/tests/editor"
-    "${CMAKE_SOURCE_DIR}/tests/ui" "${CMAKE_SOURCE_DIR}/tests/pdf")
+    "${CMAKE_SOURCE_DIR}/tests/ui" "${CMAKE_SOURCE_DIR}/tests/pdf" "${CMAKE_SOURCE_DIR}/tests/markdown")
 
 # PDFium-ON bodies (TestFileRoundTripPdfium.cpp) run against the shared
 # fixtures and early-return without a backend.

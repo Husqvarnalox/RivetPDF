@@ -33,6 +33,11 @@ public:
     // ErrorCode::Cancelled means the user dismissed the dialog.
     virtual core::Result<std::filesystem::path> openPdf() = 0;
 
+    // Shows a modal open dialog for any document Rivet can host: PDF and
+    // Markdown (.md/.markdown/.mdown). Same Cancelled convention. The default
+    // falls back to openPdf() (a backend without a document chooser).
+    virtual core::Result<std::filesystem::path> openDocument() { return openPdf(); }
+
     struct OpenOptions {
         std::string title = "Open PDF";
         std::string prompt = "Open";
@@ -67,11 +72,14 @@ public:
         std::filesystem::path initialDirectory; // empty = platform default
         std::string title = "Save";
         std::string prompt = "Save";
+        // File extensions (no dot, lower case) the panel offers and appends
+        // when the user omits one; the first is the default. Empty = PDF.
+        std::vector<std::string> allowedExtensions;
     };
 
     virtual ~ISaveDialog() = default;
 
-    // Returns the chosen path (with a .pdf extension), or nullopt when the
+    // Returns the chosen path (with an extension from allowedExtensions, .pdf by default), or nullopt when the
     // user cancelled. The native panel has already asked the user to
     // confirm replacing an existing file, so the caller may overwrite it.
     virtual std::optional<std::filesystem::path> runSavePanel(const Options& options) = 0;

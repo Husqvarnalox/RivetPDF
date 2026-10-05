@@ -19,7 +19,7 @@ std::filesystem::path dedupKeyForPath(const std::filesystem::path& path) {
 }
 
 DocumentTab::DocumentTab(TabId id, std::filesystem::path path, std::string title)
-    : id_(id), path_(std::move(path)), title_(std::move(title)) {
+    : id_(id), kind_(documentKindForPath(path)), path_(std::move(path)), title_(std::move(title)) {
     dedupKey_ = dedupKeyForPath(path_);
 }
 
@@ -27,6 +27,32 @@ void DocumentTab::retitle(std::filesystem::path path) {
     path_ = std::move(path);
     dedupKey_ = dedupKeyForPath(path_);
     title_ = path_.filename().string();
+    if (markdown_ != nullptr) markdown_->setPath(path_);
+}
+
+bool DocumentTab::isDirty() const {
+    if (session_ != nullptr) return session_->isDirty();
+    return markdown_ != nullptr && markdown_->isDirty();
+}
+
+bool DocumentTab::canUndo() const {
+    if (session_ != nullptr) return !session_->isEditingLocked() && session_->commands().canUndo();
+    return markdown_ != nullptr && markdown_->canUndo();
+}
+
+bool DocumentTab::canRedo() const {
+    if (session_ != nullptr) return !session_->isEditingLocked() && session_->commands().canRedo();
+    return markdown_ != nullptr && markdown_->canRedo();
+}
+
+bool DocumentTab::undo() {
+    if (session_ != nullptr) return session_->undo();
+    return markdown_ != nullptr && markdown_->undo();
+}
+
+bool DocumentTab::redo() {
+    if (session_ != nullptr) return session_->redo();
+    return markdown_ != nullptr && markdown_->redo();
 }
 
 DocumentTab::~DocumentTab() { releaseSession(); }
@@ -36,6 +62,14 @@ void DocumentTab::releaseSession() {
     // so it dies first; its destructor drains its walker stream.
     search_.reset();
     session_.reset();
+    markdown_.reset();
+}
+
+void DocumentTab::attachMarkdown(std::unique_ptr<MarkdownTabState> markdown) {
+    releaseSession();
+    markdown_ = std::move(markdown);
+    state_ = State::Ready;
+    errorText_.clear();
 }
 
 void DocumentTab::attachSession(std::unique_ptr<editor::DocumentSession> session) {
@@ -82,7 +116,10 @@ void DocumentWorkspace::shutdown() {
     //    sessions now, deterministically, while everything they reference is
     //    alive (the worker wrote them before releasing its token, which the
     //    wait above synchronizes with).
-    for (const std::shared_ptr<OpenOperation>& operation : inFlight_) operation->result.reset();
+    for (const std::shared_ptr<OpenOperation>& operation : inFlight_) {
+        operation->result.reset();
+        operation->markdownResult.reset();
+    }
     inFlight_.clear();
 }
 
@@ -135,6 +172,28 @@ void DocumentWorkspace::startOpen(DocumentTab& tab, std::string password, bool i
     auto token = std::make_shared<core::AsyncScope::Token>(std::move(*entered));
     inFlight_.push_back(operation);
 
+    if (tab.kind() == DocumentKind::Markdown) {
+        // Markdown: read + decode on a worker; no engine, no password. The
+        // result is a plain value, so a cancelled/superseded open simply
+        // drops it.
+        scheduler_.post([operation, token, openPath = tab.path(), alive = workspaceAlive_,
+                         dispatcher = mainDispatcher_, this]() mutable {
+            if (!token->cancelled()) {
+                auto loaded = MarkdownTabState::load(openPath, [t = token.get()] { return t->cancelled(); });
+                if (token->cancelled()) {
+                    loaded = std::unexpected(core::Error{core::ErrorCode::Cancelled, "open cancelled", "app"});
+                }
+                operation->markdownResult = std::move(loaded);
+            }
+            dispatcher->post([this, operation, alive] {
+                if (!alive->load(std::memory_order_acquire)) return;
+                handleOpenCompleted(operation);
+            });
+            token.reset();
+        });
+        return;
+    }
+
     // The task borrows engine_/scheduler_ by reference: safe because the
     // workspace's shutdown() waits for this task's token before the shell
     // destroys them. The password lives only in this task (never stored,
@@ -169,13 +228,28 @@ void DocumentWorkspace::handleOpenCompleted(const std::shared_ptr<OpenOperation>
     // Take ownership of the result out of the in-flight list first; whatever
     // happens next, this operation is finished.
     std::erase(inFlight_, operation);
-    if (!operation->result.has_value()) return; // cancelled before running
+    if (!operation->result.has_value() && !operation->markdownResult.has_value()) {
+        return; // cancelled before running
+    }
 
     DocumentTab* tab = tabById(operation->tab);
     if (tab == nullptr || tab->openRequest() != operation->request ||
         tab->state() != DocumentTab::State::Loading) {
         // The tab was closed, or a newer request superseded this one: drop
         // the result (the session dies here, on the main thread).
+        return;
+    }
+
+    if (operation->markdownResult.has_value()) {
+        core::Result<std::unique_ptr<MarkdownTabState>>& loaded = *operation->markdownResult;
+        if (loaded.has_value()) {
+            tab->attachMarkdown(std::move(*loaded));
+            core::log::info("markdown document opened");
+        } else {
+            core::log::warning("markdown open failed: " + core::describe(loaded.error()));
+            tab->setError(core::describe(loaded.error()));
+        }
+        finishOpen(operation);
         return;
     }
 
@@ -196,6 +270,10 @@ void DocumentWorkspace::handleOpenCompleted(const std::shared_ptr<OpenOperation>
         // sanitized error string.
         tab->setError(core::describe(session.error()));
     }
+    finishOpen(operation);
+}
+
+void DocumentWorkspace::finishOpen(const std::shared_ptr<OpenOperation>& operation) {
     // The shell must rebind its viewer widgets when the active tab's content
     // changed (Loading -> Ready/Error), not just on tab switches.
     const bool isActive = activeIndex_ != kNoTab && tabs_[activeIndex_]->id() == operation->tab;

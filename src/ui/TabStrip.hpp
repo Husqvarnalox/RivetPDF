@@ -19,7 +19,7 @@ namespace rivet::ui {
 // Tab widths come from title measurement clamped to [kMinTabWidth,
 // kMaxTabWidth]; titles that do not fit are ellipsized. Tabs beyond the
 // strip's width are not painted and do not hit-test (documented simple
-// overflow policy; no drag-reordering, no dirty indicators in Phase 2).
+// overflow policy; no drag-reordering).
 //
 // Geometry note: measurement requires a PaintContext, so tab rectangles are
 // computed during paintSelf from that context and cached; hit-testing uses
@@ -38,6 +38,7 @@ public:
 
     struct Tab {
         std::string title;
+        bool dirty = false; // unsaved changes: a dot is drawn before the close button
     };
 
     // Replaces the model. activeIndex beyond the list resets to nullopt.

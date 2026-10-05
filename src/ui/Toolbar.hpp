@@ -28,6 +28,12 @@ public:
     // preferredSize's width).
     void addItem(std::unique_ptr<Widget> item, double spacingAfter = kDefaultItemSpacing);
 
+    // Hides/shows an item (it keeps its size, takes no space and consumes no
+    // input while hidden; a zero-size frame is the hidden state). No-op for a
+    // widget that is not an item of this toolbar.
+    void setItemVisible(const Widget* item, bool visible);
+    bool itemVisible(const Widget* item) const { return !hiddenSizes_.contains(item); }
+
     double height() const { return height_; }
 
     // Width: padding + item widths + inter-item gaps; height: bar height.
@@ -41,6 +47,8 @@ private:
 
     double height_;
     std::unordered_map<const Widget*, double> spacingAfter_;
+    // Hidden items and the size to restore when they come back.
+    std::unordered_map<const Widget*, core::Size> hiddenSizes_;
 };
 
 } // namespace rivet::ui

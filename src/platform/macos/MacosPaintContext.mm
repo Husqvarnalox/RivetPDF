@@ -6,6 +6,7 @@
 #include <map>
 #include <mutex>
 #include <string>
+#include <tuple>
 #include <utility>
 
 namespace rivet::platform {
@@ -29,24 +30,44 @@ void applyStrokeColor(CGContextRef context, const rivet::ui::Color& color) {
 // cache is mutex-guarded regardless.
 CTFontRef cachedFontFor(const rivet::ui::Font& font) {
     static std::mutex mutex;
-    static std::map<std::pair<double, int>, CTFontRef> cache;
+    static std::map<std::tuple<double, int, bool, bool>, CTFontRef> cache;
 
-    const std::pair<double, int> key{font.size, static_cast<int>(font.weight)};
+    const std::tuple<double, int, bool, bool> key{font.size, static_cast<int>(font.weight), font.italic,
+                                                  font.monospace};
     {
         const std::lock_guard<std::mutex> lock(mutex);
         const auto it = cache.find(key);
         if (it != cache.end()) return it->second;
     }
 
-    CTFontRef created = CTFontCreateUIFontForLanguage(kCTFontUIFontSystem, font.size, nullptr);
-    if (created != nullptr && font.weight != rivet::ui::Font::Weight::Regular) {
+    CTFontRef created = CTFontCreateUIFontForLanguage(
+        font.monospace ? kCTFontUIFontUserFixedPitch : kCTFontUIFontSystem, font.size, nullptr);
+    if (created != nullptr) {
         // Semibold and Bold both come from the symbolic bold trait; the system
         // font family has no distinct semibold member exposed this way.
-        const CTFontSymbolicTraits bold = kCTFontTraitBold;
-        CTFontRef styled = CTFontCreateCopyWithSymbolicTraits(created, font.size, nullptr, bold, bold);
-        if (styled != nullptr) {
-            CFRelease(created);
-            created = styled;
+        CTFontSymbolicTraits traits = 0;
+        if (font.weight != rivet::ui::Font::Weight::Regular) traits |= kCTFontTraitBold;
+        if (font.italic) traits |= kCTFontTraitItalic;
+        if (traits != 0) {
+            CTFontRef styled = CTFontCreateCopyWithSymbolicTraits(created, font.size, nullptr, traits, traits);
+            if (styled == nullptr && font.italic) {
+                // No italic face for this family/weight: synthetic oblique
+                // (about 12 degrees of shear) on top of the bold variant.
+                CTFontRef base = created;
+                if (font.weight != rivet::ui::Font::Weight::Regular) {
+                    CTFontRef bold = CTFontCreateCopyWithSymbolicTraits(
+                        created, font.size, nullptr, kCTFontTraitBold, kCTFontTraitBold);
+                    if (bold != nullptr) base = bold;
+                }
+                const CGAffineTransform shear = CGAffineTransformMake(1.0, 0.0, 0.21, 1.0, 0.0, 0.0);
+                styled = CTFontCreateCopyWithAttributes(base, font.size, &shear, nullptr);
+                if (base != created) CFRelease(base);
+            }
+            // Otherwise (bold unavailable) the regular face is kept.
+            if (styled != nullptr) {
+                CFRelease(created);
+                created = styled;
+            }
         }
     }
 

@@ -1,8 +1,8 @@
 # Rivet
 
-**A fast, native, open-source PDF editor for Windows, macOS, and Linux.**
+**A fast, native, open-source document editor for Windows, macOS, and Linux.**
 
-Rivet is an open-source PDF editor focused on performance, simplicity, privacy, and full local control.
+Rivet is an open-source document editor for PDF and Markdown, focused on performance, simplicity, privacy, and full local control.
 
 The long-term goal is simple:
 
@@ -19,13 +19,24 @@ Your documents stay on your computer.
 
 ## Status
 
-> **Early development** - Phase 5 (Content Editing) is **CLOSED**.
+> **Early development** - Phase 5 (Content Editing) and Phase 6 (Markdown) in progress.
 
-Rivet is under active development. The macOS build currently provides a PDF viewer (tabs, thumbnails, outline, search, text selection, printing), page-level editing (multi-select, drag reorder, rotate, delete, duplicate, crop, import/merge, extract, split, undo/redo, background Save / Save As with atomic file replacement and unsaved-changes prompts), annotations (markup, notes, ink, shapes, stamps) and content editing (select, move, resize, delete page objects; retype existing text in place; add text; replace images). Form editing is not implemented yet.
+Rivet is under active development. The macOS build currently provides:
 
-Known limitations (details in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#phase-3-status-closed-2026-10-02) and its [Phase 5 status](docs/ARCHITECTURE.md#phase-5-status-closed-2026-10-03)): extract and split do not carry document-level structure (outline, metadata, forms, labels); undo history does not survive a save; editing is paused while a save runs; reviewing several unsaved tabs on window close saves only one of them per pass; split never overwrites existing files (atomically on macOS, best effort elsewhere); pages whose content PDFium cannot regenerate faithfully are read-only for content tools; existing objects cannot be reordered in z; bundled fallback fonts cover Latin, Greek and Cyrillic only.
+**PDF**: tabs, thumbnails, outline, search, text selection, printing; page-level editing (multi-select, drag reorder, rotate, delete, duplicate, crop, import/merge, extract, split, undo/redo, background Save / Save As with atomic file replacement and unsaved-changes prompts); annotations (markup, notes, ink, shapes, stamps); content editing (select, move, resize, delete page objects; retype existing text in place; add text; replace images).
 
-The project is not ready for daily use yet. Windows and Linux shells are not implemented; only the portable layers build and are tested there.
+**Markdown**: read-only viewing with source text editing. Rendered view (read-only; no WYSIWYG editing); Source view for text editing with live preview; Split view showing both. Edit text, undo/redo with dirty tracking and background save.
+
+**Not yet implemented:**
+- Markdown WYSIWYG / visual editing in Rendered mode.
+- Markdown Export to PDF and Print.
+- Markdown features: Mermaid diagrams, math rendering (LaTeX/MathML).
+- PDF forms; PDF Extract/Split document-level structure (outline, metadata, labels).
+- Windows and Linux shells (portable layers build and are tested on both).
+
+Known PDF limitations (details in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#phase-3-status-closed-2026-10-02) and [Phase 5 status](docs/ARCHITECTURE.md#phase-5-status-closed-2026-10-03)): editing is paused while a save runs; reviewing several unsaved tabs on window close saves only one per pass; split never overwrites existing files (atomically on macOS, best effort elsewhere); pages whose content PDFium cannot regenerate faithfully are read-only for content tools; existing objects cannot be reordered in z; bundled fallback fonts cover Latin, Greek and Cyrillic only.
+
+The project is not ready for daily use yet. macOS is the primary platform; Windows and Linux shells are not yet available.
 
 ---
 

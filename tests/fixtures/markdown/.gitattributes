@@ -1,0 +1,2 @@
+# Fixtures must be byte-exact (CRLF, BOM).
+*.md -text

@@ -15,9 +15,11 @@
 
 #import <AppKit/AppKit.h>
 
+#include <filesystem>
 #include <functional>
 #include <memory>
 #include <utility>
+#include <vector>
 
 // Note: ObjC classes must live at global scope (no C++ namespaces).
 
@@ -34,6 +36,7 @@
 - (IBAction)pageEdit:(id)sender;
 - (IBAction)annotationCommand:(id)sender;
 - (IBAction)contentCommand:(id)sender;
+- (IBAction)markdownMode:(id)sender;
 @end
 
 @implementation RivetAppBridge
@@ -58,6 +61,12 @@
     if (item == nullptr) return;
     shell->performContent(static_cast<rivet::app::ContentCommand>(item.tag));
 }
+- (IBAction)markdownMode:(id)sender {
+    if (shell == nullptr) return;
+    NSMenuItem* item = sender;
+    if (item == nullptr) return;
+    shell->performMarkdownMode(static_cast<rivet::app::MarkdownDisplayMode>(item.tag));
+}
 - (IBAction)fileCommand:(id)sender {
     if (shell == nullptr) return;
     NSMenuItem* item = sender;
@@ -75,6 +84,12 @@
     }
     if (item.action == @selector(contentCommand:)) {
         return shell->canPerformContent(static_cast<rivet::app::ContentCommand>(item.tag)) ? YES : NO;
+    }
+    if (item.action == @selector(markdownMode:)) {
+        const auto mode = shell->activeMarkdownMode();
+        item.state = (mode.has_value() && static_cast<NSInteger>(*mode) == item.tag) ? NSControlStateValueOn
+                                                                                     : NSControlStateValueOff;
+        return shell->canPerformMarkdownMode() ? YES : NO;
     }
     if (item.action == @selector(fileCommand:)) {
         return shell->canPerformFile(static_cast<rivet::app::FileCommand>(item.tag)) ? YES : NO;
@@ -94,6 +109,8 @@
     std::function<void()> teardown;
     // Quit interception (non-owning; main() keeps the hooks alive).
     rivet::platform::LifecycleHooks* hooks;
+    // Opens files handed over by the system (non-owning shell access).
+    std::function<void(const std::vector<std::filesystem::path>&)> openPaths;
 }
 @property(nonatomic, strong) NSWindow* window; // keeps the window alive
 // NSWindow.delegate is weak: the app delegate owns the window delegate.
@@ -103,6 +120,15 @@
 @implementation RivetAppDelegate
 - (BOOL)applicationShouldTerminateAfterLastWindowClosed:(NSApplication*)application {
     return YES;
+}
+
+- (void)application:(NSApplication*)application openURLs:(NSArray<NSURL*>*)urls {
+    (void)application;
+    std::vector<std::filesystem::path> paths;
+    for (NSURL* url in urls) {
+        if (url.isFileURL && url.path != nil) paths.emplace_back(url.path.UTF8String);
+    }
+    if (openPaths && !paths.empty()) openPaths(paths);
 }
 
 - (NSApplicationTerminateReply)applicationShouldTerminate:(NSApplication*)sender {
@@ -184,6 +210,27 @@ int main(int argc, char** argv) {
         redoItem.keyEquivalentModifierMask = NSEventModifierFlagCommand | NSEventModifierFlagShift;
         for (NSMenuItem* item in editMenu.itemArray) [item setTarget:bridge];
         [editMenuItem setSubmenu:editMenu];
+
+        // View > Markdown display mode (Rendered / Source / Split). Enabled
+        // only while a Markdown tab is active.
+        NSMenuItem* viewMenuItem = [[NSMenuItem alloc] init];
+        [menuBar addItem:viewMenuItem];
+        NSMenu* viewMenu = [[NSMenu alloc] initWithTitle:@"View"];
+        const struct {
+            NSString* title;
+            NSString* key;
+            rivet::app::MarkdownDisplayMode mode;
+        } modeItems[] = {{@"Rendered", @"1", rivet::app::MarkdownDisplayMode::Rendered},
+                         {@"Source", @"2", rivet::app::MarkdownDisplayMode::Source},
+                         {@"Split", @"3", rivet::app::MarkdownDisplayMode::Split}};
+        for (const auto& entry : modeItems) {
+            NSMenuItem* item = [viewMenu addItemWithTitle:entry.title
+                                                   action:@selector(markdownMode:)
+                                            keyEquivalent:entry.key];
+            item.tag = static_cast<NSInteger>(entry.mode);
+            [item setTarget:bridge];
+        }
+        [viewMenuItem setSubmenu:viewMenu];
 
         // Page > structure editing over the selection (or the current page).
         NSMenuItem* pageMenuItem = [[NSMenuItem alloc] init];
@@ -340,11 +387,18 @@ int main(int argc, char** argv) {
             return shellPtr->handleKeyEvent(event);
         }];
         bridge->shell = shell.get();
-        appDelegate->teardown = [&shell, bridge, contentView, hooks = lifecycle.get()] {
+        const auto openPaths = [shellPtr = shell.get()](const std::vector<std::filesystem::path>& paths) {
+            for (const auto& path : paths) shellPtr->openDocument(path);
+        };
+        appDelegate->openPaths = openPaths;
+        [contentView setFileDropHandler:openPaths];
+        appDelegate->teardown = [&shell, appDelegate, bridge, contentView, hooks = lifecycle.get()] {
             // Detach every borrower of the widget tree first, then destroy
             // the shell (workspace shutdown waits for background opens, the
             // sessions drain their worker streams, the scheduler joins).
             bridge->shell = nullptr;
+            appDelegate->openPaths = nullptr;
+            [contentView setFileDropHandler:nullptr];
             // Handlers may capture shell state: drop them before the shell.
             hooks->clearHandlers();
             [contentView setKeyHandler:nullptr];
@@ -357,8 +411,9 @@ int main(int argc, char** argv) {
         // Open-on-launch: `rivet /path/to/document.pdf`. The path must exist;
         // failures surface in the shell's status label exactly like a failed
         // dialog open.
-        if (argc > 1 && argv[1] != nullptr) {
-            shell->openDocument(std::filesystem::path(argv[1]));
+        // Every non-option argument is opened (PDF or Markdown by extension).
+        for (int i = 1; i < argc; ++i) {
+            if (argv[i] != nullptr && argv[i][0] != '-') shell->openDocument(std::filesystem::path(argv[i]));
         }
         if (@available(macOS 14.0, *)) {
             [NSApp activate];

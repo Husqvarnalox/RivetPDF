@@ -6,6 +6,7 @@
 #include "core/async/AsyncScope.hpp"
 #include "core/async/IMainThreadDispatcher.hpp"
 #include "core/async/TaskScheduler.hpp"
+#include "app/MarkdownTabState.hpp"
 #include "editor/DocumentSession.hpp"
 #include "editor/SelectionModel.hpp"
 #include "editor/TextSearchController.hpp"
@@ -37,8 +38,14 @@ struct TabIdTag;
 using TabId = core::StrongId<TabIdTag>;
 
 // One open document tab. A tab exists in Loading state while its document
-// opens on a background task, then becomes Ready (session attached) or Error
+// opens on a background task, then becomes Ready (payload attached) or Error
 // (message shown in the tab's view).
+//
+// The tab hosts one of two document kinds, fixed at creation from the file
+// extension (DocumentKind): a PDF payload (session/viewState/selection/
+// search/currentPage; the accessors below are the PDF payload and are null
+// or inert for Markdown tabs) or a Markdown payload (markdown()). Kind-
+// agnostic queries (isDirty, canUndo, ...) work for both.
 //
 // View state (zoom/scroll) is deliberately separate from DocumentSession:
 // one session may serve several views later, and per-tab view state must
@@ -54,12 +61,16 @@ public:
     DocumentTab& operator=(const DocumentTab&) = delete;
 
     TabId id() const { return id_; }
+    DocumentKind kind() const { return kind_; }
+    bool isPdf() const { return kind_ == DocumentKind::Pdf; }
+    bool isMarkdown() const { return kind_ == DocumentKind::Markdown; }
     const std::filesystem::path& path() const { return path_; }
     // Normalized identity used for duplicate detection (never displayed).
     const std::filesystem::path& dedupKey() const { return dedupKey_; }
     const std::string& title() const { return title_; }
     State state() const { return state_; }
     const std::string& errorText() const { return errorText_; }
+    // PDF payload (null unless this is a Ready PDF tab).
     editor::DocumentSession* session() { return session_.get(); }
     const editor::DocumentSession* session() const { return session_.get(); }
     render::ViewerState& viewState() { return viewState_; }
@@ -71,6 +82,20 @@ public:
     const editor::SelectionModel& selection() const { return selection_; }
     editor::TextSearchController* search() { return search_.get(); }
     const editor::TextSearchController* search() const { return search_.get(); }
+
+    // Markdown payload (null unless this is a Ready Markdown tab).
+    MarkdownTabState* markdown() { return markdown_.get(); }
+    const MarkdownTabState* markdown() const { return markdown_.get(); }
+
+    // Kind-agnostic document queries. All false/no-op without a payload.
+    bool hasContent() const { return session_ != nullptr || markdown_ != nullptr; }
+    bool isDirty() const;
+    // Whether Save has anything to write to (a Ready tab with a payload).
+    bool canSave() const { return state_ == State::Ready && hasContent(); }
+    bool canUndo() const;
+    bool canRedo() const;
+    bool undo();
+    bool redo();
 
     std::size_t currentPage() const { return currentPage_; }
     void setCurrentPage(std::size_t page) { currentPage_ = page; }
@@ -88,6 +113,7 @@ public:
 
     // Called by the workspace on the main thread when the open completes.
     void attachSession(std::unique_ptr<editor::DocumentSession> session);
+    void attachMarkdown(std::unique_ptr<MarkdownTabState> markdown);
     void setError(std::string text);
     // Password-required outcome: the tab stays open and asks for a password.
     void markNeedsPassword(std::string message);
@@ -105,6 +131,7 @@ private:
     void releaseSession();
 
     TabId id_;
+    DocumentKind kind_ = DocumentKind::Pdf;
     std::uint64_t openRequest_ = 0;
     std::filesystem::path path_;
     std::filesystem::path dedupKey_;
@@ -115,6 +142,7 @@ private:
     render::ViewerState viewState_;
     editor::SelectionModel selection_;
     std::unique_ptr<editor::TextSearchController> search_;
+    std::unique_ptr<MarkdownTabState> markdown_;
     std::size_t currentPage_ = 0;
     bool viewStateInitialized_ = false;
 };
@@ -123,8 +151,11 @@ private:
 // the asynchronous open pipeline:
 //
 //   openDocument(path) -> Loading tab appears and becomes active
-//                      -> background task: DocumentSession::create
-//                      -> main-thread completion: attach session | error
+//                      -> background task: DocumentSession::create (PDF) or
+//                         MarkdownTabState::load (Markdown, chosen by the
+//                         file extension; never touches the engine, so it
+//                         works without PDFium)
+//                      -> main-thread completion: attach payload | error
 //
 // Opening a file that is already open activates its existing tab instead of
 // duplicating it. The dedup key is the absolute, lexically-normalized path;
@@ -223,9 +254,13 @@ private:
         std::uint64_t request = 0;
         bool isRetry = false; // retry failures re-enter NeedsPassword
         std::optional<core::Result<std::unique_ptr<editor::DocumentSession>>> result;
+        // Markdown opens fill this instead (the file is read and decoded on
+        // the worker; no engine involved).
+        std::optional<core::Result<std::unique_ptr<MarkdownTabState>>> markdownResult;
     };
 
     void handleOpenCompleted(const std::shared_ptr<OpenOperation>& operation);
+    void finishOpen(const std::shared_ptr<OpenOperation>& operation);
     void startOpen(DocumentTab& tab, std::string password, bool isRetry);
     void activate(std::size_t index);
     void fireTabsChanged();

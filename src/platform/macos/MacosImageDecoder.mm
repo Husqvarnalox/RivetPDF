@@ -87,6 +87,21 @@ std::optional<core::Error> checkDimensions(std::int64_t width, std::int64_t heig
     return std::nullopt;
 }
 
+// Display limits of decodeBgra() (null = none), from header dimensions only.
+std::optional<core::Error> checkDisplayLimits(std::int64_t width, std::int64_t height,
+                                              const IImageDecoder::BgraLimits* limits) {
+    if (limits == nullptr) return std::nullopt;
+    if (width > static_cast<std::int64_t>(limits->maxSide) ||
+        height > static_cast<std::int64_t>(limits->maxSide)) {
+        return fail(core::ErrorCode::InvalidArgument, "image side exceeds the display limit");
+    }
+    const auto bytes = static_cast<std::uint64_t>(width) * static_cast<std::uint64_t>(height) * 4u;
+    if (bytes > limits->maxDecodedBytes) {
+        return fail(core::ErrorCode::InvalidArgument, "decoded image exceeds the display byte limit");
+    }
+    return std::nullopt;
+}
+
 // Premultiplied BGRA -> straight alpha, in place.
 void unpremultiply(std::vector<std::uint8_t>& bytes) {
     for (std::size_t i = 0; i + 3 < bytes.size(); i += 4) {
@@ -107,6 +122,17 @@ void unpremultiply(std::vector<std::uint8_t>& bytes) {
 
 core::Result<pdf::PdfImageData> MacosImageDecoder::decode(
     std::span<const std::uint8_t> encoded) const {
+    return decodeImpl(encoded, true, nullptr);
+}
+
+core::Result<pdf::PdfImageData> MacosImageDecoder::decodeBgra(std::span<const std::uint8_t> encoded,
+                                                              const BgraLimits& limits) const {
+    return decodeImpl(encoded, false, &limits);
+}
+
+core::Result<pdf::PdfImageData> MacosImageDecoder::decodeImpl(std::span<const std::uint8_t> encoded,
+                                                              bool passThroughJpeg,
+                                                              const BgraLimits* limits) const {
     try {
         if (encoded.empty()) {
             return std::unexpected(fail(core::ErrorCode::InvalidArgument, "image data is empty"));
@@ -153,13 +179,14 @@ core::Result<pdf::PdfImageData> MacosImageDecoder::decode(
                 fail(core::ErrorCode::InvalidDocument, "image has no readable dimensions"));
         }
         if (auto limit = checkDimensions(width, height)) return std::unexpected(*limit);
+        if (auto limit = checkDisplayLimits(width, height, limits)) return std::unexpected(*limit);
 
         std::int64_t orientation = 1;
         if (!numberFrom(props.get(), kCGImagePropertyOrientation, orientation)) orientation = 1;
         const bool plainlyOriented = orientation == 1;
 
         // JPEG pass-through: 8-bit RGB or gray, unrotated, and decodable.
-        if (isJpeg && plainlyOriented) {
+        if (isJpeg && plainlyOriented && passThroughJpeg) {
             std::int64_t depth = 0;
             const bool haveDepth = numberFrom(props.get(), kCGImagePropertyDepth, depth);
             const void* model = CFDictionaryGetValue(props.get(), kCGImagePropertyColorModel);
@@ -210,6 +237,7 @@ core::Result<pdf::PdfImageData> MacosImageDecoder::decode(
         const auto outWidth = static_cast<std::int64_t>(CGImageGetWidth(image.get()));
         const auto outHeight = static_cast<std::int64_t>(CGImageGetHeight(image.get()));
         if (auto limit = checkDimensions(outWidth, outHeight)) return std::unexpected(*limit);
+        if (auto limit = checkDisplayLimits(outWidth, outHeight, limits)) return std::unexpected(*limit);
 
         const std::size_t stride = static_cast<std::size_t>(outWidth) * 4;
         pdf::PdfImageData out;

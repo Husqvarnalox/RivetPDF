@@ -34,6 +34,10 @@ SearchBarController::SearchBarController(ShellContext& context, ui::Widget& pare
     field_->setFrame(core::Rect{8.0, 5.0, 180.0, 24.0});
     field_->setOnFocusRequested([this] { context_.setFocus(field_); });
     field_->setOnTextChanged([this](const std::string& text) {
+        if (context_.readyMarkdownTab() != nullptr) {
+            if (ISearchTarget* target = markdownTarget(); target != nullptr) target->startSearch(text);
+            return;
+        }
         if (DocumentTab* tab = context_.readyActiveTab(); tab != nullptr && tab->search() != nullptr) {
             tab->search()->start(text);
         }
@@ -61,6 +65,31 @@ SearchBarController::SearchBarController(ShellContext& context, ui::Widget& pare
     // Hidden by default. Direct frame here: setVisible() relayouts the whole
     // shell, which is not fully built yet.
     bar_->setFrame(kHiddenFrame);
+}
+
+void SearchBarController::setMarkdownTargetProvider(std::function<ISearchTarget*()> provider) {
+    markdownProvider_ = std::move(provider);
+}
+
+ISearchTarget* SearchBarController::markdownTarget() {
+    if (!markdownProvider_ || context_.readyMarkdownTab() == nullptr) return nullptr;
+    ISearchTarget* target = markdownProvider_();
+    if (target != nullptr && target != hookedTarget_) {
+        hookedTarget_ = target;
+        target->setOnSearchResultsChanged([this] {
+            if (context_.readyMarkdownTab() == nullptr) return;
+            updateSearchUi();
+            context_.viewport.invalidate();
+        });
+    }
+    return target;
+}
+
+void SearchBarController::bindMarkdownTab() {
+    if (ISearchTarget* target = markdownTarget(); target != nullptr) target->startSearch({});
+    field_->setText({});
+    countLabel_->setText("");
+    setVisible(false);
 }
 
 void SearchBarController::bindTab(DocumentTab& tab) {
@@ -95,6 +124,13 @@ void SearchBarController::setVisible(bool visible) {
     visible_ = visible;
     if (!visible) {
         if (field_->isFocused()) context_.setFocus(nullptr);
+        if (context_.readyMarkdownTab() != nullptr) {
+            // Highlights go away with the bar.
+            if (ISearchTarget* target = markdownTarget(); target != nullptr) target->startSearch({});
+            context_.relayout();
+            context_.viewport.invalidate();
+            return;
+        }
         if (DocumentTab* tab = context_.readyActiveTab(); tab != nullptr && tab->search() != nullptr) {
             tab->search()->cancel();
         }
@@ -117,6 +153,17 @@ bool SearchBarController::handleEscape() {
 const std::string& SearchBarController::countText() const { return countLabel_->text(); }
 
 void SearchBarController::step(int delta) {
+    if (context_.readyMarkdownTab() != nullptr) {
+        if (ISearchTarget* target = markdownTarget(); target != nullptr) {
+            if (delta < 0) {
+                target->previousMatch();
+            } else {
+                target->nextMatch();
+            }
+            updateSearchUi();
+        }
+        return;
+    }
     DocumentTab* tab = context_.readyActiveTab();
     if (tab == nullptr || tab->search() == nullptr) return;
     if (delta < 0) {
@@ -128,6 +175,18 @@ void SearchBarController::step(int delta) {
 }
 
 void SearchBarController::updateSearchUi() {
+    if (context_.readyMarkdownTab() != nullptr) {
+        const ISearchTarget* target = markdownTarget();
+        if (target == nullptr || target->searchQuery().empty()) {
+            countLabel_->setText("");
+        } else if (target->matchCount() == 0) {
+            countLabel_->setText(target->searching() ? "Searching…" : "No matches");
+        } else {
+            const std::optional<std::size_t> active = target->currentMatch();
+            countLabel_->setText(std::format("{} / {}", active ? *active + 1 : 0, target->matchCount()));
+        }
+        return;
+    }
     DocumentTab* tab = context_.readyActiveTab();
     if (tab == nullptr || tab->search() == nullptr) return;
     const editor::TextSearchController* search = tab->search();
@@ -145,6 +204,10 @@ void SearchBarController::updateSearchUi() {
 }
 
 void SearchBarController::revealActiveMatch() {
+    if (context_.readyMarkdownTab() != nullptr) {
+        if (ISearchTarget* target = markdownTarget(); target != nullptr) target->revealCurrentMatch();
+        return;
+    }
     DocumentTab* tab = context_.readyActiveTab();
     if (tab == nullptr || tab->search() == nullptr) return;
     const editor::TextSearchController* search = tab->search();

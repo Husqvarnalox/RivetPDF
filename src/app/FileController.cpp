@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 #include "app/FileController.hpp"
 
+#include <cctype>
 #include <format>
 #include <system_error>
 #include <utility>
@@ -45,7 +46,7 @@ FileController::WorkerToken FileController::enterWorkerScope() {
 
 DocumentTab* FileController::liveTab(TabId id) const {
     DocumentTab* tab = context_.workspace.tabById(id);
-    return tab != nullptr && tab->session() != nullptr ? tab : nullptr;
+    return tab != nullptr && tab->hasContent() ? tab : nullptr;
 }
 
 DocumentTab* FileController::readyTab(TabId id) const {
@@ -60,9 +61,22 @@ void FileController::installLifecycleHandlers() {
         [this](platform::IAppLifecycle::QuitReply reply) { handleQuitRequest(std::move(reply)); });
 }
 
+// The tab a file command acts on: any Ready tab with a payload (Save/Save As
+// work for every kind; the page commands below are PDF-only).
+DocumentTab* FileController::activeFileTab() const {
+    DocumentTab* tab = context_.workspace.activeTab();
+    return tab != nullptr && tab->canSave() ? tab : nullptr;
+}
+
+std::filesystem::path FileController::savePathOf(const DocumentTab& tab) {
+    return tab.session() != nullptr ? tab.session()->path() : tab.path();
+}
+
 bool FileController::canPerform(FileCommand command) const {
-    const DocumentTab* tab = context_.readyActiveTab();
+    const DocumentTab* tab = activeFileTab();
     if (tab == nullptr) return false;
+    if (command == FileCommand::Save || command == FileCommand::SaveAs) return true;
+    if (!tab->isPdf()) return false; // import/merge/extract/split are PDF page operations
     if (command == FileCommand::Extract && selectionProvider_ != nullptr) {
         return !selectionProvider_().empty();
     }
@@ -71,8 +85,12 @@ bool FileController::canPerform(FileCommand command) const {
 }
 
 void FileController::perform(FileCommand command) {
-    DocumentTab* tab = context_.readyActiveTab();
+    DocumentTab* tab = activeFileTab();
     if (tab == nullptr) return;
+    if (command != FileCommand::Save && command != FileCommand::SaveAs && !tab->isPdf()) {
+        setStatus_("This command is only available for PDF documents");
+        return;
+    }
     switch (command) {
     case FileCommand::Save: save(*tab); break;
     case FileCommand::SaveAs: saveAs(*tab); break;
@@ -95,13 +113,13 @@ bool FileController::isSaving(TabId tab) const {
 }
 
 void FileController::save(DocumentTab& tab) {
-    if (tab.session() == nullptr || tab.state() != DocumentTab::State::Ready) return;
+    if (!tab.canSave()) return;
     commitPendingEdits();
-    requestSave(tab, tab.session()->path(), false, true);
+    requestSave(tab, savePathOf(tab), false, true);
 }
 
 void FileController::saveAs(DocumentTab& tab) {
-    if (tab.session() == nullptr || tab.state() != DocumentTab::State::Ready) return;
+    if (!tab.canSave()) return;
     commitPendingEdits();
     if (context_.services.saveDialog == nullptr) {
         setStatus_(kUnavailable);
@@ -112,7 +130,21 @@ void FileController::saveAs(DocumentTab& tab) {
     options.suggestedName = tab.path().filename().string();
     options.title = "Save As";
     options.prompt = "Save";
-    const std::optional<std::filesystem::path> chosen = context_.services.saveDialog->runSavePanel(options);
+    if (tab.isMarkdown()) {
+        // Keep the Markdown extension: the tab's own first, then the others.
+        std::string own = tab.path().extension().string();
+        if (!own.empty()) own.erase(own.begin());
+        for (char& c : own) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        if (!hasMarkdownExtension(tab.path())) {
+            own = "md";
+            options.suggestedName = tab.path().stem().string() + ".md";
+        }
+        options.allowedExtensions.push_back(own);
+        for (const std::string_view known : kMarkdownExtensions) {
+            if (known != own) options.allowedExtensions.emplace_back(known);
+        }
+    }
+    std::optional<std::filesystem::path> chosen = context_.services.saveDialog->runSavePanel(options);
     if (!chosen.has_value()) return; // cancelled: nothing changes
     // The panel may have run completions (a save closing this very tab).
     DocumentTab* current = readyTab(tabId);
@@ -120,7 +152,11 @@ void FileController::saveAs(DocumentTab& tab) {
         setStatus_("Save As cancelled: the document was closed");
         return;
     }
-    if (*chosen == current->session()->path()) {
+    // A Markdown document stays Markdown: a destination without a Markdown
+    // extension (a backend that ignores the filter) gets ".md".
+    if (current->isMarkdown() && !hasMarkdownExtension(*chosen)) chosen->replace_extension(
+        chosen->extension().empty() ? ".md" : chosen->extension().string() + ".md");
+    if (*chosen == savePathOf(*current)) {
         save(*current);
         return;
     }
@@ -135,7 +171,7 @@ void FileController::saveAs(DocumentTab& tab) {
 
 void FileController::requestSave(DocumentTab& tab, std::filesystem::path destination,
                                  bool closeTabWhenDone, bool interactive) {
-    if (tab.session() == nullptr) return;
+    if (!tab.hasContent()) return;
     commitPendingEdits();
     if (activeSave_.has_value()) {
         if (interactive) {
@@ -150,6 +186,10 @@ void FileController::requestSave(DocumentTab& tab, std::filesystem::path destina
     WorkerToken token = enterWorkerScope();
     if (token == nullptr) return; // the controller is being destroyed
     SaveRequest request{tab.id(), ++generationCounter_, std::move(destination), closeTabWhenDone};
+    if (tab.isMarkdown()) {
+        launchMarkdownSave(tab, std::move(request), std::move(token));
+        return;
+    }
 
     core::Result<editor::DocumentWriteJob> job =
         editor::makeSaveJob(*tab.session(), request.destination);
@@ -197,9 +237,13 @@ void FileController::startNextSave() {
     SaveRequest request = std::move(queuedSaves_.front());
     queuedSaves_.pop_front();
     DocumentTab* tab = context_.workspace.tabById(request.tab);
-    if (tab == nullptr || tab->session() == nullptr || tab->state() != DocumentTab::State::Ready) {
+    if (tab == nullptr || !tab->canSave()) {
         // Gone meanwhile: nothing left to lose. Still present but unusable: not saved.
         saveSettled(request.tab, tab == nullptr);
+        return;
+    }
+    if (tab->isMarkdown()) {
+        launchMarkdownSave(*tab, std::move(request), std::move(token));
         return;
     }
     core::Result<editor::DocumentWriteJob> job =
@@ -215,6 +259,64 @@ void FileController::startNextSave() {
     activeSave_ = request;
     setStatus_("Saving…");
     postSaveWrite(std::move(*job), request, std::move(token));
+}
+
+// Markdown save: the source is snapshotted on the main thread (the editing
+// lock keeps the snapshot equal to the state that gets marked saved); the
+// worker encodes it (line endings, BOM) and writes it through the atomic
+// writer, so a failure leaves the original file untouched and the tab dirty.
+void FileController::launchMarkdownSave(DocumentTab& tab, SaveRequest request, WorkerToken token) {
+    MarkdownTabState& markdown = *tab.markdown();
+    markdown.setEditingLocked(true);
+    if (request.closeTabWhenDone) closeAfterSave_.push_back(request.tab);
+    activeSave_ = request;
+    setStatus_("Saving…");
+    auto result = std::make_shared<std::optional<core::Status>>();
+    scheduler_.post([this, token = std::move(token), result, source = markdown.source(),
+                     lineEnding = markdown.lineEnding(), bom = markdown.hasBom(), request,
+                     alive = alive_, faults = markdownFaultInjector_]() mutable {
+        const std::string bytes = encodeMarkdownBytes(source, lineEnding, bom);
+        core::io::AtomicWriteOptions options;
+        options.faultInjector = faults;
+        *result = core::io::writeFileAtomically(
+            request.destination,
+            [&bytes](core::io::IByteSink& sink) { return sink.write(bytes.data(), bytes.size()); }, options);
+        if (context_.services.mainDispatcher != nullptr) {
+            context_.services.mainDispatcher->post([this, result, request, alive] {
+                if (!*alive) return;
+                handleMarkdownSaveCompleted(result, request);
+            });
+        } else if (*alive) {
+            handleMarkdownSaveCompleted(result, request);
+        }
+    });
+}
+
+void FileController::handleMarkdownSaveCompleted(std::shared_ptr<std::optional<core::Status>> result,
+                                                 SaveRequest request) {
+    activeSave_.reset();
+    DocumentTab* tab = context_.workspace.tabById(request.tab);
+    if (tab == nullptr || tab->markdown() == nullptr || !result->has_value()) {
+        saveSettled(request.tab, tab == nullptr);
+        return;
+    }
+    MarkdownTabState& markdown = *tab->markdown();
+    markdown.setEditingLocked(false);
+    const core::Status& written = **result;
+    if (!written.has_value()) {
+        // Atomic replace: the destination is intact; the source stays in
+        // memory and the tab stays dirty.
+        setStatus_("Save failed: " + describeFailure(written.error()));
+        saveSettled(request.tab, false);
+        return;
+    }
+    if (request.destination != tab->path()) {
+        context_.workspace.retitleTab(tab->id(), request.destination);
+        if (notifyDocumentChanged_ != nullptr) notifyDocumentChanged_();
+    }
+    markdown.markSaved();
+    setStatus_(std::format("Saved {}", tab->path().filename().string()));
+    saveSettled(request.tab, true);
 }
 
 void FileController::handleSaveCompleted(
@@ -265,6 +367,9 @@ void FileController::handleSaveCompleted(
 }
 
 void FileController::saveSettled(TabId tab, bool saved) {
+    // Dirty markers (tab strip, window) follow every settled save, also of
+    // background tabs.
+    if (notifyDocumentChanged_ != nullptr) notifyDocumentChanged_();
     // The user chose to close this tab behind its save. A failed save must
     // never discard the edits: the tab stays open (and dirty).
     if (std::erase(closeAfterSave_, tab) > 0 && saved) {
@@ -588,7 +693,7 @@ std::vector<TabId> FileController::dirtyTabs() const {
     std::vector<TabId> dirty;
     for (std::size_t i = 0; i < context_.workspace.tabCount(); ++i) {
         DocumentTab* tab = context_.workspace.tab(i);
-        if (tab != nullptr && tab->session() != nullptr && tab->session()->isDirty()) {
+        if (tab != nullptr && tab->hasContent() && tab->isDirty()) {
             dirty.push_back(tab->id());
         }
     }
@@ -601,10 +706,10 @@ void FileController::discardAndClose(TabId id) {
 }
 
 bool FileController::confirmCloseTab(DocumentTab& tab) {
-    if (tab.session() == nullptr) return true;
+    if (!tab.hasContent()) return true;
     // An open note editor makes the document dirty only once committed.
     commitPendingEdits();
-    if (!tab.session()->isDirty()) return true;
+    if (!tab.isDirty()) return true;
 
     // A prompt that cannot be asked (no alert service) must never discard
     // data silently: treat it as Cancel.
@@ -626,7 +731,7 @@ bool FileController::confirmCloseTab(DocumentTab& tab) {
         DocumentTab* current = liveTab(tabId);
         // Gone or already clean (its save settled during the prompt): there
         // is nothing left to save and the tab may close now.
-        if (current == nullptr || !current->session()->isDirty()) return true;
+        if (current == nullptr || !current->isDirty()) return true;
         if (isSaving(tabId)) {
             // Keep the tab open; it closes when its save settles.
             if (std::find(closeAfterSave_.begin(), closeAfterSave_.end(), tabId) == closeAfterSave_.end()) {
@@ -634,7 +739,7 @@ bool FileController::confirmCloseTab(DocumentTab& tab) {
             }
             return false;
         }
-        requestSave(*current, current->session()->path(), true, true);
+        requestSave(*current, savePathOf(*current), true, true);
         return false;
     }
     }
@@ -667,7 +772,7 @@ bool FileController::confirmCloseWindow() {
         // run completions, so each tab is re-resolved right before its turn.
         for (const TabId id : dirty) {
             DocumentTab* tab = liveTab(id);
-            if (tab == nullptr || !tab->session()->isDirty()) continue;
+            if (tab == nullptr || !tab->isDirty()) continue;
             if (!confirmCloseTab(*tab)) return false;
         }
         return closeAfterSave_.empty();
@@ -725,7 +830,7 @@ void FileController::handleQuitRequest(platform::IAppLifecycle::QuitReply reply)
                 // Re-resolved before every prompt: earlier prompts may have
                 // run completions that closed or saved this tab.
                 DocumentTab* tab = liveTab(id);
-                if (tab == nullptr || !tab->session()->isDirty()) continue;
+                if (tab == nullptr || !tab->isDirty()) continue;
                 const std::string title = tab->title(); // copy: the prompt is modal
                 const platform::SaveChangesChoice perTab = context_.services.alerts->askSaveChanges(title);
                 if (perTab == platform::SaveChangesChoice::Cancel) {
@@ -758,11 +863,11 @@ void FileController::handleQuitRequest(platform::IAppLifecycle::QuitReply reply)
             continue;
         }
         if (isSaving(tabId)) continue;
-        if (!tab->session()->isDirty()) {
+        if (!tab->isDirty()) {
             saveSettled(tabId, true); // saved meanwhile: nothing to write
             continue;
         }
-        requestSave(*tab, tab->session()->path(), false, false);
+        requestSave(*tab, savePathOf(*tab), false, false);
     }
 }
 

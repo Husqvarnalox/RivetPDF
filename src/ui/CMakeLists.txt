@@ -4,8 +4,10 @@ add_library(rivet_ui STATIC
     PageThumbnailList.cpp
     PdfViewport.cpp
     ScrollBar.cpp
+    SourceEditor.cpp
     Sidebar.cpp
     TabStrip.cpp
+    TextBuffer.cpp
     TextArea.cpp
     TextField.cpp
     Toolbar.cpp

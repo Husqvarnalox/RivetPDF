@@ -1,0 +1,4 @@
+md4c v0.6.0 (tag v0.6.0, commit 7fc1815a5eeba2af7d6120a76202bf59f3b6e6e4)
+Source: https://github.com/mity/md4c  (src/md4c.c, src/md4c.h, LICENSE.md)
+License: MIT (see LICENSE.md)
+Files are unmodified upstream copies.

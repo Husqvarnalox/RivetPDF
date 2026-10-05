@@ -4,8 +4,10 @@
 
 #import <AppKit/AppKit.h>
 
+#include <filesystem>
 #include <functional>
 #include <memory>
+#include <vector>
 
 @class RivetContentView;
 
@@ -47,5 +49,10 @@ private:
 // the main thread). Returning NO passes the original event to NSView's
 // default handling.
 - (void)setKeyHandler:(std::function<bool(const rivet::ui::KeyEvent&)>)handler;
+
+// Files dropped on the view (Finder drag and drop): called on the main thread
+// with the dropped file paths. Dropping is only accepted while a handler is
+// installed.
+- (void)setFileDropHandler:(std::function<void(const std::vector<std::filesystem::path>&)>)handler;
 
 @end

@@ -8,6 +8,7 @@
 #include "core/async/AsyncScope.hpp"
 #include "core/async/IMainThreadDispatcher.hpp"
 #include "core/async/TaskScheduler.hpp"
+#include "core/io/AtomicFileWriter.hpp"
 #include "editor/DocumentSaver.hpp"
 #include "editor/DocumentSession.hpp"
 #include "editor/PageCommands.hpp"
@@ -78,6 +79,11 @@ enum class FileCommand : std::uint8_t {
 // snapshot (source documents stay alive until the worker is done), the
 // destination was atomically replaced or left intact, and there is no
 // session left to rebase.
+//
+// Markdown tabs save through the same pipeline (one save at a time, the same
+// close/quit chaining): the worker writes the encoded source with the atomic
+// writer; failure leaves the file untouched and the tab dirty. Import/merge/
+// extract/split are PDF-only.
 //
 // Dirty close/quit lifecycle (platform::IAppLifecycle): closing the window
 // or quitting prompts per dirty document (Save / Don't Save / Cancel;
@@ -158,10 +164,21 @@ public:
     // quit reply until every accepted save completed.
     void handleQuitRequest(platform::IAppLifecycle::QuitReply reply);
 
+    // TEST HOOK: fault injector handed to the atomic writer of Markdown saves
+    // (see core::io::AtomicWriteOptions::faultInjector). Production leaves it
+    // empty.
+    void setMarkdownFaultInjector(std::function<int(core::io::AtomicWriteFault)> injector) {
+        markdownFaultInjector_ = std::move(injector);
+    }
+
     bool isSaving(TabId tab) const;
     bool isSavingAnything() const { return activeSave_.has_value(); }
 
 private:
+    // Lifetime token for one worker task (null once the controller is being
+    // destroyed). Entered on the main thread when the task is posted.
+    using WorkerToken = std::shared_ptr<core::AsyncScope::Token>;
+
     // Commits edits still held by other controllers (an open note editor)
     // so the document being saved, exported or closed contains them.
     void commitPendingEdits();
@@ -180,6 +197,13 @@ private:
     void requestSave(DocumentTab& tab, std::filesystem::path destination, bool closeTabWhenDone,
                      bool interactive);
     void startNextSave();
+    // Markdown saves share activeSave_/queue/saveSettled with PDF saves; only
+    // the job and its completion differ.
+    void launchMarkdownSave(DocumentTab& tab, SaveRequest request, WorkerToken token);
+    void handleMarkdownSaveCompleted(std::shared_ptr<std::optional<core::Status>> result,
+                                     SaveRequest request);
+    DocumentTab* activeFileTab() const;
+    static std::filesystem::path savePathOf(const DocumentTab& tab);
     void handleSaveCompleted(std::shared_ptr<std::optional<editor::DocumentWriteResult>> result,
                              SaveRequest request);
     void startImport(DocumentTab& tab, std::optional<std::size_t> beforeIndex,
@@ -194,7 +218,6 @@ private:
     DocumentTab* readyTab(TabId id) const;
     // Lifetime token for one worker task (null once the controller is being
     // destroyed). Entered on the main thread when the task is posted.
-    using WorkerToken = std::shared_ptr<core::AsyncScope::Token>;
     WorkerToken enterWorkerScope();
     // Posts the write of a captured save job (shared by requestSave and
     // startNextSave).
@@ -216,6 +239,7 @@ private:
     StatusSink setStatus_;
     NotifySink notifyDocumentChanged_;
     SelectionProvider selectionProvider_;
+    std::function<int(core::io::AtomicWriteFault)> markdownFaultInjector_;
 
     // Guards dispatcher-posted completions against a destroyed controller
     // (the flag object is heap-owned by every completion copy).

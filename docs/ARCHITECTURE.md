@@ -4,11 +4,11 @@ This document is the reference for Rivet's software architecture. It describes
 the system as designed; where code is still mid-implementation, the structure
 described here is the source of truth.
 
-Rivet is a native C++23 PDF viewer/editor. It is built from small, layered subsystems
-with a strict dependency direction, a tile-based rendering pipeline, a
-serialized-per-document threading model, and a `std::expected`-based error
-model. Platform integration (AppKit on macOS) is confined to a dedicated
-platform layer; the PDF engine (PDFium) is confined to a dedicated adapter.
+Rivet is a native C++23 document editor supporting PDF and Markdown. It is built from small, layered
+subsystems with a strict dependency direction, a tile-based rendering pipeline, a serialized-per-document
+threading model, and a `std::expected`-based error model. Platform integration (AppKit on macOS) is
+confined to a dedicated platform layer; the PDF engine (PDFium) is confined to a dedicated adapter; the
+Markdown parser (MD4C) is wrapped behind a Rivet interface.
 
 Key decisions are recorded in `docs/adr/`:
 
@@ -27,6 +27,11 @@ Key decisions are recorded in `docs/adr/`:
 | [ADR-0011](adr/ADR-0011-annotation-model-identity-and-rendering.md) | Annotation model, identity and rendering split |
 | [ADR-0012](adr/ADR-0012-annotation-persistence.md) | Annotation persistence through the page assembly |
 | [ADR-0013](adr/ADR-0013-annotation-tools-and-interaction.md) | Annotation tools, interaction and on-screen rendering |
+| [ADR-0018](adr/ADR-0018-multi-document-type-shell.md) | Multi-document-type shell (PDF and Markdown by extension) |
+| [ADR-0019](adr/ADR-0019-markdown-parser-and-model.md) | Markdown parser (MD4C) and Rivet-owned model |
+| [ADR-0020](adr/ADR-0020-native-markdown-rendering.md) | Native Markdown rendering without WebView |
+| [ADR-0021](adr/ADR-0021-markdown-source-text-as-authoritative-state.md) | Source text as authoritative state |
+| [ADR-0022](adr/ADR-0022-markdown-async-live-preview.md) | Asynchronous live preview with debouncing |
 
 ---
 
@@ -39,29 +44,30 @@ executable:
 - `rivet_render` - coordinate transforms, page layout, zoom, viewer state, tile cache, render contracts.
 - `rivet_pdf` - PDF engine interfaces (`PdfEngine`, `PdfDocument`, `PdfTypes`, page views/geometry, document assembly) and a null engine when PDFium is not compiled in.
 - `rivet_pdfium` - the PDFium adapter; only built with `RIVET_WITH_PDFIUM=ON`.
+- `rivet_markdown` - Markdown parser interface, document model, layout engine, and text buffer.
 - `rivet_editor` - page model, commands/undo, document sessions, the save pipeline, the render source that drives rasterization.
 - `rivet_ui` - Rivet-owned retained-mode widgets.
 - `rivet_platform` - thin platform abstraction headers (file dialog, main-thread dispatch).
 - `rivet_platform_macos` - AppKit/CoreGraphics/CoreText implementation of the platform abstractions; hosts the application.
-- `rivet_app` - shell wiring: toolbar, sidebar, status bar, viewport, `DocumentSession` management, page-editing and file-lifecycle controllers.
+- `rivet_app` - shell wiring: toolbar, sidebar, status bar, viewport, `DocumentSession` management, page-editing, file-lifecycle controllers, and Markdown tab binding.
 - `rivet` - the executable.
 
 Dependency direction (an arrow `A -> B` means A may depend on B):
 
 ```text
-                    rivet_app
-                   /    |     \
-                  v     |      v
-          rivet_ui      |   rivet_editor
-                \       |    /    |    \
-                 \      v   v     |     v
-                  +--> rivet_render <--+   rivet_pdf
-                          |                |
-                          v                v
-                     rivet_core        rivet_pdfium (RIVET_WITH_PDFIUM=ON)
-                                          |
-                                          v
-                                      rivet_core
+                      rivet_app
+                     / |  |  \  \
+                    v  |  |   v  v
+        rivet_ui     |  | rivet_editor  rivet_markdown
+              \      |  |/    |    \         |
+               \     v  v     |     v        v
+                +--> rivet_render <------+   rivet_pdf
+                          |                  |
+                          v                  v
+                     rivet_core          rivet_pdfium (RIVET_WITH_PDFIUM=ON)
+                                             |
+                                             v
+                                         rivet_core
 ```
 
 `rivet_platform` and `rivet_platform_macos` sit outside this core chain:
@@ -84,12 +90,13 @@ Hard rules:
 
 - `rivet_core` depends on nothing inside Rivet (only the C++ standard library / `Threads`).
 - `rivet_render` depends only on `rivet_core`.
-- `rivet_editor` and `rivet_ui` depend on `rivet_core` + `rivet_render`; neither depends on the other.
-- `rivet_app` depends on `rivet_ui`, `rivet_editor`, `rivet_pdf`, and the `rivet_platform` abstractions.
+- `rivet_editor`, `rivet_ui`, and `rivet_markdown` depend on `rivet_core` + `rivet_render`; none depends on the others.
+- `rivet_app` depends on `rivet_ui`, `rivet_editor`, `rivet_markdown`, `rivet_pdf`, and the `rivet_platform` abstractions.
 - `rivet_platform_macos` implements the `rivet_platform` abstractions and provides the executable entry point; it is the only layer allowed to use AppKit/CoreGraphics/CoreText.
 - Shared UI code (`rivet_ui`, `rivet_app`) never sees AppKit or CoreGraphics types.
 - `FPDF_*` types never leave `src/pdf/pdfium/`; nothing above `rivet_pdf` sees engine types.
-- Views never call PDFium; `IRenderSource` is the only render entry for views.
+- Views never call PDFium; `IRenderSource` is the only render entry for PDF views.
+- MD4C internals never leave `src/markdown/`; only `IMarkdownParser` and model types (`MarkdownDocument`, blocks, inlines) are visible outside.
 
 ---
 
@@ -130,6 +137,15 @@ Engine-independent interfaces: `PdfEngine` (backend availability, `openDocument`
 ### `rivet_pdfium` (`src/pdf/pdfium/`)
 
 The PDFium adapter, built only when `RIVET_WITH_PDFIUM=ON`. Implements the `rivet_pdf` interfaces on top of PDFium and links the imported target `PDFium::PDFium` created by `cmake/FindPDFium.cmake`. All `FPDF_*` usage is confined to this directory. Beyond rendering it provides text extraction (`PdfTextPage` in displayed-page coordinates), document outline (depth/node/cycle-bounded), page labels, and per-page links (internal destinations and scheme-validated external URLs), and document assembly for save/extract (`PdfiumAssembly`: `FPDF_CreateNewDocument`, `FPDF_ImportPagesByIndex`, `FPDF_MovePages`, `FPDFPage_Delete`, `FPDFPage_SetRotation`, `FPDFPage_SetCropBox`, `FPDF_SaveAsCopy`). `PdfiumContent` extracts page content (`pageContent`), applies content edits (`applyContentEdits`: one function used by the per-page materializer for display and by assembly for save) and runs the regeneration fidelity probe (section 14). Documents are opened through `FPDF_LoadCustomDocument` over a shared `PdfiumFileSource` (an open file descriptor), so a document keeps reading its original bytes even after a save atomically replaces the path. See [ADR-0003](adr/ADR-0003-pdfium-abstraction-boundary.md) and `docs/BUILDING_PDFIUM.md`.
+
+### `rivet_markdown` (`src/markdown/`)
+
+- **`IMarkdownParser` / `Md4cMarkdownParser`** - parser interface and MD4C-based implementation ([ADR-0019](adr/ADR-0019-markdown-parser-and-model.md)). Parses UTF-8 Markdown with CommonMark + GFM (tables, task lists, strikethrough), applies parse limits gracefully, keeps raw HTML as plain text, and reports all blocks and inlines with source ranges.
+- **`MarkdownDocument` / `Block` / `Inline`** - immutable model: blocks (paragraph, heading, code, quote, list, table, rule, image, HTML), inlines (text, emphasis, strong, strike, code, link, image, breaks), heading slug index for anchor navigation, and diagnostics for limits exceeded.
+- **`MarkdownLayout` / `ITextMeasurer` / `IImageSizeProvider`** - pure layout engine ([ADR-0020](adr/ADR-0020-native-markdown-rendering.md)): turns a document and viewport width into positioned lines, runs, decorations, and hit-test metadata. No painting, no platform code. Complexity is O(N) in document size; `MeasureCache` amortizes text metrics across relayouts.
+- **`MarkdownTabState`** - text buffer for a Markdown tab ([ADR-0021](adr/ADR-0021-markdown-source-text-as-authoritative-state.md)): UTF-8 source with LF line endings in memory, preserves file line-ending style and BOM on save. All mutations go through a `CommandStack` (same as page editing); dirty tracking uses `stateId()`. Editing is locked while a save is in flight.
+- **`DecodedText`** - file decoding: strict UTF-8 validation, CRLF → LF normalization, BOM detection.
+- **No dependencies on UI, rendering, or platform code.** The parser, model, layout and text buffer are all portable and reusable.
 
 ### `rivet_editor` (`src/editor/`)
 
@@ -504,11 +520,12 @@ rivet/
 │   ├── render/               # rivet_render
 │   ├── pdf/                  # rivet_pdf (interfaces, page geometry, assembly + content contracts, bundled fonts, null engine)
 │   │   └── pdfium/           # rivet_pdfium (only with RIVET_WITH_PDFIUM=ON); FPDF_* confined here
+│   ├── markdown/             # rivet_markdown (parser interface, document model, layout engine, text buffer)
 │   ├── editor/               # rivet_editor (page model, commands, session, saver, render/text/link/annotation services)
 │   ├── ui/                   # rivet_ui
 │   ├── platform/             # rivet_platform (abstraction headers)
 │   │   └── macos/            # rivet_platform_macos (AppKit host, CoreGraphics PaintContext, rivet executable)
-│   └── app/                  # rivet_app (shell, workspace, controllers, crop tool, annotation and content tools)
+│   └── app/                  # rivet_app (shell, workspace, controllers, crop tool, annotation and content tools, markdown hosting)
 ├── third_party/fonts/        # bundled fallback fonts (Apache-2.0 subsets) + tools/fonts/subset_fonts.py
 ├── tests/
 │   ├── harness/              # RivetTest.h, TestMain.cpp (internal micro-harness)

@@ -5,6 +5,7 @@
 
 #include <cctype>
 #include <string>
+#include <vector>
 
 #if __has_include(<UniformTypeIdentifiers/UniformTypeIdentifiers.h>)
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
@@ -38,6 +39,28 @@ void restrictToPdf(NSSavePanel* panel) {
 #pragma clang diagnostic pop
 }
 
+// Restricts a panel to the given extensions (no dot). The first one is the
+// default the save panel appends.
+void restrictToExtensions(NSSavePanel* panel, const std::vector<std::string>& extensions) {
+#if RIVET_HAVE_UNIFORM_TYPE_IDENTIFIERS
+    NSMutableArray<UTType*>* types = [NSMutableArray array];
+    for (const std::string& extension : extensions) {
+        UTType* type = [UTType typeWithFilenameExtension:toNSString(extension)];
+        if (type != nil) [types addObject:type];
+    }
+    if (types.count == extensions.size()) {
+        [panel setAllowedContentTypes:types];
+        return;
+    }
+#endif
+    NSMutableArray<NSString*>* names = [NSMutableArray array];
+    for (const std::string& extension : extensions) [names addObject:toNSString(extension)];
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+    [panel setAllowedFileTypes:names];
+#pragma clang diagnostic pop
+}
+
 // Restricts a panel to PNG and JPEG images.
 void restrictToImages(NSSavePanel* panel) {
 #if RIVET_HAVE_UNIFORM_TYPE_IDENTIFIERS
@@ -68,6 +91,25 @@ core::Result<std::filesystem::path> MacosFileDialog::openPdf() {
     auto chosen = openPdfs(OpenOptions{});
     if (!chosen) return std::unexpected(chosen.error());
     return std::move(chosen->front());
+}
+
+core::Result<std::filesystem::path> MacosFileDialog::openDocument() {
+    NSOpenPanel* panel = [NSOpenPanel openPanel];
+    [panel setTitle:@"Open"];
+    [panel setPrompt:@"Open"];
+    [panel setCanChooseFiles:YES];
+    [panel setCanChooseDirectories:NO];
+    [panel setAllowsMultipleSelection:NO];
+    restrictToExtensions(panel, {"pdf", "md", "markdown", "mdown"});
+
+    if ([panel runModal] != NSModalResponseOK || panel.URL == nil) {
+        return std::unexpected(cancelledError());
+    }
+    if (panel.URL.path == nil) {
+        return std::unexpected(core::makeError(core::ErrorCode::Io, "selected URL has no file path",
+                                               "platform.macos"));
+    }
+    return std::filesystem::path(panel.URL.path.UTF8String);
 }
 
 core::Result<std::filesystem::path> MacosFileDialog::openImage() {
@@ -121,7 +163,12 @@ std::optional<std::filesystem::path> MacosFileDialog::runSavePanel(
     [panel setPrompt:toNSString(options.prompt)];
     [panel setCanCreateDirectories:YES];
     [panel setExtensionHidden:NO];
-    restrictToPdf(panel); // also appends ".pdf" when the user omits it
+    // Also appends the default extension when the user omits it.
+    if (options.allowedExtensions.empty()) {
+        restrictToPdf(panel);
+    } else {
+        restrictToExtensions(panel, options.allowedExtensions);
+    }
     if (!options.suggestedName.empty()) {
         [panel setNameFieldStringValue:toNSString(options.suggestedName)];
     }
@@ -135,14 +182,21 @@ std::optional<std::filesystem::path> MacosFileDialog::runSavePanel(
     NSURL* url = panel.URL;
     if (url == nil || url.path == nil) return std::nullopt;
     std::filesystem::path chosen(url.path.UTF8String);
-    // The panel appends ".pdf" on top of a typed ".pdf" in some configurations
-    // ("a.pdf" -> "a.pdf.pdf"); never keep the doubled extension.
+    // The panel appends the extension on top of a typed one in some
+    // configurations ("a.pdf" -> "a.pdf.pdf"); never keep the doubled
+    // extension.
+    std::vector<std::string> extensions = options.allowedExtensions;
+    if (extensions.empty()) extensions.push_back("pdf");
     std::string name = chosen.filename().string();
-    auto lower = name;
+    std::string lower = name;
     for (char& c : lower) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-    if (lower.size() > 8 && lower.ends_with(".pdf.pdf")) {
-        name.resize(name.size() - 4);
-        chosen.replace_filename(name);
+    for (const std::string& extension : extensions) {
+        const std::string doubled = "." + extension + "." + extension;
+        if (lower.size() > doubled.size() && lower.ends_with(doubled)) {
+            name.resize(name.size() - extension.size() - 1);
+            chosen.replace_filename(name);
+            break;
+        }
     }
     return chosen;
 }

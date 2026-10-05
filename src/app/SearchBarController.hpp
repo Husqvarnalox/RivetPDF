@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: MPL-2.0
 #pragma once
 
+#include "app/SearchTarget.hpp"
 #include "app/ShellContext.hpp"
 
 #include "core/geometry/Rect.hpp"
 
+#include <functional>
 #include <string>
 
 namespace rivet::ui {
@@ -36,6 +38,14 @@ public:
     // different search, so the bar closes.
     void bindTab(DocumentTab& tab);
 
+    // Markdown tabs: the bar drives the ISearchTarget returned by `provider`
+    // (null when the displayed mode has nothing searchable) instead of a PDF
+    // TextSearchController. The provider is queried on every use.
+    void setMarkdownTargetProvider(std::function<ISearchTarget*()> provider);
+    // Binds the bar to a freshly activated Markdown tab: clears the query and
+    // closes the bar.
+    void bindMarkdownTab();
+
     // Places the bar inside `viewportFrame` (parent space) when visible.
     void layout(const core::Rect& viewportFrame);
 
@@ -61,7 +71,13 @@ private:
     // Enter / arrow buttons: steps the active match and reveals it.
     void step(int delta);
 
+    // The Markdown search target while a Ready Markdown tab is active (hooks
+    // the results callback on first use), else null.
+    ISearchTarget* markdownTarget();
+
     ShellContext& context_;
+    std::function<ISearchTarget*()> markdownProvider_;
+    ISearchTarget* hookedTarget_ = nullptr;
     // Raw pointers into widgets owned by the parent's tree.
     ui::Container* bar_ = nullptr;
     ui::TextField* field_ = nullptr;
