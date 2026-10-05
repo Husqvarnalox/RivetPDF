@@ -4,6 +4,7 @@
 #include "core/Error.hpp"
 #include "editor/Command.hpp"
 #include "editor/CommandStack.hpp"
+#include "markdown/MarkdownModel.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -12,6 +13,7 @@
 #include <memory>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace rivet::app {
 
@@ -80,6 +82,10 @@ public:
     static core::Result<std::unique_ptr<MarkdownTabState>> load(
         const std::filesystem::path& path, const std::function<bool()>& isCancelled = {});
 
+    // Process-unique, never reused: key side tables by it instead of the
+    // state's address (a destroyed state's address can be reused).
+    std::uint64_t instanceId() const { return instanceId_; }
+
     const std::filesystem::path& path() const { return path_; }
     void setPath(std::filesystem::path path) { path_ = std::move(path); }
 
@@ -123,6 +129,14 @@ public:
     void setEditingLocked(bool locked) { editingLocked_ = locked; }
     bool isEditingLocked() const { return editingLocked_; }
 
+    // Diagnostics of the newest parse the live preview applied (limits hit,
+    // invalid UTF-8, ...). Informational only: never touches the source.
+    // Stored by the Markdown host; does not notify.
+    const std::vector<markdown::Diagnostic>& parseDiagnostics() const { return parseDiagnostics_; }
+    void setParseDiagnostics(std::vector<markdown::Diagnostic> diagnostics) {
+        parseDiagnostics_ = std::move(diagnostics);
+    }
+
     // Fired (main thread, synchronously) after any observable change: source
     // mutation, mode change, dirty flip. Views and the shell repaint from it.
     void setOnChanged(std::function<void()> onChanged) { onChanged_ = std::move(onChanged); }
@@ -135,6 +149,7 @@ private:
         if (onChanged_) onChanged_();
     }
 
+    std::uint64_t instanceId_;
     std::filesystem::path path_;
     std::string source_;
     LineEnding lineEnding_ = LineEnding::LF;
@@ -146,6 +161,7 @@ private:
     MarkdownDisplayMode mode_ = MarkdownDisplayMode::Rendered;
     bool editingLocked_ = false;
     editor::CommandStack commands_;
+    std::vector<markdown::Diagnostic> parseDiagnostics_;
     std::function<void()> onChanged_;
 };
 

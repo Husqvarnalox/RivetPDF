@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cerrno>
 #include <cstdio>
 #include <utility>
@@ -124,8 +125,16 @@ std::string encodeMarkdownBytes(std::string_view text, LineEnding lineEnding, bo
     return out;
 }
 
+namespace {
+std::uint64_t nextInstanceId() {
+    static std::atomic<std::uint64_t> counter{0};
+    return ++counter;
+}
+} // namespace
+
 MarkdownTabState::MarkdownTabState(std::filesystem::path path, DecodedText decoded)
-    : path_(std::move(path)),
+    : instanceId_(nextInstanceId()),
+      path_(std::move(path)),
       source_(std::move(decoded.text)),
       lineEnding_(decoded.lineEnding),
       hasBom_(decoded.hadBom),
