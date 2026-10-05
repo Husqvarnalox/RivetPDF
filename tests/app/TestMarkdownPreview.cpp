@@ -570,7 +570,7 @@ RIVET_TEST(markdownHostRendersAndTracksTheStateRevision) {
 
     state.setMode(MarkdownDisplayMode::Source);
     host->stateChanged();
-    CHECK(host->searchTarget() == nullptr);
+    CHECK(host->searchTarget() != nullptr); // Source mode searches the source text
 
     host->bind(nullptr); // unbinding drops everything; painting is safe
     ctx = ui::testing::FakePaintContext{};
