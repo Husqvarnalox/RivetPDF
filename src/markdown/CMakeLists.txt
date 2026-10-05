@@ -7,6 +7,7 @@ add_library(rivet_markdown STATIC
     Md4cMarkdownParser.cpp
     MarkdownLayout.cpp
     MarkdownPlainText.cpp
+    MarkdownSourceMap.cpp
     MarkdownSlug.cpp
 )
 
