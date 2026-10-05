@@ -38,17 +38,43 @@ void MarkdownImageStore::clear() {
     ++generation_;
 }
 
-std::filesystem::path MarkdownImageStore::resolve(std::string_view url) const {
+namespace {
+
+// The URL minus fragment/query, percent-decoded. Empty for an unusable URL.
+std::string decodedLocalText(std::string_view url) {
     if (url.empty() || url.find('\0') != std::string_view::npos) return {};
-    if (hasUriScheme(url) || url.rfind("//", 0) == 0) return {};
     std::string text = percentDecode(url);
-    // A fragment or query is not part of a local path.
     if (const std::size_t cut = text.find_first_of("?#"); cut != std::string::npos) text.erase(cut);
-    if (text.empty() || text.find('\0') != std::string::npos) return {};
+    if (text.find('\0') != std::string::npos) return {};
+    return text;
+}
+
+// A path that would reach a network location: a doubled leading separator (UNC), a UNC / device root
+// name, or a network mount point. Evaluated on decoded text, never on the raw URL.
+bool isRemotePath(const std::string& text, const std::filesystem::path& path) {
+    if (text.rfind("\\\\", 0) == 0 || text.rfind("//", 0) == 0) return true;
+    const std::string root = path.root_name().string();
+    if (!root.empty()) {
+        const bool driveLetter = root.size() == 2 && root[1] == ':' &&
+                                 ((root[0] >= 'A' && root[0] <= 'Z') || (root[0] >= 'a' && root[0] <= 'z'));
+        if (!driveLetter) return true;
+    }
+    const std::string normal = path.lexically_normal().generic_string();
+    return normal.rfind("/net/", 0) == 0 || normal.rfind("/Network/", 0) == 0;
+}
+
+} // namespace
+
+std::filesystem::path MarkdownImageStore::resolve(std::string_view url) const {
+    if (hasUriScheme(url)) return {};
+    const std::string text = decodedLocalText(url);
+    if (text.empty()) return {};
     std::filesystem::path path{text};
+    if (isRemotePath(text, path)) return {};
     if (path.is_relative()) {
         if (baseDirectory_.empty()) return {};
         path = baseDirectory_ / path;
+        if (isRemotePath(path.generic_string(), path)) return {};
     }
     return path.lexically_normal();
 }
@@ -97,8 +123,10 @@ std::shared_ptr<const core::Bitmap> MarkdownImageStore::bitmap(std::string_view 
 ImageBlockReason MarkdownImageStore::blockReason(std::string_view url) const {
     const std::filesystem::path path = resolve(url);
     if (path.empty()) {
-        return (hasUriScheme(url) || url.rfind("//", 0) == 0) ? ImageBlockReason::Remote
-                                                              : ImageBlockReason::Unreadable;
+        const std::string text = decodedLocalText(url);
+        return (hasUriScheme(url) || (!text.empty() && isRemotePath(text, std::filesystem::path{text})))
+                   ? ImageBlockReason::Remote
+                   : ImageBlockReason::Unreadable;
     }
     const auto it = entries_.find(path.string());
     if (it == entries_.end() || it->second.state != Entry::State::Blocked) return ImageBlockReason::None;

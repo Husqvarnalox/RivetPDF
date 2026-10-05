@@ -343,6 +343,37 @@ RIVET_TEST(previewImageStoreLoadsLocalFilesAndBlocksTheRest) {
     fs::remove_all(dir);
 }
 
+RIVET_TEST(previewImageStoreBlocksUncAndEncodedNetworkPathsAndStillLoadsLocalOnes) {
+    const fs::path dir = fs::temp_directory_path() / "rivet-preview-images-unc";
+    fs::create_directories(dir / "images");
+    std::ofstream(dir / "images" / "a.png", std::ios::binary) << "16x8";
+
+    Env env;
+    std::shared_ptr<MarkdownImageStore> store = MarkdownImageStore::create(
+        MarkdownImageStore::Environment{&env.dispatcher, &env.scheduler, &env.decoder});
+    store->setBaseDirectory(dir);
+    int changes = 0;
+    store->setOnChanged([&] { ++changes; });
+
+    const char* blocked[] = {"\\\\host\\share\\a.png", "//host/share/a.png",  "%2F%2Fhost/a.png",
+                             "%5C%5Chost/share/a.png", "%2f%2fhost/a.png",    "/net/host/a.png",
+                             "/Network/Servers/a.png", "%2Fnet%2Fhost%2Fa.png", "file:///etc/passwd"};
+    for (const char* url : blocked) {
+        CHECK(store->resolve(url).empty());
+        CHECK(store->imageInfo(url).state == markdown::ImageState::Blocked);
+        CHECK(store->blockReason(url) == ImageBlockReason::Remote);
+    }
+    env.dispatcher.pump();
+    CHECK_EQ(changes, 0); // no load was ever started for them
+
+    CHECK(store->imageInfo("images/a.png").state == markdown::ImageState::Unknown); // starts the load
+    CHECK(env.dispatcher.waitUntil([&] { return changes >= 1; }));
+    CHECK(store->imageInfo("images/a.png").state == markdown::ImageState::Known);
+    CHECK(store->imageInfo("images%2Fa.png").state != markdown::ImageState::Blocked);
+    CHECK(!store->resolve((dir / "images" / "a.png").string()).empty());
+    fs::remove_all(dir);
+}
+
 RIVET_TEST(previewImageCompletionAfterDestructionIsDiscarded) {
     const fs::path dir = fs::temp_directory_path() / "rivet-preview-images-gone";
     fs::create_directories(dir);
