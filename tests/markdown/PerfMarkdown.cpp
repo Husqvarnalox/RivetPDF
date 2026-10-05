@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0
 // Opt-in perf probe: RIVET_PERF_MARKDOWN=1. Prints timings only (no content).
 #include "MarkdownTestKit.hpp"
+#include "app/MarkdownFind.hpp"
+#include "ui/TextBuffer.hpp"
 
 #include <chrono>
 #include <cstdio>
@@ -32,6 +34,25 @@ int main() {
         const auto t3 = clock::now();
         const PlainText pt = extractPlainText(doc);
         const auto t4 = clock::now();
+        // Live-edit costs: a typed character in the middle of the buffer, the
+        // reparse+relayout that follows it (what one debounced live update
+        // costs off the main thread), and a find over the raw source.
+        rivet::ui::TextBuffer buffer(src);
+        constexpr int kEdits = 200;
+        const auto b0 = clock::now();
+        for (int i = 0; i < kEdits; ++i) buffer.insert(buffer.size() / 2, "q");
+        const auto b1 = clock::now();
+        const std::string edited = buffer.text();
+        const auto l0 = clock::now();
+        const MarkdownDocument live = parse(edited);
+        const MarkdownLayout liveLayout = layoutMarkdown(live, 800, m, nullptr, {}, &cache);
+        const auto l1t = clock::now();
+        const auto s0 = clock::now();
+        const auto matches = rivet::app::findInText(edited, "lorem");
+        const auto s1 = clock::now();
+        std::printf("        insert %7.4f ms/edit | live reparse+layout %8.2f ms (blocks %zu, lines %zu) | search %7.2f ms (%zu hits)\n",
+                    ms(b0, b1) / kEdits, ms(l0, l1t), static_cast<std::size_t>(live.blockCount), liveLayout.lines.size(),
+                    ms(s0, s1), matches.size());
         std::printf("%5zu KB: parse %8.2f ms | layout cold %8.2f ms | relayout %8.2f ms | plain %7.2f ms | blocks %zu lines %zu->%zu text %zu\n",
                     static_cast<std::size_t>(kb), ms(t0, t1), ms(t1, t2), ms(t2, t3), ms(t3, t4), static_cast<std::size_t>(doc.blockCount),
                     l1.lines.size(), l2.lines.size(), pt.text.size());
