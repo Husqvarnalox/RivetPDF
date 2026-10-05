@@ -74,6 +74,13 @@ bool isValidUtf8(std::string_view bytes) {
     return true;
 }
 
+namespace {
+// True when `offset` does not fall inside a multi-byte UTF-8 sequence of `text`.
+bool isUtf8Boundary(const std::string& text, std::size_t offset) {
+    return offset >= text.size() || (static_cast<unsigned char>(text[offset]) & 0xC0u) != 0x80u;
+}
+} // namespace
+
 core::Result<DecodedText> decodeMarkdownBytes(std::string_view bytes) {
     DecodedText out;
     if (bytes.size() >= 3 && static_cast<unsigned char>(bytes[0]) == 0xEF &&
@@ -86,27 +93,30 @@ core::Result<DecodedText> decodeMarkdownBytes(std::string_view bytes) {
             core::ErrorCode::InvalidDocument, "the file is not valid UTF-8 text (other encodings are not supported)",
             kSubsystem));
     }
+    // Canonicalize exactly like ui::TextBuffer::normalize (CRLF -> LF, lone CR -> LF) so the
+    // source offsets of the editor buffer and of this state can never drift apart.
     std::size_t crlf = 0;
     std::size_t bareLf = 0;
+    std::size_t bareCr = 0;
+    out.text.reserve(bytes.size());
     for (std::size_t i = 0; i < bytes.size(); ++i) {
-        if (bytes[i] != '\n') continue;
-        if (i > 0 && bytes[i - 1] == '\r') {
-            ++crlf;
+        const char c = bytes[i];
+        if (c == '\r') {
+            if (i + 1 < bytes.size() && bytes[i + 1] == '\n') {
+                ++crlf;
+                ++i;
+            } else {
+                ++bareCr;
+            }
+            out.text.push_back('\n');
         } else {
-            ++bareLf;
+            if (c == '\n') ++bareLf;
+            out.text.push_back(c);
         }
     }
-    out.lineEnding = crlf > bareLf ? LineEnding::CRLF : LineEnding::LF;
-    out.mixedLineEndings = crlf > 0 && bareLf > 0;
-    if (crlf == 0) {
-        out.text.assign(bytes);
-    } else {
-        out.text.reserve(bytes.size() - crlf);
-        for (std::size_t i = 0; i < bytes.size(); ++i) {
-            if (bytes[i] == '\r' && i + 1 < bytes.size() && bytes[i + 1] == '\n') continue;
-            out.text.push_back(bytes[i]);
-        }
-    }
+    const std::size_t other = bareLf + bareCr;
+    out.lineEnding = crlf > other ? LineEnding::CRLF : LineEnding::LF;
+    out.mixedLineEndings = crlf > 0 && other > 0;
     return out;
 }
 
@@ -212,6 +222,7 @@ bool MarkdownTabState::redo() { return !editingLocked_ && commands_.redo(); }
 
 bool MarkdownTabState::applyEdit(std::size_t offset, std::size_t removeLength, std::string_view insert) {
     if (offset > source_.size() || removeLength > source_.size() - offset) return false;
+    if (!isUtf8Boundary(source_, offset) || !isUtf8Boundary(source_, offset + removeLength)) return false;
     source_.replace(offset, removeLength, insert);
     ++revision_;
     return true; // the command stack notifies after the command settles

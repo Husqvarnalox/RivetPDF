@@ -18,6 +18,7 @@
 #include "core/async/TaskScheduler.hpp"
 #include "markdown/MarkdownSourceMap.hpp"
 #include "platform/PlatformKit.hpp"
+#include "ui/TextBuffer.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -757,4 +758,52 @@ RIVET_TEST(saveWritesTheEditedSourceVerbatimWithCrlfBomAndUnsupportedSyntax) {
     CHECK(state.lineEnding() == LineEnding::CRLF);
     CHECK(state.undo());
     CHECK_EQ(state.encode(), bytes);
+}
+
+RIVET_TEST(decodeCanonicalizesEveryLineEndingExactlyLikeTheEditorBuffer) {
+    const std::string cases[] = {"x\r\r\n\xD0\xB9", "a\rb\rc", "a\r\nb\r\n", "a\r\n\r\nb\n", "\r", "\r\r", "a\n\rb"};
+    for (const std::string& bytes : cases) {
+        auto decoded = decodeMarkdownBytes(bytes);
+        CHECK(decoded.has_value());
+        const ui::TextBuffer buffer{bytes};
+        CHECK_EQ(decoded->text, buffer.text());
+        CHECK(decoded->text.find('\r') == std::string::npos);
+    }
+    auto lone = decodeMarkdownBytes("a\rb\rc");
+    CHECK(lone.has_value() && lone->text == "a\nb\nc" && lone->lineEnding == LineEnding::LF);
+    CHECK(!lone->mixedLineEndings);
+    auto mixed = decodeMarkdownBytes("a\r\nb\r\nc\rd");
+    CHECK(mixed.has_value() && mixed->lineEnding == LineEnding::CRLF && mixed->mixedLineEndings);
+    CHECK_EQ(encodeMarkdownBytes(mixed->text, mixed->lineEnding, false), std::string("a\r\nb\r\nc\r\nd"));
+    const std::string pure = "a\r\nb\r\nc\r\n";
+    auto crlf = decodeMarkdownBytes(pure);
+    CHECK(crlf.has_value() && !crlf->mixedLineEndings);
+    CHECK_EQ(encodeMarkdownBytes(crlf->text, crlf->lineEnding, false), pure);
+}
+
+RIVET_TEST(editAfterMultiByteCharInCrCrLfFileKeepsOffsetsAndUtf8Valid) {
+    const std::string bytes = "x\r\r\n\xD0\xB9";
+    auto decoded = decodeMarkdownBytes(bytes);
+    CHECK(decoded.has_value());
+    MarkdownTabState state("cr.md", std::move(*decoded));
+    ui::TextBuffer buffer{bytes};
+    CHECK_EQ(state.source().size(), buffer.size());
+    CHECK_EQ(state.source().size(), std::size_t{5});
+    CHECK(state.applyEdit(state.source().size(), 0, "Z"));
+    CHECK(state.source() == "x\n\n\xD0\xB9Z");
+    CHECK(decodeMarkdownBytes(state.encode()).has_value()); // still valid UTF-8 on save
+}
+
+RIVET_TEST(applyEditRejectsOffsetsInsideUtf8SequencesOrOutOfRange) {
+    auto decoded = decodeMarkdownBytes("a\xD0\xB9" "b");
+    MarkdownTabState state("b.md", std::move(*decoded));
+    CHECK(!state.applyEdit(2, 0, "X"));  // between the bytes of the Cyrillic letter
+    CHECK(!state.applyEdit(1, 1, "X"));  // removal ends mid-sequence
+    CHECK(!state.applyEdit(0, 99, "X")); // out of range
+    CHECK(!state.applyEdit(99, 0, "X"));
+    CHECK(state.source() == "a\xD0\xB9" "b");
+    CHECK(state.applyEdit(1, 2, "X")); // whole sequence is fine
+    CHECK(state.source() == "aXb");
+    CHECK(state.applyEdit(3, 0, "!")); // end of text
+    CHECK(state.source() == "aXb!");
 }
