@@ -2,6 +2,7 @@
 #pragma once
 
 #include "app/MarkdownTabState.hpp"
+#include "app/SearchTarget.hpp"
 #include "core/async/IMainThreadDispatcher.hpp"
 #include "core/async/TaskScheduler.hpp"
 #include "platform/PlatformKit.hpp"
@@ -52,6 +53,13 @@ public:
     virtual void bind(MarkdownTabState* state) { state_ = state; invalidate(); }
     virtual void stateChanged() { invalidate(); }
 
+    // Find in the displayed Markdown (Rendered mode); null when the current
+    // mode has no searchable view. Valid until the next bind()/mode change.
+    virtual ISearchTarget* searchTarget() { return nullptr; }
+    // Edit-menu actions on the displayed view; false when not applicable.
+    virtual bool copySelection() { return false; }
+    virtual bool selectAll() { return false; }
+
     MarkdownTabState* state() const { return state_; }
     const MarkdownHostEnvironment& environment() const { return environment_; }
 
@@ -62,7 +70,8 @@ private:
     MarkdownHostEnvironment environment_;
 };
 
-// Placeholder implementation: draws the mode and the source's first lines.
+// Real host: Rendered mode shows MarkdownPreviewView; Source/Split still draw
+// the placeholder (mode name and first source lines) until the editor lands.
 std::unique_ptr<MarkdownHostView> createMarkdownHostView(MarkdownHostEnvironment environment);
 
 } // namespace rivet::app

@@ -114,6 +114,8 @@ void ShellController::buildWidgets() {
     root_->addChild(std::move(overlay));
 
     searchBar_ = std::make_unique<SearchBarController>(*context_, *root_);
+    searchBar_->setMarkdownTargetProvider(
+        [this]() -> ISearchTarget* { return markdownView_ != nullptr ? markdownView_->searchTarget() : nullptr; });
     passwordPrompt_ = std::make_unique<PasswordPromptController>(*context_, *root_);
     statusBar_ = std::make_unique<StatusBarController>(
         *context_, *root_,
@@ -310,7 +312,7 @@ void ShellController::layoutShell() {
     markdownView_->setFrame(markdown ? contentRect : kHiddenFrame);
     // Everything over the content follows its frame.
     overlayLabel_->setFrame(contentRect);
-    searchBar_->layout(viewport_->frame());
+    searchBar_->layout(markdown ? contentRect : viewport_->frame());
     passwordPrompt_->layout(viewport_->frame());
     if (annotations_ != nullptr) annotations_->layout(viewport_->frame());
     if (content_ != nullptr) content_->layout(viewport_->frame());
@@ -462,7 +464,7 @@ void ShellController::bindMarkdownTab(DocumentTab* tab) {
     pageEditing_->bindTab(nullptr);
     annotations_->bindTab(nullptr);
     content_->bindTab(nullptr);
-    searchBar_->setVisible(false);
+    searchBar_->bindMarkdownTab();
     setPresentationMode(false);
 
     if (tab->state() == DocumentTab::State::Ready && tab->markdown() != nullptr) {
@@ -694,11 +696,21 @@ bool ShellController::handleShortcut(const ui::KeyEvent& event) {
                 return true;
             }
             if (event.text == "f") {
-                if (!chromeMarkdown_) searchBar_->toggle(); // Markdown find: the Markdown view's job
+                // Markdown: the bar drives the rendered view; other modes have no
+                // searchable view yet.
+                if (!chromeMarkdown_ || markdownView_->searchTarget() != nullptr) searchBar_->toggle();
                 return true;
             }
             if (event.text == "c") {
-                textInteraction_->copySelection();
+                if (chromeMarkdown_) {
+                    markdownView_->copySelection();
+                } else {
+                    textInteraction_->copySelection();
+                }
+                return true;
+            }
+            if (event.text == "a" && !event.modifiers.shift && chromeMarkdown_) {
+                markdownView_->selectAll();
                 return true;
             }
             if (event.text == "p" && !control) {
