@@ -20,34 +20,39 @@ it from an AST.
 **Text encoding and normalization:**
 - UTF-8 only, strictly validated (no overlong forms, no surrogates). Non-UTF-8 files are rejected as
   `InvalidDocument` (controlled error, file not loaded).
-- **Line endings in memory: always LF** (U+000A). On open, CRLF is converted to LF; line-ending style
-  and BOM are recorded and re-applied on save.
+- **Line endings in memory: always LF** (U+000A). On open, every CRLF and every lone CR is converted to
+  LF, exactly as the editor's `ui::TextBuffer::normalize` does, so source offsets in the editor buffer
+  and in `MarkdownTabState` are identical. The dominant line-ending style (CRLF only when CRLF
+  terminators outnumber LF and lone-CR terminators) and the BOM are recorded and re-applied on save.
 - UTF-8 BOM is detected on open and re-emitted on save if it was present.
-- Mixed line endings (CRLF and bare LF in the same file) are normalized to the detected dominant style
-  on save; a flag records this for UI feedback.
+- Mixed line endings (CRLF mixed with LF or lone CR in the same file) are normalized to the detected
+  dominant style on save; a flag records this for UI feedback.
 
 **Editing model:**
 - All mutations go through a single `CommandStack` (depth 100, same infrastructure as PDF page editing).
 - One command type: `TextEditCommand(offset, removeLength, insert)` — replaces a byte range with new text.
-- Commands are fully reversible and coalesce: typing `a`, `b`, `c` can merge into one undo step if they
-  happen within a time window (typing fast).
+- Commands are fully reversible and coalesce by edit shape, not by time: the source editor marks an edit
+  as mergeable when it continues the previous typing / backspace / delete-forward run at the caret
+  (a word typed after whitespace starts a new undo step), and `TextEditCommand::tryMerge` folds it into
+  the previous command when the ranges are adjacent. There is no time window.
 - A command bumps a monotonic `revision()` counter; caches (parser, layout) key on revision.
 
 **Dirty tracking:**
 - Every command and undo/redo has a `stateId()` (like PDF page editing, ADR-0009).
 - `isDirty()` = `stateId() != savedStateId()`. Undoing back to the saved state is clean again.
 - Saving sets `savedStateId_` without clearing the undo stack (undo stays available).
-- A failed save keeps the document dirty and editing locked until retry.
+- A failed save keeps the document dirty (the source stays in memory); editing is unlocked again so the
+  user can keep working or retry.
 
 **Editing lock:**
 - While a save is in flight, `execute/undo/redo` are refused (the shell reports this).
 - View, search, and selection keep working.
-- Save unlocks on completion (success or failure).
+- Save unlocks on completion (success or failure), see `FileController::handleMarkdownSaveCompleted`.
 
 **TextBuffer contract:**
 - `MarkdownTabState::applyEdit(offset, removeLength, insert)` is the single mutation point.
-- The caller (a `TextEditCommand`) must ensure byte offsets and UTF-8 boundaries are valid; the
-  function returns `false` on invalid ranges.
+- It returns `false` (and leaves the source untouched) for out-of-range offsets and for offsets that
+  fall inside a multi-byte UTF-8 sequence.
 - `onChanged()` callback fires after every mutation, so views key their caches on `revision()`.
 
 **Parser invocation:**

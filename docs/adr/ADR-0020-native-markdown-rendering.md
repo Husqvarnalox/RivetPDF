@@ -46,8 +46,12 @@ rendering, so the UI layer remains independent of the backend.
 **Images:**
 - `MarkdownImageStore` (a shared component owned by the view) loads images asynchronously with bounds
   and type checks:
-  - Local file:// URLs only; remote (http/https) are blocked immediately.
-  - Image dimensions are clamped and timeouts apply.
+  - Plain local paths only (relative to the document, or absolute), percent-decoded before checks.
+    `file:` URLs and every other scheme are blocked, as are remote URLs (http/https), `//` and `\\`
+    (UNC) paths, UNC/device roots, and paths under `/net/` or `/Network/`; blocked paths are never read.
+  - File size, pixel side and decoded size are bounded.
+  - Known limitation: there is no read timeout; a plain local path on a slow or stalled mount can block
+    a worker thread until the OS returns.
   - Fallback: placeholder with alt text while loading, or when blocked/failed.
 - Images are never logged; alt text and URLs are untrusted.
 
@@ -67,7 +71,9 @@ rendering, so the UI layer remains independent of the backend.
 - Selection and search use the layout's hit-test and text APIs; no regex or DOM needed.
 - Per-block horizontal scroll keeps pages narrow and readable; users with wide displays can resize
   the window, and very wide tables/code still fit.
-- Image loading is local-only and bounded; untrusted file servers cannot hang Rivet or exhaust memory.
+- Image loading is local-only and size-bounded; remote and network paths are never opened, so untrusted
+  servers cannot supply content or exhaust memory (a stalled local mount can still delay a worker, see
+  the known limitation above).
 - The shell remains in control of link policy; the view cannot open arbitrary URLs on click.
 
 ## Rejected alternatives
@@ -79,5 +85,5 @@ rendering, so the UI layer remains independent of the backend.
 - **CSS-based layout engine** (e.g., Taffy from Rust, or a C++ port): more powerful than needed for
   Markdown's relatively fixed structure. Custom layout is simpler and doesn't require a generalist
   layout engine.
-- **Delegating image loading to a URL fetch service**: local-only, bounded, timeout-aware image loading
+- **Delegating image loading to a URL fetch service**: local-only, size-bounded image loading
   is a deliberate security/privacy choice.
