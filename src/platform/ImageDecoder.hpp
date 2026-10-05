@@ -31,6 +31,36 @@ public:
     virtual ~IImageDecoder() = default;
 
     virtual core::Result<pdf::PdfImageData> decode(std::span<const std::uint8_t> encoded) const = 0;
+
+    // Limits for display decoding (decodeBgra), checked from the image header
+    // BEFORE any pixel buffer is allocated.
+    struct BgraLimits {
+        std::uint32_t maxSide = 8192;                          // each side
+        std::uint64_t maxDecodedBytes = 64ull * 1024 * 1024;   // width * height * 4
+    };
+
+    // Decodes for on-screen display: ALWAYS Format::Bgra (never the JPEG
+    // pass-through of decode()), upright (EXIF orientation applied), within
+    // `limits` (violation: ErrorCode::InvalidArgument) and the PdfContent.hpp
+    // limits. The default converts decode()'s result when it already is Bgra
+    // and rejects a JPEG pass-through as Unsupported; backends override it.
+    // Thread-safe, like decode().
+    virtual core::Result<pdf::PdfImageData> decodeBgra(std::span<const std::uint8_t> encoded,
+                                                       const BgraLimits& limits) const {
+        auto decoded = decode(encoded);
+        if (!decoded) return decoded;
+        if (decoded->format != pdf::PdfImageData::Format::Bgra) {
+            return std::unexpected(core::makeError(core::ErrorCode::Unsupported,
+                                                   "decoder cannot produce BGRA pixels", "platform"));
+        }
+        const auto bytes = static_cast<std::uint64_t>(decoded->width) * decoded->height * 4u;
+        if (decoded->width > limits.maxSide || decoded->height > limits.maxSide ||
+            bytes > limits.maxDecodedBytes) {
+            return std::unexpected(core::makeError(core::ErrorCode::InvalidArgument,
+                                                   "image exceeds the display size limits", "platform"));
+        }
+        return decoded;
+    }
 };
 
 } // namespace rivet::platform

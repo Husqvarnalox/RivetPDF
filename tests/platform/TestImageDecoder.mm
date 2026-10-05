@@ -150,6 +150,32 @@ RIVET_TEST(imageDecoderPlainJpegPassesThroughUnchanged) {
     CHECK(result->bytes == jpeg);
 }
 
+RIVET_TEST(imageDecoderDecodeBgraNeverPassesJpegThrough) {
+    const auto jpeg = rgbJpeg(16, 8);
+    auto result = decoder.decodeBgra(jpeg, {});
+    CHECK(result.has_value());
+    CHECK(result->format == PdfImageData::Format::Bgra);
+    CHECK_EQ(result->width, 16u);
+    CHECK_EQ(result->height, 8u);
+    CHECK_EQ(result->stride, 64u);
+    CHECK_EQ(result->bytes.size(), std::size_t{16 * 8 * 4});
+}
+
+RIVET_TEST(imageDecoderDecodeBgraEnforcesDisplayLimits) {
+    const auto png = grayPng(64, 64);
+    rivet::platform::IImageDecoder::BgraLimits side;
+    side.maxSide = 32;
+    auto bySide = decoder.decodeBgra(png, side);
+    CHECK(!bySide.has_value());
+    CHECK(bySide.error().code == ErrorCode::InvalidArgument);
+    rivet::platform::IImageDecoder::BgraLimits bytes;
+    bytes.maxDecodedBytes = 64 * 64 * 4 - 1;
+    auto byBytes = decoder.decodeBgra(png, bytes);
+    CHECK(!byBytes.has_value());
+    CHECK(byBytes.error().code == ErrorCode::InvalidArgument);
+    CHECK(decoder.decodeBgra(png, {}).has_value());
+}
+
 RIVET_TEST(imageDecoderGrayJpegPassesThrough) {
     Cf<CGColorSpaceRef> space{CGColorSpaceCreateWithName(kCGColorSpaceGenericGrayGamma2_2)};
     auto image = makeImage(8, 8, space.get(), 1, kCGImageAlphaNone,
