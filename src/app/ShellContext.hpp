@@ -79,10 +79,25 @@ struct ShellContext {
     // initializer so aggregate initialization of the sinks above stays valid.
     PendingEdits pendingEdits{};
 
-    // The active tab when it is Ready (session attached), otherwise null.
-    DocumentTab* readyActiveTab() const {
+    // The active tab when it is a Ready PDF tab (session attached), otherwise
+    // null. Every PDF feature controller goes through this, so a Markdown (or
+    // loading/failed) active tab leaves them inert.
+    DocumentTab* readyPdfTab() const {
         DocumentTab* tab = workspace.activeTab();
-        return (tab != nullptr && tab->state() == DocumentTab::State::Ready) ? tab : nullptr;
+        return (tab != nullptr && tab->isPdf() && tab->state() == DocumentTab::State::Ready &&
+                tab->session() != nullptr)
+                   ? tab
+                   : nullptr;
+    }
+    // Historical name of readyPdfTab() (PDF-only), kept for existing callers.
+    DocumentTab* readyActiveTab() const { return readyPdfTab(); }
+    // The active tab when it is a Ready Markdown tab, otherwise null.
+    DocumentTab* readyMarkdownTab() const {
+        DocumentTab* tab = workspace.activeTab();
+        return (tab != nullptr && tab->isMarkdown() && tab->state() == DocumentTab::State::Ready &&
+                tab->markdown() != nullptr)
+                   ? tab
+                   : nullptr;
     }
 };
 

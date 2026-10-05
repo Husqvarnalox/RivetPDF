@@ -1,5 +1,7 @@
 add_library(rivet_app STATIC
     DocumentWorkspace.cpp
+    MarkdownTabState.cpp
+    MarkdownHostView.cpp
     AnnotationBarController.cpp
     AnnotationController.cpp
     AnnotationInteraction.cpp

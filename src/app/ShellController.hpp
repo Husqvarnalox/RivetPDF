@@ -7,6 +7,7 @@
 #include "app/ContentController.hpp"
 #include "app/DocumentWorkspace.hpp"
 #include "app/FileController.hpp"
+#include "app/MarkdownHostView.hpp"
 #include "app/PageEditingController.hpp"
 #include "app/PasswordPromptController.hpp"
 #include "app/PrintCoordinator.hpp"
@@ -27,7 +28,9 @@
 #include <filesystem>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <string>
+#include <vector>
 
 namespace rivet::app {
 
@@ -54,6 +57,9 @@ public:
     // Builds the shell. The services are owned by the platform host and must
     // outlive the controller.
     static std::unique_ptr<ShellController> create(const platform::ShellServices& services);
+    // Same with a caller-supplied PDF engine (tests inject a fake one).
+    static std::unique_ptr<ShellController> createWithEngine(const platform::ShellServices& services,
+                                                             std::unique_ptr<pdf::PdfEngine> engine);
     ~ShellController();
 
     ShellController(const ShellController&) = delete;
@@ -78,7 +84,9 @@ public:
 
     // Page editing for platform menus: runs the command on the active tab
     // (a status message otherwise). canPerformPageEdit drives menu item
-    // validation (enabled/disabled).
+    // validation (enabled/disabled). Undo/Redo are kind-aware: on a Markdown
+    // tab they run that tab's text command stack; the page commands are
+    // PDF-only.
     void performPageEdit(PageEditCommand command);
     bool canPerformPageEdit(PageEditCommand command) const;
 
@@ -97,6 +105,20 @@ public:
     void performFile(FileCommand command);
     bool canPerformFile(FileCommand command) const;
 
+    // Markdown display mode of the active Markdown tab (Cmd+1/2/3, toolbar
+    // buttons, View menu). Inert for other tabs.
+    void performMarkdownMode(MarkdownDisplayMode mode);
+    bool canPerformMarkdownMode() const;
+    // The mode of the active Ready Markdown tab, if any (menu check marks).
+    std::optional<MarkdownDisplayMode> activeMarkdownMode() const;
+
+    // Read access for the platform host and tests.
+    DocumentWorkspace& workspace() { return workspace_; }
+    ui::PdfViewport& pdfViewport() { return *viewport_; }
+    MarkdownHostView& markdownHost() { return *markdownView_; }
+    ui::Toolbar& toolbar() { return *toolbar_; }
+    FileController& fileController() { return *fileLifecycle_; }
+
     // Tab close request (tab strip / Cmd+W): runs the dirty-document prompt
     // and closes the tab when permitted (or when its save completes).
     void requestCloseTab(std::size_t index);
@@ -111,13 +133,21 @@ private:
         }
     };
 
-    explicit ShellController(const platform::ShellServices& services);
+    ShellController(const platform::ShellServices& services, std::unique_ptr<pdf::PdfEngine> engine);
 
     void buildWidgets();
     void buildToolbar();
     void layoutShell();
     void refreshTabStrip();
     void bindActiveTab();
+    void bindMarkdownTab(DocumentTab* tab);
+    // Shows the chrome of the active tab's kind (PDF toolbar items + sidebar
+    // + bars vs. the Markdown mode switcher) and relayouts when it changed.
+    void applyChromeForKind(bool markdown);
+    bool markdownChromeActive() const { return chromeMarkdown_; }
+    void syncModeButtons();
+    void onMarkdownChanged(TabId tab);
+    void updateDocumentEdited();
     void setFocus(ui::Widget* widget);
     void setStatus(std::string text);
     void setZoomDisplay(double zoom);
@@ -158,6 +188,12 @@ private:
     ui::Button* editButton_ = nullptr;
     ui::Button* addTextButton_ = nullptr;
     ui::PdfViewport* viewport_ = nullptr;
+    MarkdownHostView* markdownView_ = nullptr; // content slot of Markdown tabs
+    // Toolbar items per kind (hidden/shown by applyChromeForKind).
+    std::vector<ui::Widget*> pdfToolbarItems_;
+    std::vector<ui::Widget*> markdownToolbarItems_;
+    ui::Button* modeButtons_[3] = {nullptr, nullptr, nullptr}; // Rendered, Source, Split
+    bool chromeMarkdown_ = false;
     TextLabel* overlayLabel_ = nullptr; // loading / error state over the viewport
     TextLabel* zoomLabel_ = nullptr;
 
