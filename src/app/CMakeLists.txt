@@ -6,6 +6,7 @@ add_library(rivet_app STATIC
     MarkdownImageStore.cpp
     MarkdownPaintMeasurer.cpp
     MarkdownPreviewView.cpp
+    MarkdownSourcePane.cpp
     AnnotationBarController.cpp
     AnnotationController.cpp
     AnnotationInteraction.cpp

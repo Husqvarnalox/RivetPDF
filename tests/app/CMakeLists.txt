@@ -14,6 +14,7 @@ add_executable(rivet_app_tests
     TestPageEditingController.cpp
     TestFileController.cpp
     TestMarkdownShell.cpp
+    TestMarkdownSourcePane.cpp
     TestSearchRestart.cpp
     TestPrintCoordinator.cpp
     # Phase 5 end-to-end content editing over the real engine (PDFium-ON
