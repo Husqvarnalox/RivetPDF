@@ -16,7 +16,7 @@ The preview must update asynchronously without dropping edits or showing stale l
 
 **Live preview architecture:**
 
-1. **Debounced parsing**: After each text mutation, the shell sets a debounce timer (e.g., 300 ms). If
+1. **Debounced parsing**: After each text mutation, the shell sets a debounce timer (150 ms trailing, capped at 800 ms). If
    another mutation arrives within that window, the timer resets. When the timer fires (user paused
    typing), the shell schedules a parse job on the shared `TaskScheduler`.
 
@@ -43,7 +43,7 @@ The preview must update asynchronously without dropping edits or showing stale l
    - Repaints only visible blocks.
 
 **Tuning:**
-- Debounce window: 300 ms (user perceived as "instant" after pausing).
+- Debounce window: 150 ms trailing (800 ms cap) (user perceived as "instant" after pausing).
 - Relayout debounce during live resize: if a relayout took >12 ms, resizes space out relayouts by ≥120 ms
   (smooth drag without stuttering).
 
