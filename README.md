@@ -1,555 +1,111 @@
 # Rivet
 
-**A fast, native, open-source document editor for Windows, macOS, and Linux.**
+[![CI](https://github.com/Husqvarnalox/RivetPDF/actions/workflows/ci.yml/badge.svg)](https://github.com/Husqvarnalox/RivetPDF/actions/workflows/ci.yml)
+[![License: MPL-2.0](https://img.shields.io/badge/license-MPL--2.0-blue.svg)](LICENSE)
+![C++23](https://img.shields.io/badge/C%2B%2B-23-00599C.svg)
 
-Rivet is an open-source document editor for PDF and Markdown, focused on performance, simplicity, privacy, and full local control.
+A native, local-first PDF and Markdown editor written in C++23 (PDF via PDFium), with its own retained-mode UI toolkit, document model and command/undo stack.
 
-The long-term goal is simple:
+> **First public preview (v0.1.0).** macOS is the only desktop shell today. Not ready for daily use; expect rough edges and data-loss-class bugs. Keep backups of documents you open.
 
-> Build a real, free, native alternative to Adobe Acrobat.
+## Overview
 
-No subscriptions.
-No accounts.
-No forced cloud storage.
-No artificial feature limits.
+Rivet is a document editor for PDF and Markdown (parsed with the vendored MD4C, MIT). For PDF it edits *content*, not only annotations: existing text can be retyped in place, images replaced, and page objects moved, resized or deleted. PDFium is the only PDF backend; everything above it — document and page model, commands and undo, selection, tools, rendering strategy, caching and the UI widgets — is Rivet's own code. No Qt, Electron, WebView or other application framework is used.
 
-Your documents stay on your computer.
-
----
+Documents never leave the machine: Rivet has no network code of its own, no accounts and no telemetry (external links are handed to the system browser on click). PDF JavaScript and XFA are disabled by design ([ADR-0007](docs/adr/ADR-0007-pdf-javascript-xfa-disabled.md)).
 
 ## Status
 
-> **Early development** - Phase 5 (Content Editing) and Phase 6 (Markdown) in progress.
+| Area | State |
+| --- | --- |
+| Viewer: tabs, thumbnails, outline, search, text selection and copy, printing | Implemented (macOS) |
+| Page editing: reorder, rotate, delete, duplicate, crop, insert/merge, extract, split, undo/redo | Implemented (macOS) |
+| Saving: background Save / Save As with atomic file replacement, unsaved-changes prompts | Implemented (macOS) |
+| Annotations: highlight, underline, strikeout, notes, ink, shapes, stamps | Implemented (macOS) |
+| Content editing: select/move/resize/delete page objects, retype text, add text, replace images | Implemented (macOS), with the limits below |
+| Forms, signatures, OCR, redaction, compression, encryption, document comparison | Not implemented |
+| Windows / Linux shells | Not implemented. Portable layers are built and tested on Ubuntu/GCC in CI |
+| Markdown: Rendered (read-only), Source (with live preview) and Split views; text editing with undo/redo and background save | Implemented (macOS) |
+| Markdown WYSIWYG editing, export to PDF, print, Mermaid, math | Not implemented |
 
-Rivet is under active development. The macOS build currently provides:
+macOS is currently the primary supported desktop shell; the portable core layers build and are tested elsewhere.
 
-**PDF**: tabs, thumbnails, outline, search, text selection, printing; page-level editing (multi-select, drag reorder, rotate, delete, duplicate, crop, import/merge, extract, split, undo/redo, background Save / Save As with atomic file replacement and unsaved-changes prompts); annotations (markup, notes, ink, shapes, stamps); content editing (select, move, resize, delete page objects; retype existing text in place; add text; replace images).
+### Known limitations
 
-**Markdown**: read-only viewing with source text editing. Rendered view (read-only; no WYSIWYG editing); Source view for text editing with live preview; Split view showing both. Edit text, undo/redo with dirty tracking and background save.
+- Content editing is refused (the object stays selectable, the status bar says why) for Type3 fonts, text with unmappable glyphs, text under a clip, nested Form XObjects, and pages PDFium cannot regenerate faithfully (shading, inline images, patterns, hidden optional content).
+- Existing objects cannot be reordered in z.
+- Bundled fallback fonts (Arimo, Tinos, Cousine) cover Latin, Greek and Cyrillic only.
+- Extract and split do not carry document-level structure (outline, metadata, forms, page labels).
+- Undo history does not survive a save, and editing is paused while a save runs.
+- Closing a window with several unsaved tabs saves only one per review pass.
 
-**Not yet implemented:**
-- Markdown WYSIWYG / visual editing in Rendered mode.
-- Markdown Export to PDF and Print.
-- Markdown features: Mermaid diagrams, math rendering (LaTeX/MathML).
-- PDF forms; PDF Extract/Split document-level structure (outline, metadata, labels).
-- Windows and Linux shells (portable layers build and are tested on both).
-
-Known PDF limitations (details in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#phase-3-status-closed-2026-10-02) and [Phase 5 status](docs/ARCHITECTURE.md#phase-5-status-closed-2026-10-03)): editing is paused while a save runs; reviewing several unsaved tabs on window close saves only one per pass; split never overwrites existing files (atomically on macOS, best effort elsewhere); pages whose content PDFium cannot regenerate faithfully are read-only for content tools; existing objects cannot be reordered in z; bundled fallback fonts cover Latin, Greek and Cyrillic only.
-
-The project is not ready for daily use yet. macOS is the primary platform; Windows and Linux shells are not yet available.
-
----
-
-## Goals
-
-Rivet aims to become a full-featured PDF editor while remaining lightweight and native.
-
-The main priorities are:
-
-* Fast startup
-* Low memory usage
-* Native desktop performance
-* Smooth rendering and scrolling
-* Large document support
-* Full offline functionality
-* Cross-platform support
-* Privacy by default
-* No telemetry by default
-* No account required
-* No subscription
-* Open-source development
-
-Rivet should feel like a normal desktop application, not a website wrapped inside a desktop shell.
-
----
-
-## Platforms
-
-Planned desktop support:
-
-* Windows
-* macOS
-* Linux
-
-Possible future platforms:
-
-* iOS
-* Android
-
-Desktop is the current priority.
-
----
-
-## Planned Features
-
-### Viewing
-
-* Open and view PDF documents
-* Multiple document tabs
-* Smooth zooming and scrolling
-* Page thumbnails
-* Bookmarks
-* Text selection
-* Text search
-* Copy text
-* Fullscreen mode
-* Presentation mode
-* Printing
-
-### Page Management
-
-* Reorder pages
-* Rotate pages
-* Delete pages
-* Duplicate pages
-* Insert pages
-* Extract pages
-* Split PDFs
-* Merge PDFs
-* Crop pages
-
-### Content Editing
-
-Rivet edits actual PDF content, not only annotations:
-
-* Edit existing text in place (the block keeps its own font when that font can write the new text; otherwise a bundled metric-compatible font is embedded)
-* Add text (bundled Sans / Serif / Mono, Regular / Bold)
-* Move and delete text blocks
-* Change the font of text added by Rivet, the font size and the text color of any editable block
-* Deterministic reflow inside the block's width; longer text extends the block downward, never clipped silently
-* Move, resize, replace (PNG / JPEG) and delete images
-* Move, resize and delete vector paths
-
-What is deliberately not done: editing text set in Type3 fonts, text with unmappable glyphs, text under a clip, or anything on a page that PDFium cannot regenerate faithfully (shading, inline images, patterns, hidden optional content, ...). Such objects are selectable and the status bar explains why they are read-only. Annotations, form widgets and links are never treated as page content, and nested Form XObjects are read-only.
-
-#### Using the content tools (macOS)
-
-* **Edit** (toolbar, Content menu, Cmd+Shift+E) selects page objects. Click selects the topmost object (a text block as a unit); the status bar says what it allows (read-only with the reason, move/delete only, or retype with a bundled substitute font). Drag moves it with a live preview; arrow keys nudge by 1 pt (Shift: 10 pt, a quick burst of one key is a single undo step); Delete or Backspace removes it; Esc clears the selection.
-* Images and paths show eight handles. A corner handle keeps the aspect ratio of an image (hold Shift to resize freely; for paths it is the other way round). Text is never scaled: the handle on the right side of a text block sets its wrap width.
-* **Double-click** (or Return) on an editable text block opens the inline editor over the block. Esc cancels; clicking outside or Cmd+Return commits as one undo step. Text a bundled font cannot write is refused with the offending code points. Save, close and quit commit an open edit first. Rotated blocks are edited unrotated and keep their rotation.
-* **Add Text** (toolbar, Content menu, Cmd+Shift+T): click the page to type a new block, or drag to draw a box (its width becomes the wrap width). Font family (Sans, Serif, Mono), Bold, size and color are in the properties bar; an empty commit creates nothing.
-* The properties bar also restyles a selected text block, shows an image's pixel size, offers **Replace Image...** (PNG or JPEG, decoded in the background within size limits) and Bring to Front for text added by Rivet.
-* Limitation: Undo/Redo menu items do not yet show the name of the content command.
-
-### Annotations
-
-* Highlight
-* Underline
-* Strikeout
-* Freehand drawing
-* Shapes
-* Arrows
-* Text comments
-* Sticky notes
-* Stamps
-
-### Forms
-
-* Fill PDF forms
-* Text fields
-* Checkboxes
-* Radio buttons
-* Dropdown fields
-* Signature fields
-
-### Signatures
-
-Planned:
-
-* Drawn signatures
-* Image signatures
-* Certificate-based digital signatures
-* PDF signature validation
-
-### Document Tools
-
-Planned:
-
-* OCR
-* PDF compression
-* PDF optimization
-* Redaction
-* Watermarks
-* Headers and footers
-* Metadata editing
-* Password protection
-* Encryption
-* Document comparison
-
----
+Details: [Phase 3](docs/ARCHITECTURE.md#phase-3-status-closed-2026-10-02) and [Phase 5](docs/ARCHITECTURE.md#phase-5-status-closed-2026-10-03) status in the architecture document.
 
 ## Architecture
 
-Rivet is designed as a native C++ desktop application.
+Statically linked CMake libraries with a strict dependency direction; platform code is confined to one layer.
 
-The current planned architecture is:
-
-```text
-Rivet
-│
-├── Application
-│   ├── Commands
-│   ├── Undo / Redo
-│   ├── Document Controller
-│   ├── Selection
-│   └── Tool System
-│
-├── Editor Core
-│   ├── Document Model
-│   ├── Text Model
-│   ├── Page Objects
-│   ├── Images
-│   ├── Annotations
-│   └── Forms
-│
-├── Rendering
-│   ├── Page Renderer
-│   ├── Tile Renderer
-│   ├── Render Cache
-│   └── Viewport
-│
-├── PDF Engine
-│   └── PDFium
-│
-└── Platform
-    ├── Windows
-    ├── macOS
-    └── Linux
+```mermaid
+flowchart TD
+    exe[rivet executable] --> app[rivet_app: controllers, shell wiring]
+    exe --> mac[rivet_platform_macos: AppKit / CoreGraphics / CoreText]
+    app --> ui[rivet_ui: retained-mode widgets]
+    app --> editor[rivet_editor: page model, commands, undo, save pipeline]
+    app --> pdf[rivet_pdf: engine interfaces]
+    editor --> render[rivet_render: layout, zoom, tile cache]
+    editor --> pdf
+    ui --> render
+    pdf --> pdfium[rivet_pdfium: the only FPDF_* user]
+    render --> core[rivet_core]
+    pdfium --> core
 ```
 
-The project intentionally keeps the editor architecture separate from the underlying PDF engine.
+- **Backend isolation.** `FPDF_*` types never leave `src/pdf/pdfium/`; a null engine is used when PDFium is not compiled in ([ADR-0003](docs/adr/ADR-0003-pdfium-abstraction-boundary.md)).
+- **Rendering.** Tile-based, with a bounded, mutex-guarded tile cache and background rasterization ([ADR-0005](docs/adr/ADR-0005-tile-based-rendering.md)).
+- **Threading.** A shared `std::jthread` pool, one `SerialExecutor` per open document, and a process-wide PDFium call gate (PDFium is not thread-safe, even across documents). UI state is main-thread only; completions return through `IMainThreadDispatcher` ([ADR-0006](docs/adr/ADR-0006-serialized-pdf-access-per-document.md)).
+- **Editing.** Stable page identity, a command stack with undo/redo, atomic save replacement and background save with rebase ([ADR-0008](docs/adr/ADR-0008-page-model-and-stable-page-identity.md), [ADR-0009](docs/adr/ADR-0009-background-save-rebase-and-file-lifecycle.md), [ADR-0010](docs/adr/ADR-0010-atomic-save-replacement.md)).
+- **Content editing.** A content-object model with deterministic text reflow, font embedding with bundled metric-compatible fallbacks, and regeneration of page content on save ([ADR-0014](docs/adr/ADR-0014-content-object-model.md)–[ADR-0017](docs/adr/ADR-0017-content-regeneration-and-save.md)).
 
-This allows Rivet to maintain its own document model, editor logic, caching, UI, and tooling without tightly coupling the application to a specific PDF library.
-
----
-
-## Technology
-
-Current planned stack:
-
-| Component        | Technology                                        |
-| ---------------- | ------------------------------------------------- |
-| Language         | C++23                                             |
-| Build system     | CMake                                             |
-| PDF engine       | PDFium                                            |
-| Windows graphics | Direct2D / DirectWrite                            |
-| macOS graphics   | CoreGraphics / CoreText / Metal where appropriate |
-| Linux graphics   | Native Linux stack                                |
-| Testing          | C++ testing framework                             |
-
-The goal is to minimize unnecessary dependencies.
-
-Large application frameworks and browser-based desktop runtimes are intentionally avoided.
-
-Rivet will not use Electron.
-
----
-
-## Performance
-
-Performance is one of the core design goals.
-
-Rivet should eventually support:
-
-* Fast application startup
-* Smooth 60 FPS scrolling where possible
-* Large PDF files
-* Documents containing hundreds or thousands of pages
-* Lazy page loading
-* Tile-based rendering
-* Bounded memory usage
-* Background rendering
-* Render cache eviction
-* Incremental document loading where possible
-
-Pages should be rendered only when required instead of loading an entire document into memory.
-
-Example:
-
-```text
-Document
-
-Page 14
-Page 15
-Page 16  <- visible
-Page 17  <- visible
-Page 18
-Page 19
-
-Only the required pages and render tiles remain in memory.
-```
-
----
-
-## Privacy
-
-Rivet is designed as a local-first application.
-
-PDF documents should not need to leave the user's computer.
-
-The project does not require:
-
-* User accounts
-* Cloud storage
-* Online document processing
-* Uploading PDFs to third-party servers
-
-Features that require network access, if introduced in the future, should be optional and clearly separated from the core editor.
-
----
-
-## Why Rivet?
-
-There are many PDF viewers.
-
-There are many PDF annotation tools.
-
-There are very few high-quality, native, fully featured, free PDF editors.
-
-Many existing applications require:
-
-* Expensive subscriptions
-* Accounts
-* Cloud processing
-* Proprietary formats
-* Artificial feature restrictions
-* Large application runtimes
-
-Rivet exists to provide another option.
-
-A PDF editor should simply let you open a document, edit it, save it, and continue working.
-
----
-
-## Development Philosophy
-
-Rivet follows several principles.
-
-### Native first
-
-The desktop application should use native system capabilities instead of embedding an entire browser runtime.
-
-### Local first
-
-Documents remain local unless the user explicitly chooses otherwise.
-
-### Performance matters
-
-Memory usage, rendering latency, input latency, and startup performance are considered product features.
-
-### Dependencies must justify themselves
-
-Rivet should not reimplement complex standards purely for the sake of avoiding dependencies.
-
-At the same time, unnecessary frameworks and libraries should not become part of the core application.
-
-### Editor logic belongs to Rivet
-
-The underlying PDF engine handles the PDF format.
-
-Rivet handles:
-
-* editing behavior
-* document state
-* undo and redo
-* selection
-* tools
-* rendering strategy
-* caching
-* user experience
-
----
-
-## Repository Structure
-
-The repository will gradually move toward a structure similar to:
-
-```text
-rivet/
-├── src/
-│   ├── app/
-│   ├── core/
-│   ├── editor/
-│   ├── pdf/
-│   ├── render/
-│   ├── ui/
-│   └── platform/
-│
-├── tests/
-│
-├── third_party/
-│
-├── cmake/
-│
-├── assets/
-│
-├── CMakeLists.txt
-├── LICENSE
-└── README.md
-```
-
-The structure may change significantly while the project is still young.
-
----
+Full description: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). Design decisions: [docs/adr/](docs/adr/).
 
 ## Building
 
-Build instructions will be added once the initial project structure and dependency management are stable.
+Prerequisites (macOS): Xcode with AppleClang 21+ (C++23), CMake ≥ 3.28, Ninja.
 
-The expected toolchain will include:
-
-```text
-C++23 compiler
-CMake
-Ninja or platform-native build tools
-PDFium
+```sh
+cmake --preset debug
+cmake --build build/debug
+ctest --test-dir build/debug
 ```
 
-Supported compilers are expected to include:
+This builds **without** PDFium: the shell and all non-PDF subsystems work, PDF features are disabled at runtime. To open PDFs you must build PDFium yourself (Rivet never downloads it) and point CMake at it:
 
-* MSVC
-* Clang
-* GCC
+```sh
+export RIVET_PDFIUM_ROOT=/absolute/path/to/pdfium-install
+cmake --preset debug-pdfium
+cmake --build build/debug-pdfium
+build/debug-pdfium/src/platform/macos/rivet
+```
 
----
+PDFium build recipe: [docs/BUILDING_PDFIUM.md](docs/BUILDING_PDFIUM.md). Presets, sanitizers and more: [docs/BUILDING.md](docs/BUILDING.md).
+
+## Testing
+
+Unit and integration tests run through CTest (`ctest --test-dir build/debug`). The suite covers core utilities, render and tile-cache logic, the page model and commands, the save pipeline, annotation and content-editing logic (against generated PDF fixtures when PDFium is enabled), UI widgets and shell wiring.
+
+CI (GitHub Actions) builds with `-Werror` and runs CTest on macOS (AppleClang) and Ubuntu (GCC) with PDFium disabled. PDFium-enabled and sanitizer (ASan/UBSan, TSan) configurations are run locally before releases; they are not in CI.
 
 ## Roadmap
 
-### Phase 1 — Foundation
-
-* [x] Repository structure
-* [x] Cross-platform build system
-* [x] Application window
-* [x] Platform abstraction
-* [x] PDFium integration
-* [x] Open PDF
-* [x] Basic page rendering
-* [x] Zoom
-* [x] Scroll
-* [x] Render cache
-* [x] Tile rendering
-
-### Phase 2 — Viewer
-
-* [x] Page thumbnails
-* [x] Multiple documents
-* [x] Text extraction
-* [x] Text selection
-* [x] Copy text
-* [x] Search
-* [x] Bookmarks
-* [x] Printing
-
-### Phase 3 — Page Editing (closed)
-
-* [x] Page reorder
-* [x] Rotate
-* [x] Delete
-* [x] Duplicate
-* [x] Insert
-* [x] Extract
-* [x] Split
-* [x] Merge
-* [x] Crop
-
-### Phase 4 — Annotations
-
-* [x] Highlight
-* [x] Underline
-* [x] Strikeout
-* [x] Notes
-* [x] Drawing
-* [x] Shapes
-* [x] Stamps
-
-### Phase 5 — Content Editing (closed)
-
-* [x] Page object selection
-* [x] Text block reconstruction
-* [x] Text editing
-* [x] Font handling
-* [x] Text reflow
-* [x] Image editing
-* [x] Object movement
-* [x] Object deletion
-
-### Phase 6 — Advanced Features
-
-* [ ] Forms
-* [ ] Signatures
-* [ ] OCR
-* [ ] Redaction
-* [ ] Compression
-* [ ] Optimization
-* [ ] Encryption
-* [ ] Document comparison
-
----
+Done: PDF viewer, page editing, annotations, content editing, Markdown viewing and source editing (see Status).
+Next: form filling and signatures, then OCR, redaction, compression, encryption and document comparison. Windows and Linux shells have no schedule.
 
 ## Contributing
 
-Contributions will be welcome.
-
-The project is currently at a very early stage, so large architectural contributions should be discussed before implementation.
-
-More detailed contribution guidelines will be added as the codebase stabilizes.
-
-Future contribution areas may include:
-
-* C++ development
-* PDF internals
-* Rendering
-* Windows development
-* macOS development
-* Linux development
-* Performance optimization
-* UI/UX
-* Accessibility
-* Testing
-* Documentation
-* Localization
-
----
+See [CONTRIBUTING.md](CONTRIBUTING.md). Security reports: [SECURITY.md](SECURITY.md). Changes: [CHANGELOG.md](CHANGELOG.md).
 
 ## License
 
-Rivet is licensed under the Mozilla Public License 2.0.
-See LICENSE for details.
+[Mozilla Public License 2.0](LICENSE). Bundled fonts are under their own license (`third_party/fonts/LICENSE`).
 
----
-
-## Project Name
-
-**Rivet**
-
-The name represents the idea of a small, strong tool that holds documents together without getting in the user's way.
-
----
-
-## Disclaimer
-
-Rivet is an independent open-source project.
-
-It is not affiliated with Adobe, Adobe Acrobat, or any other commercial PDF software vendor.
-
-PDF is an open document format standardized by ISO.
-
----
-
-## Support the Project
-
-Rivet is currently developed as an open-source project.
-
-If the project becomes useful to you, the best ways to help are:
-
-* Star the repository
-* Report bugs
-* Test unusual PDF files
-* Suggest improvements
-* Contribute code
-* Improve documentation
-
----
-
-**Rivet — edit PDFs, not subscriptions.**
-
+Rivet is an independent project and is not affiliated with Adobe or any commercial PDF vendor.
