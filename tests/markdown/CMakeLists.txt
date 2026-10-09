@@ -1,5 +1,7 @@
 add_executable(rivet_markdown_tests
     TestMarkdownLayout.cpp
+    # Layout pagination for PDF export (ADR-0023).
+    TestMarkdownPaginate.cpp
     TestMarkdownParser.cpp
     TestMarkdownSlug.cpp
     TestMarkdownSourceMap.cpp

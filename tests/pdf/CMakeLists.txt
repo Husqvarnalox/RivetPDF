@@ -23,6 +23,10 @@ add_executable(rivet_pdf_tests
     TestPdfContent.cpp
     TestPdfTextLayout.cpp
     TestBundledFonts.cpp
+    # Engine-independent document-build validation and bundled-font metrics
+    # (ADR-0023): run in both build modes.
+    TestPdfBuild.cpp
+    TestBundledFontMetrics.cpp
     # View-aware reads and document assembly round trips (page editing
     # foundation): PDFium-ON bodies only.
     TestPdfPageEditing.cpp
@@ -38,6 +42,9 @@ add_executable(rivet_pdf_tests
     # Phase 5 content backend (extraction, probe, edits, assembly): PDFium-ON
     # bodies only.
     TestPdfiumContent.cpp
+    # Document builder round trips (text, links, pixels, metrics consistency,
+    # sink failures): PDFium-ON bodies only.
+    TestPdfiumBuilder.cpp
     # Compiled directly into the test binary rather than linked from
     # rivet_pdfium, so the gate tests run with RIVET_WITH_PDFIUM=OFF too. The
     # gate translation unit has no FPDF_* dependency. In PDFium-ON builds the
