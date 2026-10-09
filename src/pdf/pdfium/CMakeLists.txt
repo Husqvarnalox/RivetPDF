@@ -11,6 +11,7 @@ add_library(rivet_pdfium STATIC
     PdfiumTextPage.cpp
     PdfiumLibrary.cpp
     PdfiumStrings.cpp
+    PdfiumWriting.cpp
 )
 add_library(rivet::pdfium ALIAS rivet_pdfium)
 target_link_libraries(rivet_pdfium

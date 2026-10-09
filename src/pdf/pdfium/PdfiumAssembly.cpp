@@ -22,6 +22,7 @@
 #include "PdfiumDocument.h"
 #include "PdfiumEngine.h"
 #include "PdfiumFileSource.h"
+#include "PdfiumWriting.h"
 #include "fpdf_edit.h"          // FPDF_CreateNewDocument, FPDF_MovePages, FPDFPage_Delete, FPDFPage_SetRotation
 #include "fpdf_ppo.h"           // FPDF_ImportPagesByIndex
 #include "fpdf_save.h"          // FPDF_SaveAsCopy
@@ -149,23 +150,7 @@
 namespace rivet::pdf {
 namespace {
 
-// RAII wrapper for FPDF_DOCUMENT handles (load/create / FPDF_CloseDocument).
-class ScopedDocument {
-public:
-    explicit ScopedDocument(FPDF_DOCUMENT document) : document_(document) {}
-    ~ScopedDocument() {
-        if (document_ != nullptr) {
-            FPDF_CloseDocument(document_);
-        }
-    }
-    ScopedDocument(const ScopedDocument&) = delete;
-    ScopedDocument& operator=(const ScopedDocument&) = delete;
-
-    FPDF_DOCUMENT get() const { return document_; }
-
-private:
-    FPDF_DOCUMENT document_;
-};
+using internal::ScopedDocument;
 
 // A private FPDF_DOCUMENT opened from the exact bytes a live document was
 // opened from (same shared file source, same password). PDFium keeps the
@@ -542,59 +527,10 @@ core::Status applyContent(FPDF_DOCUMENT working,
     return core::ok();
 }
 
-// FPDF_FILEWRITE adapter forwarding to an IPdfByteSink. The first failure
-// is recorded and every later block is refused, so nothing after a failed
-// block ever reaches the sink.
-struct SinkWriter final : FPDF_FILEWRITE {
-    IPdfByteSink* sink = nullptr;
-    std::optional<core::Error> error;
-    bool threw = false;
-    std::uint64_t bytesWritten = 0;
-};
-
-// Called from inside PDFium: never lets an exception escape.
-int writeToSink(FPDF_FILEWRITE* self, const void* data, unsigned long size) noexcept {
-    auto* writer = static_cast<SinkWriter*>(self);
-    if (writer->error.has_value() || writer->threw) {
-        return 0;
-    }
-    if (size == 0) {
-        return 1;
-    }
-    try {
-        core::Status status = writer->sink->write(data, static_cast<std::size_t>(size));
-        if (!status.has_value()) {
-            writer->error.emplace(std::move(status).error());
-            return 0;
-        }
-    } catch (...) {
-        writer->threw = true;
-        return 0;
-    }
-    writer->bytesWritten += size;
-    return 1;
-}
-
-// Serializes `working` (non-incremental: a complete, self-contained file)
-// into `sink`. Caller holds the gate.
+// Serializes `working` into `sink` (see PdfiumWriting.h). Caller holds the
+// gate.
 core::Status saveTo(FPDF_DOCUMENT working, IPdfByteSink& sink) {
-    SinkWriter writer;
-    writer.version = 1;
-    writer.WriteBlock = &writeToSink;
-    writer.sink = &sink;
-
-    const bool saved = FPDF_SaveAsCopy(working, &writer, FPDF_NO_INCREMENTAL) != 0;
-    // Checked BEFORE `saved`: the final flush's result is dropped by PDFium.
-    if (writer.error.has_value()) {
-        return std::unexpected(std::move(*writer.error));
-    }
-    if (writer.threw) {
-        return std::unexpected(internalError("the output sink threw an exception"));
-    }
-    if (!saved || writer.bytesWritten == 0) {
-        return std::unexpected(internalError("PDFium failed to serialize the document"));
-    }
-    return core::ok();
+    return internal::saveDocumentToSink(working, sink);
 }
 
 core::Status verifyPageCount(FPDF_DOCUMENT working, std::size_t expected, const char* step) {

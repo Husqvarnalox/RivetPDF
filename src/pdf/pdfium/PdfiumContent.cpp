@@ -15,6 +15,7 @@
 #include <utility>
 
 #include "PdfiumDisplayTransform.h"
+#include "PdfiumWriting.h"
 #include "core/CheckedArithmetic.hpp"
 #include "fpdf_annot.h"
 #include "fpdf_edit.h"
@@ -35,25 +36,7 @@ std::unexpected<core::Error> fail(core::ErrorCode code, std::string message) {
     return std::unexpected(makeErr(code, std::move(message)));
 }
 
-// RAII for FPDF_DOCUMENT (scratch documents).
-class ScopedDocument {
-public:
-    explicit ScopedDocument(FPDF_DOCUMENT document = nullptr) : document_(document) {}
-    ~ScopedDocument() { reset(); }
-    ScopedDocument(const ScopedDocument&) = delete;
-    ScopedDocument& operator=(const ScopedDocument&) = delete;
-    void reset() {
-        if (document_ != nullptr) {
-            FPDF_CloseDocument(document_);
-            document_ = nullptr;
-        }
-    }
-    FPDF_DOCUMENT get() const { return document_; }
-    FPDF_DOCUMENT release() { return std::exchange(document_, nullptr); }
-
-private:
-    FPDF_DOCUMENT document_;
-};
+// FPDF_DOCUMENT RAII: internal::ScopedDocument (PdfiumWriting.h).
 
 // A page object not yet owned by a page: destroyed unless released.
 class OwnedObject {
@@ -728,21 +711,6 @@ struct ApplyContext {
     std::unordered_set<std::uint64_t> substituted;
     std::size_t createdLines = 0;
 };
-
-// In-memory FPDF_FILEACCESS over a JPEG.
-struct JpegSource {
-    const std::uint8_t* data = nullptr;
-    std::size_t size = 0;
-};
-
-int readJpegBlock(void* param, unsigned long position, unsigned char* buffer, unsigned long size) {
-    const auto* source = static_cast<const JpegSource*>(param);
-    if (position > source->size || size > source->size - position) {
-        return 0;
-    }
-    std::memcpy(buffer, source->data + position, size);
-    return 1;
-}
 
 std::vector<std::uint8_t> rawImageData(FPDF_PAGEOBJECT image) {
     const unsigned long size = FPDFImageObj_GetImageDataRaw(image, nullptr, 0);
