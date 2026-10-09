@@ -1,6 +1,7 @@
 #include "PdfiumEngine.h"
 
 #include "PdfiumAssembly.h"
+#include "PdfiumBuilder.h"
 #include "PdfiumCallGate.hpp"
 #include "PdfiumDocument.h"
 #include "PdfiumFileSource.h"
@@ -129,6 +130,10 @@ core::Status PdfiumEngine::assembleDocument(const PdfAssemblyRequest& request, I
                                            std::vector<PdfAssembledPageAnnotations>* annotationReport,
                                            std::vector<PdfAssembledPageContent>* contentReport) {
     return assembleWithPdfium(*this, request, sink, annotationReport, contentReport);
+}
+
+core::Status PdfiumEngine::buildDocument(const PdfBuildDocument& build, IPdfByteSink& sink) {
+    return buildWithPdfium(build, sink);
 }
 
 } // namespace rivet::pdf

@@ -5,6 +5,7 @@
 #include "core/geometry/Rect.hpp"
 #include "pdf/PdfAnnotation.hpp"
 #include "pdf/PdfAssembly.hpp"
+#include "pdf/PdfBuild.hpp"
 #include "pdf/PdfContent.hpp"
 #include "pdf/PdfPageGeometry.hpp"
 #include "pdf/PdfText.hpp"
@@ -281,6 +282,19 @@ public:
         (void)contentReport;
         return std::unexpected(core::makeError(core::ErrorCode::NotAvailable,
                                                "this backend cannot write documents", "pdf"));
+    }
+
+    // Materializes a NEW document described by `build` (PdfBuild.hpp,
+    // ADR-0023) and streams it to `sink`. `build` is validated first
+    // (validatePdfBuild; InvalidArgument and nothing written when it fails).
+    // Same sink contract as assembleDocument: on error the bytes already
+    // handed to the sink are unspecified and must be discarded; the sink
+    // must not call back into the engine. Default: NotAvailable.
+    virtual core::Status buildDocument(const PdfBuildDocument& build, IPdfByteSink& sink) {
+        (void)build;
+        (void)sink;
+        return std::unexpected(core::makeError(core::ErrorCode::NotAvailable,
+                                               "this backend cannot build documents", "pdf"));
     }
 };
 
