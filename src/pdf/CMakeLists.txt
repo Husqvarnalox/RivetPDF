@@ -2,6 +2,7 @@
 set(RIVET_PDF_SOURCES
     BundledFonts.cpp
     PdfAnnotation.cpp
+    PdfBuild.cpp
     PdfContent.cpp
     PdfPageGeometry.cpp
     PdfText.cpp

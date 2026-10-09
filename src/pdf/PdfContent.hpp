@@ -193,6 +193,12 @@ struct PdfImageData {
     std::vector<std::uint8_t> bytes;
 };
 
+// Consistency of image data with its format: dimensions within
+// kMaxImageSide / kMaxImagePixels, a JPEG of plausible size starting with
+// the SOI marker, a BGRA buffer large enough for its stride and rows.
+// InvalidArgument otherwise. Shared by content edits and document builds.
+core::Status validateImageData(const PdfImageData& image);
+
 // A change of one existing (source) top-level object.
 struct PdfObjectEdit {
     std::uint32_t sourceIndex = 0;

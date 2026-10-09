@@ -38,7 +38,9 @@ bool rigid(const core::Matrix& m) {
            std::fabs(m.a * m.a + m.b * m.b - 1.0) <= kRigidEpsilon;
 }
 
-core::Status validateImage(const PdfImageData& image) {
+} // namespace
+
+core::Status validateImageData(const PdfImageData& image) {
     if (image.width == 0 || image.height == 0 || image.width > kMaxImageSide || image.height > kMaxImageSide) {
         return invalid("replacement image dimensions out of range");
     }
@@ -75,8 +77,6 @@ core::Status validateImage(const PdfImageData& image) {
     return invalid("unknown replacement image format");
 }
 
-} // namespace
-
 core::Status validate(const PdfPageContentEdits& edits, std::size_t sourceObjectCount) {
     // --- Object edits -------------------------------------------------------
     std::set<std::uint32_t> editedObjects;
@@ -93,7 +93,7 @@ core::Status validate(const PdfPageContentEdits& edits, std::size_t sourceObject
         }
         if (edit.replaceImage != nullptr) {
             if (edit.remove) return invalid("object is both removed and replaced");
-            if (core::Status status = validateImage(*edit.replaceImage); !status) return status;
+            if (core::Status status = validateImageData(*edit.replaceImage); !status) return status;
         }
     }
 
