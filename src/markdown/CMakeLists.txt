@@ -6,6 +6,7 @@ add_subdirectory(${CMAKE_SOURCE_DIR}/third_party/md4c ${CMAKE_BINARY_DIR}/third_
 add_library(rivet_markdown STATIC
     Md4cMarkdownParser.cpp
     MarkdownLayout.cpp
+    MarkdownPaginate.cpp
     MarkdownPlainText.cpp
     MarkdownSourceMap.cpp
     MarkdownSlug.cpp
