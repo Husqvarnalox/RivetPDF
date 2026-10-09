@@ -34,6 +34,7 @@ void MarkdownImageStore::setBaseDirectory(std::filesystem::path directory) {
 
 void MarkdownImageStore::clear() {
     entries_.clear();
+    seenUrls_.clear();
     totalBytes_ = 0;
     ++generation_;
 }
@@ -85,6 +86,7 @@ MarkdownImageStore::Entry& MarkdownImageStore::entryFor(const std::string& key) 
 
 markdown::ImageInfo MarkdownImageStore::imageInfo(std::string_view url) const {
     markdown::ImageInfo info;
+    if (seenUrls_.size() < kMaxInFlight) seenUrls_.emplace(url);
     const std::filesystem::path path = resolve(url);
     if (path.empty()) {
         info.state = markdown::ImageState::Blocked;
@@ -118,6 +120,31 @@ std::shared_ptr<const core::Bitmap> MarkdownImageStore::bitmap(std::string_view 
     if (path.empty()) return nullptr;
     const auto it = entries_.find(path.string());
     return it != entries_.end() && it->second.state == Entry::State::Ready ? it->second.bitmap : nullptr;
+}
+
+ExportImageMap MarkdownImageStore::snapshot() const {
+    ExportImageMap images;
+    images.reserve(seenUrls_.size());
+    for (const std::string& url : seenUrls_) {
+        ExportImage image;
+        const std::filesystem::path path = resolve(url);
+        if (path.empty()) {
+            image.info.state = markdown::ImageState::Blocked;
+        } else if (const auto it = entries_.find(path.string()); it != entries_.end()) {
+            switch (it->second.state) {
+            case Entry::State::Loading: break;
+            case Entry::State::Blocked: image.info.state = markdown::ImageState::Blocked; break;
+            case Entry::State::Ready:
+                image.info.state = markdown::ImageState::Known;
+                image.info.width = static_cast<double>(it->second.bitmap->width());
+                image.info.height = static_cast<double>(it->second.bitmap->height());
+                image.bitmap = it->second.bitmap;
+                break;
+            }
+        }
+        images.emplace(url, std::move(image));
+    }
+    return images;
 }
 
 ImageBlockReason MarkdownImageStore::blockReason(std::string_view url) const {

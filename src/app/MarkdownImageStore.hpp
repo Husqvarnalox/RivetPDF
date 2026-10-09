@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 #pragma once
 
+#include "app/MarkdownPdfExport.hpp"
 #include "core/Bitmap.hpp"
 #include "core/async/AsyncScope.hpp"
 #include "core/async/IMainThreadDispatcher.hpp"
@@ -15,6 +16,7 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <unordered_set>
 
 namespace rivet::app {
 
@@ -81,6 +83,12 @@ public:
     std::shared_ptr<const core::Bitmap> bitmap(std::string_view url) const;
     ImageBlockReason blockReason(std::string_view url) const;
 
+    // Immutable copy of the images the layout asked for (by URL as written),
+    // for an export running on a worker: Ready -> Known + pixels (shared,
+    // never copied), Blocked -> Blocked, still loading -> Unknown. Starts no
+    // load. Main thread.
+    ExportImageMap snapshot() const;
+
     // Resolves a document URL to the file it would load, or empty when it is
     // not a local path (remote scheme, empty, NUL byte). Exposed for tests.
     std::filesystem::path resolve(std::string_view url) const;
@@ -112,6 +120,9 @@ private:
     std::filesystem::path baseDirectory_;
     std::function<void()> onChanged_;
     mutable std::unordered_map<std::string, Entry> entries_;
+    // URLs imageInfo() was asked about (snapshot() keys), bounded like the
+    // entries; cleared with them.
+    mutable std::unordered_set<std::string> seenUrls_;
     mutable std::uint64_t totalBytes_ = 0;
     std::uint64_t generation_ = 1;
     mutable core::AsyncScope scope_;
