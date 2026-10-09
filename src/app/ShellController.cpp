@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0
 #include "app/ShellController.hpp"
 
+#include "app/MarkdownPreviewView.hpp"
+
 #include "core/Error.hpp"
 #include "ui/Button.hpp"
 
@@ -37,6 +39,10 @@ ShellController::ShellController(const platform::ShellServices& services, std::u
                         [this](std::string text) { setStatus(std::move(text)); }) {}
 
 ShellController::~ShellController() {
+    // The Markdown exporter's workers use the engine and hand documents to
+    // the print coordinator: stop them first.
+    if (fileLifecycle_ != nullptr) fileLifecycle_->setMarkdownExporter(nullptr);
+    markdownExport_.reset();
     // A print spool borrows a session's document: stop it before anything
     // is torn down.
     printCoordinator_.cancel();
@@ -162,6 +168,19 @@ void ShellController::buildWidgets() {
                    : std::vector<core::PageId>{};
     });
     fileLifecycle_->installLifecycleHandlers();
+
+    // Markdown export / print (Export as PDF…, Print on a Markdown tab).
+    markdownExport_ = std::make_unique<MarkdownExportController>(
+        *engine_, *context_, scheduler_, printCoordinator_, [this](std::string text) { setStatus(std::move(text)); });
+    markdownExport_->setImageSnapshotProvider([this](const DocumentTab& tab) {
+        // The preview's decoded images, when it shows this tab.
+        if (markdownView_ == nullptr || markdownView_->state() != tab.markdown() ||
+            markdownView_->previewView() == nullptr) {
+            return ExportImageMap{};
+        }
+        return markdownView_->previewView()->imageStore().snapshot();
+    });
+    fileLifecycle_->setMarkdownExporter(markdownExport_.get());
 
     // Workspace events.
     workspace_.setOnTabsChanged([this] { refreshTabStrip(); });
@@ -612,6 +631,9 @@ void ShellController::setFocus(ui::Widget* widget) {
 bool ShellController::handleKeyEvent(const ui::KeyEvent& event) {
     // 0. Escape cancels a print job being prepared before anything else.
     if (event.key == ui::Key::Escape && printCoordinator_.requestCancel()) return true;
+    if (event.key == ui::Key::Escape && markdownExport_ != nullptr && markdownExport_->requestCancelPrint()) {
+        return true;
+    }
 
     // 1. The focused widget (a text field) consumes its keys first.
     if (focusedWidget_ != nullptr && focusedWidget_->onKey(event)) return true;
@@ -771,8 +793,8 @@ void ShellController::updateWindowTitle() {
 // Printing: the coordinator runs panel -> worker spool -> platform print for
 // the ACTIVE tab; nothing is rasterized on the main thread.
 void ShellController::handlePrintRequest() {
-    if (context_ != nullptr && context_->readyMarkdownTab() != nullptr) {
-        setStatus("Printing is only available for PDF documents");
+    if (DocumentTab* markdown = context_ != nullptr ? context_->readyMarkdownTab() : nullptr; markdown != nullptr) {
+        if (markdownExport_ != nullptr) markdownExport_->print(*markdown);
         return;
     }
     DocumentTab* tab = readyActiveTab();

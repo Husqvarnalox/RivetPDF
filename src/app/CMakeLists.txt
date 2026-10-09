@@ -3,6 +3,7 @@ add_library(rivet_app STATIC
     MarkdownTabState.cpp
     MarkdownHostView.cpp
     MarkdownFind.cpp
+    MarkdownExportController.cpp
     MarkdownImageStore.cpp
     MarkdownPaintMeasurer.cpp
     MarkdownParseCoordinator.cpp

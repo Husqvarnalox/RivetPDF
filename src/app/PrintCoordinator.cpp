@@ -55,6 +55,30 @@ bool hasEdits(const editor::PageModelSnapshot& snapshot) {
 
 } // namespace
 
+core::Result<std::filesystem::path> createPrivatePrintDirectory() {
+    std::error_code error;
+    const std::filesystem::path parent = std::filesystem::temp_directory_path(error);
+    if (error) {
+        return std::unexpected(
+            printError(core::ErrorCode::Io, "no temporary directory for printing: " + error.message()));
+    }
+    std::random_device device;
+    for (int attempt = 0; attempt < 16; ++attempt) {
+        const std::uint64_t token = (std::uint64_t{device()} << 32) ^ device();
+        const std::filesystem::path candidate = parent / std::format("rivet-print-doc-{:016x}", token);
+        if (std::filesystem::create_directory(candidate, error)) {
+            std::filesystem::permissions(candidate, std::filesystem::perms::owner_all,
+                                         std::filesystem::perm_options::replace, error);
+            return candidate;
+        }
+        if (error) {
+            return std::unexpected(
+                printError(core::ErrorCode::Io, "cannot create the print working directory: " + error.message()));
+        }
+    }
+    return std::unexpected(printError(core::ErrorCode::Io, "cannot find a unique print directory name"));
+}
+
 // The edited document a print job renders from: the page-model snapshot
 // assembled (all pages, model order) into a private temp file and reopened.
 // Page `position` of the reopened document is model position `position`.
@@ -95,23 +119,9 @@ public:
 
 private:
     std::optional<core::Error> assembleAndOpen() {
-        std::error_code error;
-        const std::filesystem::path parent = std::filesystem::temp_directory_path(error);
-        if (error) return printError(core::ErrorCode::Io, "no temporary directory for printing: " + error.message());
-        std::random_device device;
-        for (int attempt = 0; attempt < 16 && directory_.empty(); ++attempt) {
-            const std::uint64_t token = (std::uint64_t{device()} << 32) ^ device();
-            const std::filesystem::path candidate = parent / std::format("rivet-print-doc-{:016x}", token);
-            if (std::filesystem::create_directory(candidate, error)) {
-                directory_ = candidate;
-                std::filesystem::permissions(directory_, std::filesystem::perms::owner_all,
-                                             std::filesystem::perm_options::replace, error);
-            } else if (error) {
-                return printError(core::ErrorCode::Io,
-                                  "cannot create the print working directory: " + error.message());
-            }
-        }
-        if (directory_.empty()) return printError(core::ErrorCode::Io, "cannot find a unique print directory name");
+        auto directory = createPrivatePrintDirectory();
+        if (!directory.has_value()) return std::move(directory).error();
+        directory_ = std::move(*directory);
 
         editor::DocumentWriteJob job;
         job.kind = editor::DocumentWriteJob::Kind::Extract;
@@ -274,12 +284,89 @@ void PrintCoordinator::print(TabId tabId) {
     }
 }
 
+void PrintCoordinator::printDocument(std::shared_ptr<pdf::PdfDocument> document, std::string jobTitle,
+                                     std::shared_ptr<void> keepAlive) {
+    if (spooler_.isActive()) {
+        setStatus_("Already preparing a print job (Esc to cancel)");
+        return;
+    }
+    if (printService_ == nullptr || dispatcher_ == nullptr) {
+        setStatus_("No print service available on this platform backend");
+        return;
+    }
+    if (document == nullptr || document->info().pageCount == 0) {
+        setStatus_("Nothing to print — the document has no pages");
+        return;
+    }
+    // The document is owned here (not by a tab): the modal panel cannot
+    // invalidate it. Page views are read up front, on the main thread.
+    const std::size_t pageCount = document->info().pageCount;
+    std::vector<pdf::PdfPageView> views;
+    std::vector<core::Size> sizes;
+    views.reserve(pageCount);
+    sizes.reserve(pageCount);
+    for (std::size_t index = 0; index < pageCount; ++index) {
+        auto info = document->pageInfo(index);
+        if (!info.has_value()) {
+            setStatus_("Print failed: " + core::describe(info.error()));
+            return;
+        }
+        views.push_back(info->view);
+        sizes.push_back(info->sizePoints);
+    }
+
+    auto settings = printService_->choosePrintSettings(platform::PrintSetup{jobTitle, pageCount, sizes.front()});
+    if (!settings.has_value()) {
+        if (settings.error().code != core::ErrorCode::Cancelled) {
+            setStatus_("Print failed: " + core::describe(settings.error()));
+        }
+        return;
+    }
+    if (spooler_.isActive()) {
+        setStatus_("Already preparing a print job (Esc to cancel)");
+        return;
+    }
+
+    std::vector<editor::PrintPageSource> pages;
+    pages.reserve(pageCount);
+    for (std::size_t index = 0; index < pageCount; ++index) {
+        pages.push_back(editor::PrintPageSource{
+            sizes[index], [document, index, view = views[index]](const core::Rect& bandRectPoints,
+                                                                 double devicePixelsPerPoint) {
+                return document->renderPage(index, view, bandRectPoints, devicePixelsPerPoint);
+            }});
+    }
+    editor::PrintSpoolOptions options;
+    options.firstPage = settings->firstPage;
+    options.lastPage = settings->lastPage;
+    const std::size_t selected = settings->lastPage - settings->firstPage + 1;
+
+    jobDocument_.reset();
+    jobSettings_ = std::move(*settings);
+    jobAbandoned_ = false;
+    jobAssembly_.reset();
+    jobKeepAlive_ = std::move(keepAlive);
+    setStatus_(std::format("Preparing to print… 0/{} (Esc to cancel)", selected));
+    const core::Status started = spooler_.start(
+        std::move(pages), std::move(options),
+        [this](std::size_t done, std::size_t total) {
+            setStatus_(std::format("Preparing to print… {}/{} (Esc to cancel)", done, total));
+        },
+        [this](core::Result<editor::PrintSpool> spool) { handleSpooled(std::move(spool)); });
+    if (!started.has_value()) {
+        jobSettings_ = {};
+        jobKeepAlive_.reset();
+        setStatus_("Print failed: " + core::describe(started.error()));
+    }
+}
+
 // Step 3 (main thread): hand the finished spool to the platform. The spool
 // (and its directory) dies when this returns.
 void PrintCoordinator::handleSpooled(core::Result<editor::PrintSpool> spool) {
     const platform::PrintSettings settings = std::exchange(jobSettings_, {});
     const bool abandoned = std::exchange(jobAbandoned_, false);
     jobDocument_.reset();
+    jobKeepAlive_.reset();
     // The spooler drops its job (and the render functions' reference) after
     // this callback; releasing ours makes the temp file go with it.
     jobAssembly_.reset();

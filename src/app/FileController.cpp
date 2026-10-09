@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0
 #include "app/FileController.hpp"
 
+#include "app/MarkdownExportController.hpp"
+
 #include <cctype>
 #include <format>
 #include <system_error>
@@ -76,6 +78,7 @@ bool FileController::canPerform(FileCommand command) const {
     const DocumentTab* tab = activeFileTab();
     if (tab == nullptr) return false;
     if (command == FileCommand::Save || command == FileCommand::SaveAs) return true;
+    if (command == FileCommand::ExportPdf) return markdownExporter_ != nullptr && markdownExporter_->canExport(*tab);
     if (!tab->isPdf()) return false; // import/merge/extract/split are PDF page operations
     if (command == FileCommand::Extract && selectionProvider_ != nullptr) {
         return !selectionProvider_().empty();
@@ -87,6 +90,14 @@ bool FileController::canPerform(FileCommand command) const {
 void FileController::perform(FileCommand command) {
     DocumentTab* tab = activeFileTab();
     if (tab == nullptr) return;
+    if (command == FileCommand::ExportPdf) {
+        if (!tab->isMarkdown()) {
+            setStatus_("Export as PDF is only available for Markdown documents");
+        } else if (markdownExporter_ != nullptr) {
+            markdownExporter_->exportToPdf(*tab);
+        }
+        return;
+    }
     if (command != FileCommand::Save && command != FileCommand::SaveAs && !tab->isPdf()) {
         setStatus_("This command is only available for PDF documents");
         return;
@@ -101,6 +112,7 @@ void FileController::perform(FileCommand command) {
         if (selectionProvider_ != nullptr) extract(*tab, selectionProvider_());
         break;
     case FileCommand::Split: split(*tab); break;
+    case FileCommand::ExportPdf: break; // handled above
     }
 }
 

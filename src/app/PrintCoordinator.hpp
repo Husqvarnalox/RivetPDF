@@ -10,6 +10,7 @@
 #include "pdf/PdfEngine.hpp"
 #include "platform/Print.hpp"
 
+#include <filesystem>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -20,6 +21,11 @@ namespace rivet::app {
 // Converts a finished editor spool into the platform's spool description
 // (rivet_platform stays independent of rivet_editor).
 platform::PrintSpoolDescription toPrintSpoolDescription(const editor::PrintSpool& spool);
+
+// A new private (owner-only) working directory under the system temp
+// directory, named "rivet-print-doc-<random>", for a document printed from a
+// temporary file. The caller removes it.
+core::Result<std::filesystem::path> createPrivatePrintDirectory();
 
 // The application print flow for one shell:
 //
@@ -43,6 +49,11 @@ platform::PrintSpoolDescription toPrintSpoolDescription(const editor::PrintSpool
 // the pages are rendered from that. The temp file is removed when the job
 // ends, whether it finished, failed or was cancelled. Without edits the
 // source documents are rendered directly and nothing is assembled.
+//
+// printDocument() prints a standalone document (a Markdown tab exported to a
+// temporary PDF): the same panel -> spool -> platform flow over its native
+// page views; the job owns the document and `keepAlive` (released when the
+// job ends, so the temp file goes away with it).
 //
 // Lifetime: the spool job borrows the session's PdfDocument. The owner must
 // call cancelIfDocument() before a session is destroyed (tab close) and
@@ -69,6 +80,13 @@ public:
     // is gone, not ready, or changed page count while the panel was up is
     // reported in the status bar and nothing is printed.
     void print(TabId tab);
+
+    // Prints `document` (all of its pages offered in the panel, its native
+    // page views) under `jobTitle`. The job keeps `document` and `keepAlive`
+    // alive until it ends (finished, failed or cancelled), then releases
+    // them; a refused request releases them before returning.
+    void printDocument(std::shared_ptr<pdf::PdfDocument> document, std::string jobTitle,
+                       std::shared_ptr<void> keepAlive);
 
     // True while pages are being spooled.
     bool isSpooling() const { return spooler_.isActive(); }
@@ -99,6 +117,7 @@ private:
     platform::PrintSettings jobSettings_;
     bool jobAbandoned_ = false; // its document went away
     std::shared_ptr<Assembly> jobAssembly_; // the edited-document source, if any
+    std::shared_ptr<void> jobKeepAlive_;    // printDocument's owner of the temp file, if any
 
     // Declared last: destroyed first (cancels and waits for its worker).
     editor::PrintSpooler spooler_;

@@ -7,6 +7,7 @@
 #include "app/ContentController.hpp"
 #include "app/DocumentWorkspace.hpp"
 #include "app/FileController.hpp"
+#include "app/MarkdownExportController.hpp"
 #include "app/MarkdownHostView.hpp"
 #include "app/PageEditingController.hpp"
 #include "app/PasswordPromptController.hpp"
@@ -118,6 +119,7 @@ public:
     MarkdownHostView& markdownHost() { return *markdownView_; }
     ui::Toolbar& toolbar() { return *toolbar_; }
     FileController& fileController() { return *fileLifecycle_; }
+    MarkdownExportController& markdownExport() { return *markdownExport_; }
 
     // Tab close request (tab strip / Cmd+W): runs the dirty-document prompt
     // and closes the tab when permitted (or when its save completes).
@@ -210,6 +212,9 @@ private:
     std::unique_ptr<StatusBarController> statusBar_;
     std::unique_ptr<PageEditingController> pageEditing_;
     std::unique_ptr<FileController> fileLifecycle_;
+    // Export as PDF / printing of Markdown tabs (references printCoordinator_;
+    // reset first in the destructor).
+    std::unique_ptr<MarkdownExportController> markdownExport_;
     std::unique_ptr<AnnotationController> annotations_;
     std::unique_ptr<AnnotationBarController> annotationBar_;
     // Declared after annotations_: destroyed before it (the content tool

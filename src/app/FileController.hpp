@@ -40,7 +40,10 @@ enum class FileCommand : std::uint8_t {
     Merge = 4,        // append all pages of another PDF
     Extract = 5,      // write the selected pages to a new PDF
     Split = 6,        // write page ranges to one new PDF each
+    ExportPdf = 7,    // Markdown tabs: export as PDF (MarkdownExportController)
 };
+
+class MarkdownExportController;
 
 // The application file lifecycle for one shell, on top of the editor's save
 // pipeline (editor::DocumentSaver) and the platform dialogs/alerts:
@@ -128,6 +131,8 @@ public:
     // Where Extract takes its pages from (wired by the shell to the page
     // editing controller).
     void setSelectionProvider(SelectionProvider provider) { selectionProvider_ = std::move(provider); }
+    // Where ExportPdf goes (wired by the shell; null disables the command).
+    void setMarkdownExporter(MarkdownExportController* exporter) { markdownExporter_ = exporter; }
 
     bool canPerform(FileCommand command) const;
     // Runs the command on the active tab (a status message otherwise).
@@ -239,6 +244,7 @@ private:
     StatusSink setStatus_;
     NotifySink notifyDocumentChanged_;
     SelectionProvider selectionProvider_;
+    MarkdownExportController* markdownExporter_ = nullptr;
     std::function<int(core::io::AtomicWriteFault)> markdownFaultInjector_;
 
     // Guards dispatcher-posted completions against a destroyed controller
