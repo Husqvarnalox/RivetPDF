@@ -19,6 +19,10 @@ add_executable(rivet_app_tests
     TestMarkdownLive.cpp
     TestSearchRestart.cpp
     TestPrintCoordinator.cpp
+    # Phase 6A Markdown -> PDF export: the portable exporter and the
+    # Export as PDF / Markdown print controller (fake engine).
+    TestMarkdownExport.cpp
+    TestMarkdownExportController.cpp
     # Phase 5 end-to-end content editing over the real engine (PDFium-ON
     # bodies; early return without a backend).
     TestContentIntegration.cpp
@@ -31,6 +35,9 @@ add_executable(rivet_app_tests
     # PDFium-ON round trips through the file lifecycle (early return
     # without a backend).
     TestFileRoundTripPdfium.cpp
+    # PDFium-ON Markdown export reopened through the real engine (early
+    # return without a backend).
+    TestMarkdownExportPdfium.cpp
 )
 
 add_test(NAME app COMMAND rivet_app_tests)
