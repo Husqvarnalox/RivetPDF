@@ -180,6 +180,10 @@ int main(int argc, char** argv) {
         saveAsItem.tag = static_cast<NSInteger>(rivet::app::FileCommand::SaveAs);
         [saveAsItem setTarget:bridge];
         saveAsItem.keyEquivalentModifierMask = NSEventModifierFlagCommand | NSEventModifierFlagShift;
+        NSMenuItem* exportPdfItem =
+            [fileMenu addItemWithTitle:@"Export as PDF…" action:@selector(fileCommand:) keyEquivalent:@""];
+        exportPdfItem.tag = static_cast<NSInteger>(rivet::app::FileCommand::ExportPdf);
+        [exportPdfItem setTarget:bridge];
         [fileMenu addItem:[NSMenuItem separatorItem]];
         const std::pair<NSString*, rivet::app::FileCommand> fileItems[] = {
             {@"Insert Pages Before Current…", rivet::app::FileCommand::ImportBefore},
