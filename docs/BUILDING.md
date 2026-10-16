@@ -4,7 +4,7 @@ How to configure, build, test, and run Rivet from source.
 
 Rivet is built with CMake (>= 3.28) and the Ninja generator. macOS is the
 first supported development platform; Linux has an X11 desktop shell (see
-section 6); Windows support is planned.
+section 6) and Windows a Win32/Direct2D shell (section 7).
 
 ---
 
@@ -212,3 +212,55 @@ Behaviour and current limits of the Linux shell:
 - **Scrolling**: wheel notches (core X11 buttons 4-7); no XInput2 smooth
   scrolling yet.
 - **Links** open through `xdg-open`.
+
+## 7. Windows (Win32 + Direct2D desktop shell)
+
+`src/platform/windows` implements every platform abstraction with Win32
+windows and menus, Direct2D drawing, DirectWrite text, WIC image decoding,
+the common item dialogs, TaskDialog alerts, the Win32 clipboard,
+`ShellExecuteW` for links and GDI printing. Windows 10 (1903+) and 11, x64
+and ARM64. Only this directory (plus the Win32 file APIs of
+`core/io/AtomicFileWriter`) uses Windows APIs.
+
+Build from a "Developer PowerShell for VS 2022" (MSVC 19.4x, C++23) with
+CMake and Ninja:
+
+```powershell
+cmake -S . -B build/debug -G Ninja -DCMAKE_BUILD_TYPE=Debug -DCMAKE_COMPILE_WARNING_AS_ERROR=ON
+cmake --build build/debug
+ctest --test-dir build/debug --output-on-failure
+build/debug/src/platform/windows/rivet.exe file.pdf
+```
+
+clang/LLVM-MinGW also builds it (CI-independent cross check, e.g. from the
+`mstorsjo/llvm-mingw` image with `-DCMAKE_SYSTEM_NAME=Windows` and
+`x86_64-w64-mingw32-clang++` / `aarch64-w64-mingw32-clang++`). PDFium on
+Windows is not wired up yet (`RIVET_WITH_PDFIUM=OFF`).
+
+`rivet.exe` embeds a manifest: per-monitor-v2 DPI awareness, common controls
+v6 and UTF-8 as the process code page (so `std::filesystem::path::string()`
+is UTF-8).
+
+Behaviour and current limits of the Windows shell:
+
+- **Window**: one top-level window (min 940x600), `*` title prefix for
+  unsaved changes, dark title bar when the system app theme is dark. The
+  close button, Alt+F4 and File > Exit (Ctrl+Q) go through the same
+  unsaved-changes prompts as macOS; an accepted close ends the app. Logoff
+  and shutdown (`WM_QUERYENDSESSION`) are not intercepted yet.
+- **Menus**: a native menu bar built from `app::buildMenuBar()`; enable and
+  check states refresh when a menu opens; Alt/F10 keyboard access.
+- **Keys**: Ctrl is the primary shortcut modifier (macOS Cmd), Alt = Option,
+  the Windows key = the macOS Control key; Ctrl+Tab cycles tabs. Text
+  arrives through `WM_CHAR` (dead keys, IME results, AltGr, surrogate pairs);
+  IME composition is shown by the system window, not inline.
+- **HiDPI**: per monitor, live (`WM_DPICHANGED`).
+- **Alerts**: TaskDialog (Save / Don't Save / Cancel, Esc = Cancel);
+  text prompts use a small native dialog. Like `NSAlert`, main-thread tasks
+  wait until a dialog is answered (also for file and print dialogs).
+- **Clipboard**: `CF_UNICODETEXT`; LF is written as CRLF and read back as LF.
+- **Printing**: the system print dialog (printer, page range, copies);
+  pages are scaled to fit the printable area and centered.
+- **Scrolling**: wheel and horizontal wheel in 48-point notches (Shift turns
+  the vertical wheel horizontal); no precision-touchpad inertia.
+- **File drops** from Explorer open the dropped documents.
