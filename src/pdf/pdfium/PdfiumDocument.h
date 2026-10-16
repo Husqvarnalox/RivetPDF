@@ -96,6 +96,11 @@ public:
     // (JavaScript and XFA disabled) and cached (ADR-0024).
     core::Result<PdfFormInfoPtr> formInfo() const override;
 
+    // Read once from the live handle (signature dictionaries are never
+    // touched by rendering) and cached; byte ranges are checked against the
+    // size of the file source (ADR-0025).
+    core::Result<PdfSignatureListPtr> signatures() const override;
+
     core::Result<PdfPageContentPtr> pageContent(std::size_t pageIndex,
                                                 const PdfPageContentEditsPtr& edits) const override;
 
@@ -194,6 +199,8 @@ private:
 
     // AcroForm description (ADR-0024), read once under the gate.
     mutable PdfFormInfoPtr formInfo_;
+    // Digital signatures (ADR-0025), read once under the gate.
+    mutable PdfSignatureListPtr signatures_;
     // Form-fill environment over the LIVE document, used only to DRAW
     // widget annotations (FPDF_RenderPageBitmap* never draws them; see
     // renderPageImpl). Created lazily under the gate for documents with an

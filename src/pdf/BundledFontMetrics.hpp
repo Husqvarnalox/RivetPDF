@@ -60,6 +60,9 @@ public:
     // glyph (and ill-formed sequences) count as 0.
     double textWidth(std::string_view utf8, double fontSize) const;
 
+    // The glyph id the cmap maps `cp` to (0 = .notdef / no glyph).
+    std::uint16_t glyphId(char32_t cp) const { return glyphOf(cp); }
+
 private:
     std::uint16_t glyphOf(char32_t cp) const;
 

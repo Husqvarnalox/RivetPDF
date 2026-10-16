@@ -4,6 +4,7 @@
 #include "core/Error.hpp"
 #include "core/async/IMainThreadDispatcher.hpp"
 #include "platform/Alerts.hpp"
+#include "platform/AppDataLocation.hpp"
 #include "platform/AppLifecycle.hpp"
 #include "platform/Clipboard.hpp"
 #include "platform/ExternalUrlOpener.hpp"
@@ -141,6 +142,9 @@ struct ShellServices {
     // JPEG encoder for Save Reduced Copy (ADR-0028). May be null (the
     // command is then unavailable on this backend). Thread-safe.
     IImageEncoder* imageEncoder = nullptr;
+    // The per-user application-data directory (saved signatures, ADR-0025).
+    // May be null (signatures are then not remembered between sessions).
+    IAppDataLocation* appData = nullptr;
 };
 
 } // namespace rivet::platform

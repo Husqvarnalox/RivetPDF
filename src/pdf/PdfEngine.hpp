@@ -9,6 +9,7 @@
 #include "pdf/PdfContent.hpp"
 #include "pdf/PdfForms.hpp"
 #include "pdf/PdfPageGeometry.hpp"
+#include "pdf/PdfSignatures.hpp"
 #include "pdf/PdfText.hpp"
 #include "pdf/PdfNavigation.hpp"
 #include "pdf/PdfTypes.hpp"
@@ -153,6 +154,15 @@ public:
     virtual core::Result<PdfFormInfoPtr> formInfo() const {
         return std::unexpected(core::makeError(core::ErrorCode::NotAvailable,
                                                "this backend has no form support", "pdf"));
+    }
+
+    // The document's digital signatures (ADR-0025): what each signature
+    // dictionary says plus how its /ByteRange relates to the file this
+    // document was opened from. Display only - nothing is verified. Signature
+    // fields without a value are not listed. Default: NotAvailable.
+    virtual core::Result<PdfSignatureListPtr> signatures() const {
+        return std::unexpected(core::makeError(core::ErrorCode::NotAvailable,
+                                               "this backend has no signature support", "pdf"));
     }
 
     // All links of a page. Default: NotAvailable.

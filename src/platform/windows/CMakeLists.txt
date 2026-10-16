@@ -12,6 +12,7 @@ enable_language(RC)
 add_library(rivet_platform_windows STATIC
     WinCommon.cpp
     WindowsAlertService.cpp
+    WindowsAppDataLocation.cpp
     WindowsClipboard.cpp
     WindowsExternalUrlOpener.cpp
     WindowsFileDialog.cpp

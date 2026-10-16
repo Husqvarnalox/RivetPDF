@@ -163,7 +163,19 @@ public:
             if (const auto it = pageCounts.find(path.filename().string()); it != pageCounts.end()) count = it->second;
         }
         if (count == 0) return std::unexpected(core::makeError(core::ErrorCode::InvalidDocument, "no pages", "test"));
-        return std::unique_ptr<pdf::PdfDocument>(std::make_unique<FakePageDocument>(count, prefix));
+        auto document = std::make_unique<FakePageDocument>(count, prefix);
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (signedPaths.count(path.filename().string()) != 0) {
+                auto list = std::make_shared<pdf::PdfSignatureList>();
+                pdf::PdfSignatureInfo info;
+                info.coverage.valid = true;
+                info.coverage.coversWholeDocument = true;
+                list->signatures.push_back(std::move(info));
+                document->signatureList = std::move(list);
+            }
+        }
+        return std::unique_ptr<pdf::PdfDocument>(std::move(document));
     }
 
     core::Result<std::unique_ptr<pdf::PdfDocument>> reopenWithCredentialsOf(
@@ -260,6 +272,8 @@ public:
     std::set<std::string> failOpen;
     std::set<std::string> lockedPaths;
     std::map<std::string, std::size_t> pageCounts;
+    // FakePageDocument files reporting one digital signature (ADR-0025).
+    std::set<std::string> signedPaths;
     std::atomic<bool> failAssembly{false};
     // > 0: assemblies numbered >= this value fail (1-based; partial failures).
     std::atomic<int> failAssemblyFrom{0};

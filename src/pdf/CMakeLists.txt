@@ -1,6 +1,7 @@
 # Portable sources shared by both configurations.
 set(RIVET_PDF_SOURCES
     BundledFontMetrics.cpp
+    BundledFontOutlines.cpp
     BundledFonts.cpp
     ImageReduce.cpp
     PdfAnnotation.cpp
@@ -8,6 +9,7 @@ set(RIVET_PDF_SOURCES
     PdfContent.cpp
     PdfForms.cpp
     PdfPageGeometry.cpp
+    PdfSignatures.cpp
     PdfText.cpp
     PdfTextLayout.cpp
 )

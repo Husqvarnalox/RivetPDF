@@ -341,7 +341,13 @@ core::Result<PdfPageAnnotations> readPageAnnotations(FPDF_DOCUMENT reader, std::
         const FPDF_ANNOTATION_SUBTYPE subtype = FPDFAnnot_GetSubtype(annot.get());
         item.isPopup = subtype == FPDF_ANNOT_POPUP;
         const std::optional<PdfAnnotationKind> kind = kindOf(subtype);
-        if (kind) {
+        if (kind == PdfAnnotationKind::Stamp && readString(annot.get(), "Name", 64) == kRivetSignatureName) {
+            // A Rivet visual signature (ADR-0025): its appearance source is
+            // not stored, so it is listed but kept opaque - drawn by the
+            // engine from its /AP and preserved untouched.
+            item.kind = PdfAnnotationKind::Signature;
+            item.data.kind = PdfAnnotationKind::Signature;
+        } else if (kind) {
             item.data.kind = *kind;
             if (readEditable(annot.get(), item.data)) {
                 item.kind = item.data.kind;

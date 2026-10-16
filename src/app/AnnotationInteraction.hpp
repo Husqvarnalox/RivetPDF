@@ -55,6 +55,8 @@ public:
     static constexpr double kHandleHitRadius = 7.0;   // logical
     static constexpr double kStampWidth = 150.0;      // page points
     static constexpr double kStampHeight = 50.0;
+    static constexpr double kSignatureHeight = 50.0;   // page points, default placement
+    static constexpr double kSignatureMaxWidth = 250.0;
     static constexpr double kNoteSize = 20.0;         // page points (icon box)
     static constexpr double kMinEditSize = 2.0;       // smallest resized extent, page points
     static constexpr std::size_t kMaxInkPoints = 20000; // raw capture cap per stroke
@@ -115,6 +117,7 @@ public:
             CreateInk,      // `page`, `strokes` (raw points), `zoom`
             CreateShape,    // `tool` Rectangle/Ellipse: `rect`; Line/Arrow: `a`, `b`
             CreateStamp,    // `page`, `rect`
+            CreateSignature, // `page`, `rect` (the armed signature is the controller's)
             Move,           // `id`, `delta`
             Resize,         // `id`, `rect` (new bounds)
             LineEndpoints,  // `id`, `a`, `b`
@@ -143,7 +146,7 @@ public:
         enum class Kind : std::uint8_t {
             None,
             Ink,    // `points` polyline
-            Rect,   // `rect`; `tool` tells Rectangle / Ellipse / Stamp
+            Rect,   // `rect`; `tool` tells Rectangle / Ellipse / Stamp / Sign
             Line,   // `a` -> `b`; `tool` tells Line / Arrow (or the edited annotation's)
             Bounds, // `rect`: the moved/resized selection bounds
         };
@@ -208,6 +211,14 @@ public:
     static core::Point lineEndFor(core::Point anchor, core::Point end, bool constrain);
     // The default stamp box centered on `center`, kept inside `pageSize`.
     static core::Rect defaultStampRect(core::Point center, core::Size pageSize);
+    // The default signature box for a signature of `aspect` (width / height):
+    // kSignatureHeight tall, at most kSignatureMaxWidth wide, centered on
+    // `center` and kept inside `pageSize`.
+    static core::Rect defaultSignatureRect(core::Point center, double aspect, core::Size pageSize);
+
+    // Sign tool: the aspect of the armed signature (click placement size).
+    void setSignatureAspect(double aspect) { signatureAspect_ = aspect > 0.0 ? aspect : 3.0; }
+    double signatureAspect() const { return signatureAspect_; }
 
 private:
     enum class GestureKind : std::uint8_t {
@@ -215,7 +226,7 @@ private:
         Swallow,    // a consumed press with no action (select-only, cancelled)
         NoteClick,
         Ink,
-        ShapeDrag,  // Rectangle / Ellipse / Line / Arrow / Stamp
+        ShapeDrag,  // Rectangle / Ellipse / Line / Arrow / Stamp / Sign
         Move,
         Resize,     // one of the 8 handles
         LineHandle, // LineStart / LineEnd
@@ -244,6 +255,7 @@ private:
     AnnotationTool tool_ = AnnotationTool::Select;
     std::optional<Selected> selection_;
     Gesture gesture_;
+    double signatureAspect_ = 3.0;
 };
 
 } // namespace rivet::app

@@ -22,6 +22,7 @@
 #include "PdfiumDisplayTransform.h"
 #include "fpdf_doc.h"    // bookmarks, dests, actions, links, page labels
 #include "fpdf_edit.h" // FPDFPage_GetRotation
+#include "fpdf_signature.h"
 
 namespace rivet::pdf {
 namespace {
@@ -612,6 +613,100 @@ core::Result<PdfFormInfoPtr> PdfiumDocument::formInfoLocked() const {
     if (!read.has_value()) return std::unexpected(read.error());
     formInfo_ = std::make_shared<const PdfFormInfo>(std::move(*read));
     return formInfo_;
+}
+
+core::Result<PdfSignatureListPtr> PdfiumDocument::signatures() const {
+    return globalPdfiumCallGate().invoke([&]() -> core::Result<PdfSignatureListPtr> {
+        if (signatures_ != nullptr) return signatures_;
+        try {
+            auto list = std::make_shared<PdfSignatureList>();
+            const int count = FPDF_GetSignatureCount(document_);
+            if (count <= 0) {
+                signatures_ = std::move(list);
+                return signatures_;
+            }
+            const std::uint64_t fileSize = source_ != nullptr ? source_->size() : 0;
+
+            // Locating the widgets: PDFium lists the TOP-LEVEL /Sig fields of
+            // /AcroForm /Fields in order and exposes no field name, so the
+            // i-th signature is matched with the i-th top-level signature field
+            // of the form description - only when the counts agree.
+            std::vector<const PdfFormField*> sigFields;
+            if (const auto form = formInfoLocked(); form.has_value() && *form != nullptr) {
+                for (const PdfFormField& field : (*form)->fields) {
+                    if (field.type == PdfFormFieldType::Signature && field.name.find('.') == std::string::npos) {
+                        sigFields.push_back(&field);
+                    }
+                }
+            }
+            const bool locate = sigFields.size() == static_cast<std::size_t>(count);
+
+            for (int i = 0; i < count; ++i) {
+                if (list->signatures.size() >= kMaxSignatures) {
+                    list->truncated = true;
+                    break;
+                }
+                FPDF_SIGNATURE signature = FPDF_GetSignatureObject(document_, i);
+                if (signature == nullptr) continue;
+                PdfSignatureInfo info;
+                const unsigned long ints = FPDFSignatureObj_GetByteRange(signature, nullptr, 0);
+                std::vector<std::int64_t> raw;
+                if (ints > 0 && ints <= kMaxSignatureByteRangeInts) {
+                    std::vector<int> buffer(ints);
+                    if (FPDFSignatureObj_GetByteRange(signature, buffer.data(), ints) == ints) {
+                        raw.assign(buffer.begin(), buffer.end());
+                    }
+                }
+                const unsigned long filterBytes = FPDFSignatureObj_GetSubFilter(signature, nullptr, 0);
+                if (filterBytes > 1 && filterBytes <= kMaxSignatureStringBytes) {
+                    std::string buffer(filterBytes, '\0');
+                    if (FPDFSignatureObj_GetSubFilter(signature, buffer.data(), filterBytes) == filterBytes) {
+                        buffer.resize(filterBytes - 1); // trailing NUL
+                        info.subFilter = std::move(buffer);
+                    }
+                }
+                // A field without a value (no byte range, no sub-filter) is an
+                // empty signature field, not a signature.
+                if (raw.empty() && info.subFilter.empty()) continue;
+
+                for (std::size_t k = 0; k + 1 < raw.size(); k += 2) {
+                    info.byteRange.emplace_back(static_cast<std::uint64_t>(std::max<std::int64_t>(0, raw[k])),
+                                                static_cast<std::uint64_t>(std::max<std::int64_t>(0, raw[k + 1])));
+                }
+                info.coverage = analyzeByteRange(raw, fileSize);
+
+                const unsigned long reasonBytes = FPDFSignatureObj_GetReason(signature, nullptr, 0);
+                if (reasonBytes > 2 && reasonBytes <= 2 * kMaxSignatureStringBytes) {
+                    std::vector<std::uint8_t> buffer(reasonBytes);
+                    if (FPDFSignatureObj_GetReason(signature, buffer.data(), reasonBytes) == reasonBytes) {
+                        info.reason = internal::utf16leToUtf8(buffer.data(), (reasonBytes - 2) & ~1UL);
+                    }
+                }
+                const unsigned long timeBytes = FPDFSignatureObj_GetTime(signature, nullptr, 0);
+                if (timeBytes > 1 && timeBytes <= 64) {
+                    std::string buffer(timeBytes, '\0');
+                    if (FPDFSignatureObj_GetTime(signature, buffer.data(), timeBytes) == timeBytes) {
+                        buffer.resize(timeBytes - 1);
+                        info.signingTime = std::move(buffer);
+                    }
+                }
+                info.docMdpPermission = FPDFSignatureObj_GetDocMDPPermission(signature);
+                if (locate) {
+                    const PdfFormField& field = *sigFields[static_cast<std::size_t>(i)];
+                    if (!field.widgets.empty()) {
+                        info.pageIndex = field.widgets.front().pageIndex;
+                        info.widgetRect = field.widgets.front().rect;
+                    }
+                }
+                list->signatures.push_back(std::move(info));
+            }
+            signatures_ = std::move(list);
+            return signatures_;
+        } catch (const std::bad_alloc&) {
+            return std::unexpected(core::makeError(core::ErrorCode::OutOfMemory,
+                                                   "out of memory while reading the signatures", "pdf"));
+        }
+    });
 }
 
 core::Result<std::shared_ptr<const PdfTextPage>> PdfiumDocument::textPage(std::size_t pageIndex) const {

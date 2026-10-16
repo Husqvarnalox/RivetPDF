@@ -162,6 +162,20 @@ void ShellController::buildWidgets() {
     // tool state.
     redaction_ = std::make_unique<RedactionController>(*context_, *content_);
 
+    // Visual signatures (ADR-0025): the sheet floats above everything over
+    // the viewport; Done arms the Sign tool with the chosen signature.
+    signatureSheet_ = std::make_unique<SignatureSheetController>(*context_, *root_);
+    signatureSheet_->setOnChosen([this](pdf::PdfSignatureAppearancePtr signature) {
+        if (readyActiveTab() == nullptr) {
+            setStatus("Signature saved — open a document to place it");
+            return;
+        }
+        if (annotationBar_ != nullptr) annotationBar_->setVisible(true);
+        annotations_->armSignature(std::move(signature));
+        setStatus("Click on the page to place the signature, or drag to size it");
+    });
+    annotations_->setOnSignatureRequested([this] { openSignatureSheet(false); });
+
     // File lifecycle (save/save-as/import/merge/extract, dirty close/quit).
     fileLifecycle_ = std::make_unique<FileController>(
         *engine_, *context_, scheduler_, [this](std::string text) { setStatus(std::move(text)); },
@@ -342,6 +356,7 @@ void ShellController::layoutShell() {
     if (annotations_ != nullptr) annotations_->layout(viewport_->frame());
     if (content_ != nullptr) content_->layout(viewport_->frame());
     if (forms_ != nullptr) forms_->layout(viewport_->frame());
+    if (signatureSheet_ != nullptr) signatureSheet_->layout(markdown ? contentRect : viewport_->frame());
 }
 
 void ShellController::refreshTabStrip() {
@@ -578,10 +593,25 @@ bool ShellController::canPerformPageEdit(PageEditCommand command) const {
     return pageEditing_ != nullptr && pageEditing_->canPerform(command);
 }
 
+void ShellController::openSignatureSheet(bool manage) {
+    if (signatureSheet_ == nullptr || annotations_ == nullptr) return;
+    if (!manage && readyActiveTab() == nullptr) {
+        setStatus("Open a document to sign");
+        return;
+    }
+    signatureSheet_->setInkColor(annotations_->toolStyle(AnnotationTool::Sign).style.color);
+    signatureSheet_->open(manage);
+}
+
 void ShellController::performAnnotation(AnnotationCommand command) {
     if (annotations_ == nullptr) return;
+    if (command == AnnotationCommand::Sign || command == AnnotationCommand::ManageSignatures) {
+        openSignatureSheet(command == AnnotationCommand::ManageSignatures);
+        return;
+    }
     // A tool chosen from the menu reveals the strip that shows it.
-    if (static_cast<std::size_t>(command) < kAnnotationToolCount && annotationBar_ != nullptr &&
+    if (static_cast<std::size_t>(command) <= static_cast<std::size_t>(AnnotationCommand::ToolStamp) &&
+        annotationBar_ != nullptr &&
         command != AnnotationCommand::ToolSelect && readyActiveTab() != nullptr) {
         annotationBar_->setVisible(true);
     }
@@ -589,6 +619,10 @@ void ShellController::performAnnotation(AnnotationCommand command) {
 }
 
 bool ShellController::canPerformAnnotation(AnnotationCommand command) const {
+    if (command == AnnotationCommand::Sign) {
+        return signatureSheet_ != nullptr && context_ != nullptr && context_->readyActiveTab() != nullptr;
+    }
+    if (command == AnnotationCommand::ManageSignatures) return signatureSheet_ != nullptr;
     return annotations_ != nullptr && annotations_->canPerform(command);
 }
 
@@ -698,6 +732,9 @@ bool ShellController::handleKeyEvent(const ui::KeyEvent& event) {
 
     // 1. The focused widget (a text field) consumes its keys first.
     if (focusedWidget_ != nullptr && focusedWidget_->onKey(event)) return true;
+
+    // The signature sheet closes on Esc before anything underneath reacts.
+    if (event.key == ui::Key::Escape && signatureSheet_ != nullptr && signatureSheet_->handleEscape()) return true;
 
     // Keys of the active viewport tool (Enter/Esc while cropping) run before
     // the shell's own Escape priorities.

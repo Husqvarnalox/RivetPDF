@@ -1,5 +1,6 @@
 add_library(rivet_platform_macos STATIC
     MacosAlertService.mm
+    MacosAppDataLocation.mm
     MacosClipboard.mm
     MacosExternalUrlOpener.mm
     MacosFileDialog.mm

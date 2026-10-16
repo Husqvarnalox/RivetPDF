@@ -37,6 +37,40 @@ bool insideEllipse(core::Point p, const core::Rect& bounds) {
     return nx * nx + ny * ny <= 1.0;
 }
 
+// `source` turned `quarterTurns` clockwise (as seen on screen); null on an
+// allocation failure. The source is returned as is for 0 turns.
+std::shared_ptr<const core::Bitmap> turnedBitmap(const std::shared_ptr<const core::Bitmap>& source, int quarterTurns) {
+    const int turns = ((quarterTurns % 4) + 4) % 4;
+    if (source == nullptr || !source->isValid() || turns == 0) return source;
+    const std::uint32_t w = source->width();
+    const std::uint32_t h = source->height();
+    const bool swap = turns % 2 == 1;
+    auto created = core::Bitmap::create(swap ? h : w, swap ? w : h);
+    if (!created.has_value()) return nullptr;
+    core::Bitmap out = std::move(*created);
+    for (std::uint32_t y = 0; y < h; ++y) {
+        const std::byte* row = source->data() + static_cast<std::size_t>(y) * source->stride();
+        for (std::uint32_t x = 0; x < w; ++x) {
+            std::uint32_t dx = x;
+            std::uint32_t dy = y;
+            if (turns == 1) {
+                dx = h - 1 - y;
+                dy = x;
+            } else if (turns == 2) {
+                dx = w - 1 - x;
+                dy = h - 1 - y;
+            } else {
+                dx = y;
+                dy = w - 1 - x;
+            }
+            std::byte* target = out.data() + static_cast<std::size_t>(dy) * out.stride() + std::size_t{4} * dx;
+            const std::byte* pixel = row + std::size_t{4} * x;
+            std::copy(pixel, pixel + 4, target);
+        }
+    }
+    return std::make_shared<const core::Bitmap>(std::move(out));
+}
+
 DisplayPath mapPath(const pdf::PdfPageView& view, const pdf::PdfAppearancePath& path) {
     DisplayPath out;
     out.fill = path.fill;
@@ -244,6 +278,13 @@ AnnotationView makeAnnotationView(core::AnnotationId id, const pdf::PdfAnnotatio
         mapped.paths.reserve(appearance.paths.size());
         for (const pdf::PdfAppearancePath& path : appearance.paths) mapped.paths.push_back(mapPath(view, path));
         const int viewDegrees = core::rotationDegrees(view.rotation);
+        for (const pdf::PdfAppearanceImage& image : appearance.images) {
+            const int degrees = ((image.rotation + viewDegrees) % 360 + 360) % 360;
+            DisplayImage mappedImage;
+            mappedImage.bitmap = turnedBitmap(image.bitmap, degrees / 90);
+            mappedImage.box = boxToDisplayRect(view, image.box);
+            if (mappedImage.bitmap != nullptr) mapped.images.push_back(std::move(mappedImage));
+        }
         for (const pdf::PdfAppearanceText& text : appearance.texts) {
             DisplayText t;
             t.text = text.text;
@@ -271,6 +312,7 @@ bool hitsAnnotation(const AnnotationView& view, core::Point point, double tolera
         return false;
     case pdf::PdfAnnotationKind::Note:
     case pdf::PdfAnnotationKind::Stamp:
+    case pdf::PdfAnnotationKind::Signature:
         return point.x >= view.bounds.minX() - tol && point.x <= view.bounds.maxX() + tol &&
                point.y >= view.bounds.minY() - tol && point.y <= view.bounds.maxY() + tol;
     case pdf::PdfAnnotationKind::Square:

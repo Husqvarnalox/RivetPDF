@@ -127,6 +127,11 @@ std::vector<Menu> buildMenuBar() {
     annotate.items.push_back(
         item("Edit Note", AppCommand::of(AnnotationCommand::EditNote), std::nullopt, true));
     annotate.items.push_back(item("Delete Annotation", AppCommand::of(AnnotationCommand::DeleteAnnotation)));
+    // Visual signatures (ADR-0025).
+    annotate.items.push_back(
+        item("Sign\xE2\x80\xA6", AppCommand::of(AnnotationCommand::Sign), std::nullopt, true));
+    annotate.items.push_back(
+        item("Manage Signatures\xE2\x80\xA6", AppCommand::of(AnnotationCommand::ManageSignatures)));
     bar.push_back(std::move(annotate));
 
     return bar;
