@@ -2,6 +2,7 @@
 #include "app/ShellController.hpp"
 
 #include "app/MarkdownPreviewView.hpp"
+#include "app/RedactionController.hpp"
 
 #include "core/Error.hpp"
 #include "ui/Button.hpp"
@@ -869,6 +870,10 @@ void ShellController::handlePrintRequest() {
     // The printout reads the document as a whole: commit an open note
     // editor's text first.
     if (context_ != nullptr) context_->pendingEdits.commitAll();
+    if (!confirmUnappliedRedactions(services_.alerts, *tab->session())) {
+        setStatus("Print cancelled: redaction marks are not applied");
+        return;
+    }
     printCoordinator_.print(tab->id());
 }
 

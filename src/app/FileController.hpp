@@ -202,6 +202,8 @@ private:
     void requestSave(DocumentTab& tab, std::filesystem::path destination, bool closeTabWhenDone,
                      bool interactive);
     void startNextSave();
+    // False when the user declines to write a document with unapplied redaction marks.
+    bool allowUnappliedRedactions(DocumentTab& tab);
     // Markdown saves share activeSave_/queue/saveSettled with PDF saves; only
     // the job and its completion differ.
     void launchMarkdownSave(DocumentTab& tab, SaveRequest request, WorkerToken token);

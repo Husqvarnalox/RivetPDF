@@ -13,6 +13,7 @@
 #include "app/ContentBackend.hpp"
 #include "app/ContentController.hpp"
 #include "app/DocumentWorkspace.hpp"
+#include "app/FileController.hpp"
 #include "app/MenuModel.hpp"
 #include "app/RedactionController.hpp"
 #include "app/RedactionInteraction.hpp"
@@ -382,4 +383,38 @@ RIVET_TEST(redactionControllerApplyReportsWhyItCannotRun) {
     CHECK_EQ(shell.alerts.errorTitles.size(), std::size_t{1});
     CHECK(shell.lastStatus().find("shading") != std::string::npos);
     CHECK(shell.session().pageSnapshot()->at(0).contentEdits == nullptr);
+}
+
+RIVET_TEST(redactionUnappliedMarksAskBeforeSavingAndDeclineAborts) {
+    Shell shell;
+    CHECK(shell.open("unapplied"));
+    CHECK(shell.loadPage0());
+    app::FileController files(shell.engine, *shell.context, shell.scheduler,
+                              [&shell](std::string text) { shell.statusLog.push_back(std::move(text)); }, [] {});
+    app::DocumentTab* tab = shell.workspace.activeTab();
+    CHECK(tab != nullptr);
+    if (tab == nullptr) return;
+
+    // Nothing pending: no question.
+    CHECK(app::confirmUnappliedRedactions(&shell.alerts, shell.session()));
+    CHECK(shell.alerts.confirmTitles.empty());
+
+    shell.addMark(core::Rect{10, 20, 100, 30});
+    shell.addMark(core::Rect{10, 60, 100, 30});
+    // Declined (the default answer): the question names the count and the
+    // save never starts.
+    shell.alerts.confirmAnswers = {false};
+    files.save(*tab);
+    CHECK_EQ(shell.alerts.confirmTitles.size(), std::size_t{1});
+    if (!shell.alerts.confirmTitles.empty()) {
+        CHECK_EQ(shell.alerts.confirmTitles[0],
+                 std::string("2 redaction marks are not applied. Continue without redacting?"));
+    }
+    CHECK(!files.isSavingAnything());
+
+    // No alert service: cannot ask, so never proceeds.
+    CHECK(!app::confirmUnappliedRedactions(nullptr, shell.session()));
+    // Confirmed: the guard lets the caller continue.
+    shell.alerts.confirmAnswers = {true};
+    CHECK(app::confirmUnappliedRedactions(&shell.alerts, shell.session()));
 }

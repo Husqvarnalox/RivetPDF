@@ -49,6 +49,11 @@ bool intersects(const pdf::PdfBox& a, const pdf::PdfBox& b) {
 bool intersectsAny(const RedactionMarks& marks, const pdf::PdfBox& box) {
     // Annotation rects may be stored denormalized or empty (a zero-width
     // link): normalize and treat degenerate rects as their outline.
+    // A rect with a non-finite component cannot be placed: remove it.
+    if (!std::isfinite(box.left) || !std::isfinite(box.bottom) || !std::isfinite(box.right) ||
+        !std::isfinite(box.top)) {
+        return true;
+    }
     pdf::PdfBox normalized = box;
     if (normalized.left > normalized.right) std::swap(normalized.left, normalized.right);
     if (normalized.bottom > normalized.top) std::swap(normalized.bottom, normalized.top);
@@ -84,6 +89,9 @@ std::optional<core::Error> contentBlocker(const PageContentView& view, std::size
     if (view.truncated) {
         return unsupported(pageLabel(index) + " cannot be redacted: it has too many objects");
     }
+    if (view.hasEmbeddedThumbnail) {
+        return unsupported(pageLabel(index) + " cannot be redacted: page has an embedded thumbnail Rivet cannot remove");
+    }
     if (!view.regenerationSafe) {
         return unsupported(pageLabel(index) + " cannot be redacted: " +
                            (view.regenerationIssue.empty() ? std::string("its content cannot be rewritten safely")
@@ -91,6 +99,10 @@ std::optional<core::Error> contentBlocker(const PageContentView& view, std::size
     }
     return std::nullopt;
 }
+
+// XFA datasets keep field values that Rivet cannot clear.
+constexpr const char* kXfaReason =
+    "the document contains XFA form data, which Rivet cannot redact";
 
 std::optional<core::Error> annotationBlocker(const pdf::PdfPageAnnotationsPtr& originals, std::size_t index) {
     if (originals == nullptr) return notAvailable("the annotations of " + pageLabel(index) + " are still loading");
@@ -267,6 +279,9 @@ std::size_t redactionMarkCount(const PageModelSnapshot& snapshot) {
 // --- Apply ------------------------------------------------------------------------
 
 std::optional<core::Error> redactionBlocker(DocumentSession& session, core::PageId page) {
+    if (const pdf::PdfFormInfoPtr info = session.forms().info(); info != nullptr && info->hasXfa) {
+        return unsupported(kXfaReason);
+    }
     const PageSnapshotPtr snapshot = session.pageSnapshot();
     const std::size_t index = snapshot->indexOf(page);
     if (index == PageModelSnapshot::kInvalidIndex) return notFound("page is not in the document");
@@ -355,6 +370,7 @@ core::Result<std::unique_ptr<Command>> applyRedactions(DocumentSession& session,
         return std::unexpected(notAvailable("the document's form is still loading"));
     }
     const pdf::PdfFormInfoPtr info = forms.info();
+    if (info != nullptr && info->hasXfa) return std::unexpected(unsupported(kXfaReason));
     if (info != nullptr && !info->empty()) {
         // Entries presenting each base page.
         std::map<std::size_t, std::vector<const PageEntry*>> presenting;
