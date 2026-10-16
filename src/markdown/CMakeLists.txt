@@ -10,7 +10,10 @@ add_library(rivet_markdown STATIC
     MarkdownPlainText.cpp
     MarkdownSourceMap.cpp
     MarkdownSlug.cpp
-    # Mermaid diagrams (ADR-0032).
+    # Mermaid diagrams and math (ADR-0032).
+    math/MathDelimiters.cpp
+    math/MathLayout.cpp
+    math/MathParser.cpp
     mermaid/FlowchartLayout.cpp
     mermaid/Mermaid.cpp
     mermaid/MermaidParser.cpp

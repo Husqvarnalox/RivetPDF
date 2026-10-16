@@ -6,6 +6,7 @@ add_executable(rivet_markdown_tests
     TestMarkdownSlug.cpp
     TestMarkdownSourceMap.cpp
     # Mermaid diagrams and math (ADR-0032).
+    TestMath.cpp
     TestMermaid.cpp
 )
 
