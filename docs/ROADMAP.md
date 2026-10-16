@@ -30,7 +30,7 @@ shippable and documented in the README status table when it lands.
 | # | Workstream | Status |
 | --- | --- | --- |
 | MD5 | WYSIWYG editing in the Rendered view (caret, selection and typing mapped back to source edits through the source map; the source stays authoritative per ADR-0021). | Done |
-| MD6 | Mermaid diagrams and math (lightweight native renderers; no web engine). | Planned |
+| MD6 | Mermaid diagrams and math (lightweight native renderers; no web engine; ADR-0032). | Done |
 
 ## Not scheduled
 
