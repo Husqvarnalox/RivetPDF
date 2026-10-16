@@ -131,7 +131,8 @@ void ContentViewHost::requestRedraw() {
     if (trackingArea_ != nil) [self removeTrackingArea:trackingArea_];
     trackingArea_ = [[NSTrackingArea alloc]
         initWithRect:NSZeroRect
-             options:NSTrackingMouseMoved | NSTrackingActiveInKeyWindow | NSTrackingInVisibleRect
+             options:NSTrackingMouseMoved | NSTrackingMouseEnteredAndExited | NSTrackingActiveInKeyWindow |
+                     NSTrackingInVisibleRect
                owner:self
             userInfo:nil];
     [self addTrackingArea:trackingArea_];
@@ -263,6 +264,11 @@ void ContentViewHost::requestRedraw() {
 
 - (void)mouseMoved:(NSEvent*)event {
     [self sendPointer:rivet::ui::PointerEventType::Move button:0 event:event];
+}
+
+// Leaving the view clears hover states and pending tooltips (ADR-0033).
+- (void)mouseExited:(NSEvent*)event {
+    [self sendPointer:rivet::ui::PointerEventType::Exited button:0 event:event];
 }
 
 - (void)mouseDragged:(NSEvent*)event {

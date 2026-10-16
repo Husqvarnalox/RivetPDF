@@ -507,7 +507,7 @@ X11Window::X11Window(X11Connection& connection, const Options& options)
     attributes.background_pixel = WhitePixel(display, screen);
     attributes.bit_gravity = NorthWestGravity;
     attributes.event_mask = ExposureMask | StructureNotifyMask | KeyPressMask | KeyReleaseMask | ButtonPressMask |
-                            ButtonReleaseMask | PointerMotionMask | FocusChangeMask | PropertyChangeMask;
+                            ButtonReleaseMask | PointerMotionMask | LeaveWindowMask | FocusChangeMask | PropertyChangeMask;
     window_ = XCreateWindow(display, RootWindow(display, screen), x, y, static_cast<unsigned>(pixelWidth_),
                             static_cast<unsigned>(pixelHeight_), 0, CopyFromParent, InputOutput, CopyFromParent,
                             CWBackPixel | CWBitGravity | CWEventMask, &attributes);
@@ -836,6 +836,15 @@ void X11Window::handleEvent(XEvent& event, bool inputAllowed) {
         } else if ((motion.state & Button3Mask) != 0) {
             pointer.button = 2;
         }
+        handlePointer(pointer);
+        return;
+    }
+    case LeaveNotify: {
+        // Leaving the window clears hover states and pending tooltips.
+        if (event.xcrossing.mode != NotifyNormal) return;
+        ui::PointerEvent pointer;
+        pointer.type = ui::PointerEventType::Exited;
+        pointer.position = core::Point{event.xcrossing.x / scale, event.xcrossing.y / scale};
         handlePointer(pointer);
         return;
     }

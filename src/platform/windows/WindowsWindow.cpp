@@ -517,6 +517,22 @@ LRESULT WindowsWindow::handleMessage(UINT message, WPARAM wParam, LPARAM lParam)
         } else if ((wParam & MK_RBUTTON) != 0) {
             pointer.button = 2;
         }
+        if (!trackingMouseLeave_) {
+            TRACKMOUSEEVENT track{};
+            track.cbSize = sizeof(track);
+            track.dwFlags = TME_LEAVE;
+            track.hwndTrack = hwnd_;
+            trackingMouseLeave_ = TrackMouseEvent(&track) != FALSE;
+        }
+        dispatchPointer(pointer);
+        return 0;
+    }
+    case WM_MOUSELEAVE: {
+        // Leaving the window clears hover states and pending tooltips.
+        trackingMouseLeave_ = false;
+        ui::PointerEvent pointer;
+        pointer.type = ui::PointerEventType::Exited;
+        pointer.position = core::Point{-1.0, -1.0};
         dispatchPointer(pointer);
         return 0;
     }

@@ -106,6 +106,7 @@ private:
 
     Sink sink_{*this};
     HWND hwnd_ = nullptr;
+    bool trackingMouseLeave_ = false; // TrackMouseEvent(TME_LEAVE) armed
     ID2D1Factory* factory_ = nullptr;
     ID2D1HwndRenderTarget* target_ = nullptr;
     double scale_ = 1.0;
