@@ -30,11 +30,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # The X11 desktop shell (src/platform/linux) is built whenever these
+      # development packages are present, so the Ubuntu job compiles it with
+      # -Werror on GCC.
       - name: Install build tools (Linux)
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake ninja-build
+          sudo apt-get install -y cmake ninja-build pkg-config \
+            libx11-dev libcairo2-dev libfreetype-dev libharfbuzz-dev \
+            libfontconfig-dev libpng-dev libjpeg-dev libcups2-dev
 
       - name: Configure (PDFium OFF, warnings visible)
         run: |
