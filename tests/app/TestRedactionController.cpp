@@ -372,6 +372,9 @@ RIVET_TEST(redactionControllerApplyReportsWhyItCannotRun) {
     shell.engine.lastDocument->pageContents[0] = unsafe;
     CHECK(shell.loadPage0());
     shell.addMark(core::Rect{10, 20, 100, 30});
+    // The tool says why as soon as the mark is drawn.
+    CHECK(shell.lastStatus().find("cannot be redacted") != std::string::npos);
+    shell.statusLog.clear();
     shell.alerts.confirmAnswers = {true, true};
     shell.redaction->perform(RedactCommand::ApplyRedactions);
     // Refused before anything is asked, with the probe's reason.

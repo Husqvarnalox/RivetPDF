@@ -84,7 +84,15 @@ void RedactionController::applyIntent(const RedactionInteraction::Intent& intent
     switch (intent.kind) {
     case RedactionInteraction::Intent::Kind::AddMark:
         if (intent.page < session.pageCount()) {
-            run(editor::addRedactionMarks(session, {{session.pageId(intent.page), intent.rect}}));
+            const core::PageId page = session.pageId(intent.page);
+            if (run(editor::addRedactionMarks(session, {{page, intent.rect}}))) {
+                // Shows right away why the page cannot be redacted (and
+                // starts loading what Apply needs).
+                const std::optional<core::Error> blocked = editor::redactionBlocker(session, page);
+                if (blocked.has_value() && blocked->code == core::ErrorCode::Unsupported) {
+                    context_.setStatus("Redact: " + blocked->message);
+                }
+            }
         }
         break;
     case RedactionInteraction::Intent::Kind::RemoveMark:
