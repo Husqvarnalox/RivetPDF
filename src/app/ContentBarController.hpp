@@ -41,7 +41,9 @@ public:
 
     // Height the bar takes in the shell layout (0 while no content tool is active).
     double height() const { return visible() ? kHeight : 0.0; }
-    bool visible() const { return content_.tool() != ContentTool::None; }
+    bool visible() const {
+        return content_.tool() == ContentTool::SelectObject || content_.tool() == ContentTool::AddText;
+    }
 
     void layout(const core::Rect& frame);
     // Re-reads the controller: highlights, labels, which controls show.

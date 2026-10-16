@@ -24,6 +24,9 @@ add_library(rivet_app STATIC
     CropTool.cpp
     FileController.cpp
     FormController.cpp
+    RedactionController.cpp
+    RedactionInteraction.cpp
+    RedactionLayer.cpp
     FormLayer.cpp
     FormLayout.cpp
     MenuModel.cpp

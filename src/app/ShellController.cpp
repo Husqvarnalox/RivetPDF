@@ -157,6 +157,9 @@ void ShellController::buildWidgets() {
 
     // Form filling: its layer sits below the annotation layer (Select tool).
     forms_ = std::make_unique<FormController>(*context_, *root_, *annotations_);
+    // Redaction marks (Redact tool, Apply Redactions): part of the content
+    // tool state.
+    redaction_ = std::make_unique<RedactionController>(*context_, *content_);
 
     // File lifecycle (save/save-as/import/merge/extract, dirty close/quit).
     fileLifecycle_ = std::make_unique<FileController>(
@@ -428,6 +431,7 @@ void ShellController::bindActiveTab() {
         annotations_->bindTab(nullptr);
         content_->bindTab(nullptr);
         forms_->bindTab(nullptr);
+        redaction_->bindTab(nullptr);
         if (tab == nullptr) {
             setStatus("No document open");
             setZoomDisplay(viewport_->zoom().zoom());
@@ -458,6 +462,7 @@ void ShellController::bindActiveTab() {
     annotations_->bindTab(tab);
     content_->bindTab(tab);
     forms_->bindTab(tab);
+    redaction_->bindTab(tab);
 
     // First bind of a fresh tab: open fit-to-width (Phase 1 behavior). The
     // mode stays active (resizes recompute the zoom) until the user zooms.
@@ -489,6 +494,7 @@ void ShellController::bindMarkdownTab(DocumentTab* tab) {
     annotations_->bindTab(nullptr);
     content_->bindTab(nullptr);
     forms_->bindTab(nullptr);
+    redaction_->bindTab(nullptr);
     searchBar_->bindMarkdownTab();
     setPresentationMode(false);
 
@@ -615,6 +621,9 @@ void ShellController::perform(const AppCommand& command) {
     case AppCommand::Kind::Form:
         if (forms_ != nullptr) forms_->perform(command.form());
         break;
+    case AppCommand::Kind::Redact:
+        if (redaction_ != nullptr) redaction_->perform(command.redact());
+        break;
     }
 }
 
@@ -628,6 +637,7 @@ bool ShellController::canPerform(const AppCommand& command) const {
     case AppCommand::Kind::Content: return canPerformContent(command.content());
     case AppCommand::Kind::MarkdownMode: return canPerformMarkdownMode();
     case AppCommand::Kind::Form: return forms_ != nullptr && forms_->canPerform(command.form());
+    case AppCommand::Kind::Redact: return redaction_ != nullptr && redaction_->canPerform(command.redact());
     }
     return false;
 }
@@ -635,6 +645,9 @@ bool ShellController::canPerform(const AppCommand& command) const {
 std::optional<bool> ShellController::isChecked(const AppCommand& command) const {
     if (command.kind == AppCommand::Kind::Form) {
         return forms_ != nullptr ? forms_->isChecked(command.form()) : std::nullopt;
+    }
+    if (command.kind == AppCommand::Kind::Redact) {
+        return redaction_ != nullptr ? redaction_->isChecked(command.redact()) : std::nullopt;
     }
     if (command.kind != AppCommand::Kind::MarkdownMode) return std::nullopt;
     const auto mode = activeMarkdownMode();
@@ -692,6 +705,8 @@ bool ShellController::handleKeyEvent(const ui::KeyEvent& event) {
     // Escape: the content tools first (inline editor, a running gesture, the
     // selection), then the find bar / presentation mode below.
     if (event.key == ui::Key::Escape && content_ != nullptr && content_->handleEscape()) return true;
+    // Then the Redact tool: a running drag, then the selected mark.
+    if (event.key == ui::Key::Escape && redaction_ != nullptr && redaction_->handleEscape()) return true;
     // Then the form layer: its popup, then the focused field.
     if (event.key == ui::Key::Escape && forms_ != nullptr && forms_->handleEscape()) return true;
 

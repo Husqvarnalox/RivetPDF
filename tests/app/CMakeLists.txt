@@ -5,6 +5,8 @@ add_executable(rivet_app_tests
     TestUrlPolicy.cpp
     TestMenuModel.cpp
     TestFormController.cpp
+    # Redaction tool, marks and Apply Redactions (ADR-0026), fake backend.
+    TestRedactionController.cpp
     TestAnnotationController.cpp
     TestAnnotationStress.cpp
     TestAnnotationInteraction.cpp

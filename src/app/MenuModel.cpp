@@ -94,6 +94,15 @@ std::vector<Menu> buildMenuBar() {
     content.items.push_back(item("Replace Image\xE2\x80\xA6", AppCommand::of(ContentCommand::ReplaceImage)));
     content.items.push_back(item("Bring to Front", AppCommand::of(ContentCommand::BringToFront)));
     content.items.push_back(item("Delete Object", AppCommand::of(ContentCommand::DeleteObject)));
+    // True redaction (ADR-0026).
+    MenuItem redactTool = item("Redact", AppCommand::of(RedactCommand::ToolRedact), std::nullopt, true);
+    redactTool.checkable = true;
+    content.items.push_back(std::move(redactTool));
+    content.items.push_back(
+        item("Mark Selection for Redaction", AppCommand::of(RedactCommand::MarkSelection)));
+    content.items.push_back(
+        item("Apply Redactions\xE2\x80\xA6", AppCommand::of(RedactCommand::ApplyRedactions)));
+    content.items.push_back(item("Clear Redaction Marks", AppCommand::of(RedactCommand::ClearMarks)));
     bar.push_back(std::move(content));
 
     // No single-letter shortcuts: they would clash with typing.

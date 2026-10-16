@@ -8,6 +8,7 @@
 #include "app/DocumentWorkspace.hpp"
 #include "app/FileController.hpp"
 #include "app/FormController.hpp"
+#include "app/RedactionController.hpp"
 #include "app/MarkdownExportController.hpp"
 #include "app/MarkdownHostView.hpp"
 #include "app/MenuModel.hpp"
@@ -238,6 +239,9 @@ private:
     // AcroForm filling (ADR-0024). Declared after annotations_: destroyed
     // before it (it reads the annotation tool state and owns a viewport layer).
     std::unique_ptr<FormController> forms_;
+    // Redaction (ADR-0026). Declared after content_: destroyed before it (it
+    // reads and switches the shared tool state and owns a viewport layer).
+    std::unique_ptr<RedactionController> redaction_;
 
     // Print flow (panel -> worker spool -> platform print). Declared last:
     // destroyed first, while the sessions its worker borrows are alive.

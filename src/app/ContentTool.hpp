@@ -13,6 +13,7 @@ enum class ContentTool : std::uint8_t {
     None,
     SelectObject, // select / move / resize / delete / retype existing content
     AddText,      // click or drag places a new text block
+    Redact,       // drag marks an area for redaction (RedactionController, ADR-0026)
 };
 
 // Content commands the shell exposes to platform menus (integers on the
