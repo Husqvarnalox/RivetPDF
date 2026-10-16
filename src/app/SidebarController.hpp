@@ -6,6 +6,7 @@
 #include "core/StrongId.hpp"
 #include "core/geometry/Rect.hpp"
 #include "pdf/PdfNavigation.hpp"
+#include "pdf/PdfSignatures.hpp"
 #include "ui/OutlinePanel.hpp"
 
 #include <cstddef>
@@ -44,17 +45,31 @@ struct FlattenedOutline {
 FlattenedOutline flattenOutline(const pdf::PdfOutlineNode& root, const std::set<OutlinePath>& expanded,
                                 std::size_t pageCount);
 
-// The left sidebar: a mode header (Pages | Outline) above the active panel.
+// The rows of the Signatures panel (ADR-0025) for a loaded signature list:
+// per signature a top row ("Signature present (not verified) - <coverage>")
+// and indented detail rows (page, reason, signing time). `signatureOfRow`
+// maps every row to its signature index. Untrusted strings are cleaned
+// (control characters -> spaces) and capped. Null list -> "Loading...".
+struct SignatureRows {
+    std::vector<ui::OutlineRow> rows;
+    std::vector<std::optional<std::size_t>> signatureOfRow;
+};
+SignatureRows buildSignatureRows(const pdf::PdfSignatureList* list);
+
+// The left sidebar: a mode header (Pages | Outline | Signatures) above the
+// active panel.
 // Pages mode shows the ACTIVE tab's page thumbnails (selection follows the
 // current page); Outline mode shows the document outline, loaded
 // asynchronously on the session's link stream. Row activation navigates
-// the viewport. Expansion state belongs to the bound document and resets
+// the viewport. Signatures mode lists the base document's digital
+// signatures (loaded lazily on bind; presence only, never verified).
+// Expansion state belongs to the bound document and resets
 // when a different document is bound.
 //
 // Main thread only.
 class SidebarController {
 public:
-    enum class Mode { Pages, Outline };
+    enum class Mode { Pages, Outline, Signatures };
 
     static constexpr double kWidth = 220.0;
     static constexpr double kHeaderHeight = 34.0;
@@ -92,24 +107,33 @@ public:
     void setRowExpanded(std::size_t row, bool expanded);
     void activateRow(std::size_t row);
     const std::vector<ui::OutlineRow>& outlineRows() const { return outline_.rows; }
+    // Signatures panel (public for tests): activation goes to the
+    // signature's page when it is known and still in the document.
+    void activateSignatureRow(std::size_t row);
+    const std::vector<ui::OutlineRow>& signatureRows() const { return signatures_.rows; }
 
 private:
     // Re-flattens the active tab's outline into the panel; requests it
     // (asynchronously) when it is not loaded yet.
     void rebuildOutlineRows();
     void clearOutline();
+    void rebuildSignatureRows();
 
     ShellContext& context_;
     // Raw pointers into widgets owned by the parent's tree.
     ui::Container* container_ = nullptr;
     ui::Button* pagesButton_ = nullptr;
     ui::Button* outlineButton_ = nullptr;
+    ui::Button* signaturesButton_ = nullptr;
     ui::PageThumbnailList* thumbnails_ = nullptr;
     ui::OutlinePanel* outlinePanel_ = nullptr;
+    ui::OutlinePanel* signaturesPanel_ = nullptr;
     Mode mode_ = Mode::Pages;
     core::Rect panelFrame_;
 
     FlattenedOutline outline_;
+    SignatureRows signatures_;
+    pdf::PdfSignatureListPtr shownSignatures_; // keeps signatureOfRow valid
     std::set<OutlinePath> expandedPaths_;
     // Document the expansion state belongs to; the top level starts
     // expanded once per document (the user may collapse it afterwards).

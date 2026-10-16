@@ -115,6 +115,17 @@ public:
         root.children.push_back(outlineNode("Chapter 2", 2));
         return std::optional<PdfOutlineNode>{std::move(root)};
     }
+    // One signed field on page 3 (base index 2).
+    Result<rivet::pdf::PdfSignatureListPtr> signatures() const override {
+        auto list = std::make_shared<rivet::pdf::PdfSignatureList>();
+        rivet::pdf::PdfSignatureInfo info;
+        info.coverage.valid = true;
+        info.coverage.coversWholeDocument = true;
+        info.reason = "Approved\nby me";
+        info.pageIndex = 2;
+        list->signatures.push_back(std::move(info));
+        return rivet::pdf::PdfSignatureListPtr{std::move(list)};
+    }
 
 private:
     std::vector<std::u32string> pages_{utf32("alpha beta"), utf32("beta gamma"), utf32("delta beta")};
@@ -558,4 +569,46 @@ RIVET_TEST(wiringFlattenOutlineHonorsExpansionAndClampsDestinations) {
     CHECK(expanded.paths[2] == (OutlinePath{0, 1}));
     CHECK_EQ(expanded.destinations[1], std::size_t{0}); // page 7 >= 2 pages
     CHECK_EQ(expanded.destinations[2], std::size_t{1});
+}
+
+RIVET_TEST(wiringSidebarListsSignaturesAndGoesToTheirPage) {
+    Shell s;
+    s.sidebar->setMode(SidebarController::Mode::Signatures);
+    CHECK(s.sidebar->mode() == SidebarController::Mode::Signatures);
+    CHECK(s.sidebar->signatureRows().empty());
+
+    s.open("signatures");
+    CHECK(s.dispatcher.waitUntil([&] { return s.sidebar->signatureRows().size() == 3; }));
+    const auto& rows = s.sidebar->signatureRows();
+    CHECK_EQ(rows[0].title, std::string("Signature present (not verified) - covers the whole document"));
+    CHECK_EQ(rows[1].title, std::string("Page 3"));
+    CHECK_EQ(rows[2].title, std::string("Reason: Approved by me")); // control characters cleaned
+    CHECK(s.workspace.activeTab()->session()->signatures().hasSignatures());
+
+    s.sidebar->activateSignatureRow(1);
+    CHECK_EQ(s.viewport->currentPageIndex(), std::size_t{2});
+    s.sidebar->activateSignatureRow(99); // out of range: ignored
+
+    s.workspace.closeActiveTab();
+    CHECK(s.sidebar->signatureRows().empty());
+}
+
+RIVET_TEST(wiringSignatureRowsForLoadingEmptyAndTruncatedLists) {
+    CHECK_EQ(rivet::app::buildSignatureRows(nullptr).rows.size(), std::size_t{1});
+    rivet::pdf::PdfSignatureList list;
+    const auto empty = rivet::app::buildSignatureRows(&list);
+    CHECK_EQ(empty.rows.size(), std::size_t{1});
+    CHECK_EQ(empty.rows[0].title, std::string("No digital signatures"));
+    CHECK(!empty.signatureOfRow[0].has_value());
+
+    rivet::pdf::PdfSignatureInfo info; // invalid byte range, no page/reason/time
+    info.signingTime = std::string(400, 'x');
+    list.signatures.push_back(info);
+    list.truncated = true;
+    const auto rows = rivet::app::buildSignatureRows(&list);
+    CHECK_EQ(rows.rows.size(), std::size_t{3});
+    CHECK_EQ(rows.rows[0].title, std::string("Signature present (not verified) - byte range is malformed"));
+    CHECK(rows.rows[1].title.size() < 200u); // capped
+    CHECK(rows.signatureOfRow[1] == std::optional<std::size_t>{0});
+    CHECK_EQ(rows.rows[2].title, std::string("More signatures are not listed"));
 }
