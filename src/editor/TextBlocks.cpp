@@ -246,6 +246,9 @@ std::optional<std::string> pageReadOnlyReason(const pdf::PdfPageContent& content
 
 ObjectCapabilityInfo classifyObject(const PdfContentObject& o) {
     if (!finiteGeometry(o)) return {ContentCapability::ReadOnly, "the object has invalid geometry"};
+    if (o.origin.kind == pdf::PdfContentOrigin::Kind::Redaction) {
+        return {ContentCapability::ReadOnly, "produced by a redaction; save the document to edit it"};
+    }
     switch (o.type) {
     case PdfContentObjectType::Text: {
         if (o.renderMode == 3) return {ContentCapability::ReadOnly, "invisible text (for example an OCR layer)"};

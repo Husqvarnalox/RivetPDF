@@ -36,6 +36,9 @@ add_executable(rivet_editor_tests
     # PDFium-ON fill -> save -> rebase -> reopen round trip.
     TestFormCommands.cpp
     TestFormRoundTrip.cpp
+    # Redaction marks and Apply Redactions (ADR-0026) over the fakes.
+    TestRedactionCommands.cpp
+    TestRedactionRoundTrip.cpp
 )
 
 add_test(NAME editor COMMAND rivet_editor_tests)

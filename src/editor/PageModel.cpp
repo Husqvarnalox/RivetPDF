@@ -29,10 +29,12 @@ std::size_t PageModelSnapshot::SourceKeyHash::operator()(const SourceKey& key) c
 
 PageModelSnapshot::PageModelSnapshot(std::shared_ptr<pdf::PdfDocument> base,
                                      std::vector<PageEntry> entries, std::uint64_t orderRevision,
-                                     std::uint64_t documentRevision, pdf::PdfFormValuesPtr formValues)
+                                     std::uint64_t documentRevision, pdf::PdfFormValuesPtr formValues,
+                                     bool removeMetadata)
     : base_(std::move(base)),
       entries_(std::move(entries)),
       formValues_(std::move(formValues)),
+      removeMetadata_(removeMetadata),
       orderRevision_(orderRevision),
       documentRevision_(documentRevision) {
     indexById_.reserve(entries_.size());
@@ -89,6 +91,7 @@ core::Result<pdf::PdfAssemblyRequest> PageModelSnapshot::toAssemblyRequest(
     pdf::PdfAssemblyRequest request;
     request.base = base_.get();
     if (formValues_ != nullptr && !formValues_->empty()) request.formValues = formValues_;
+    request.removeMetadata = removeMetadata_;
     const auto append = [&request](const PageEntry& entry) {
         std::shared_ptr<const pdf::PdfPageAnnotationEdits> edits;
         if (entry.annotations != nullptr) {
@@ -166,7 +169,7 @@ core::Result<std::unique_ptr<PageModel>> PageModel::create(std::shared_ptr<pdf::
     for (PageSource& page : pages) {
         if (page.document != base) return std::unexpected(invalid("initial pages must come from the base document"));
         entries.push_back(PageEntry{ids.next(), std::move(page.document), page.pageIndex, page.nativeView, 0,
-                                    page.mediaBox, page.nativeView, nullptr, 0, nullptr});
+                                    page.mediaBox, page.nativeView, nullptr, 0, nullptr, nullptr});
     }
     return std::unique_ptr<PageModel>(new PageModel(std::move(base), std::move(entries), ids));
 }
@@ -410,6 +413,46 @@ core::Status PageModel::updateForms(pdf::PdfFormValuesPtr values, std::span<cons
     return core::ok();
 }
 
+core::Status PageModel::updateRedactionMarks(std::span<const MarksUpdate> updates) {
+    if (updates.empty()) return std::unexpected(invalid("no pages given"));
+    std::vector<core::PageId> ids;
+    ids.reserve(updates.size());
+    for (const MarksUpdate& update : updates) ids.push_back(update.id);
+    auto positions = positionsOf(ids);
+    if (!positions.has_value()) return std::unexpected(std::move(positions).error());
+    std::vector<PageEntry> entries = snapshot_->entries();
+    for (const MarksUpdate& update : updates) {
+        entries[snapshot_->indexOf(update.id)].redactionMarks =
+            update.marks != nullptr && !update.marks->empty() ? update.marks : nullptr;
+    }
+    publish(std::move(entries), false);
+    return core::ok();
+}
+
+core::Status PageModel::updateRedaction(std::span<const RedactionUpdate> updates, pdf::PdfFormValuesPtr values,
+                                        bool removeMetadata) {
+    if (updates.empty()) return std::unexpected(invalid("no pages given"));
+    std::vector<core::PageId> ids;
+    ids.reserve(updates.size());
+    for (const RedactionUpdate& update : updates) ids.push_back(update.id);
+    auto positions = positionsOf(ids);
+    if (!positions.has_value()) return std::unexpected(std::move(positions).error());
+    std::vector<PageEntry> entries = snapshot_->entries();
+    for (const RedactionUpdate& update : updates) {
+        PageEntry& entry = entries[snapshot_->indexOf(update.id)];
+        entry.contentEdits = update.edits;
+        entry.contentRevision = update.contentRevision;
+        entry.rasterRevision = update.rasterRevision;
+        entry.annotations = update.annotations;
+        entry.redactionMarks = update.marks != nullptr && !update.marks->empty() ? update.marks : nullptr;
+    }
+    if (values != nullptr && values->empty()) values = nullptr;
+    formValues_ = std::move(values);
+    removeMetadata_ = removeMetadata;
+    publish(std::move(entries), false);
+    return core::ok();
+}
+
 core::Status PageModel::rebase(std::shared_ptr<pdf::PdfDocument> base, std::vector<PageEntry> entries) {
     if (base == nullptr) return std::unexpected(invalid("no base document"));
     const std::vector<PageEntry>& current = snapshot_->entries();
@@ -426,6 +469,7 @@ core::Status PageModel::rebase(std::shared_ptr<pdf::PdfDocument> base, std::vect
     }
     base_ = std::move(base);
     formValues_ = nullptr;
+    removeMetadata_ = false;
     publish(std::move(entries), false);
     return core::ok();
 }
@@ -435,7 +479,7 @@ void PageModel::publish(std::vector<PageEntry> entries, bool orderChanged) {
     ++documentRevision_;
     PageSnapshotPtr previous = std::move(snapshot_);
     snapshot_ = std::make_shared<const PageModelSnapshot>(base_, std::move(entries), orderRevision_,
-                                                          documentRevision_, formValues_);
+                                                          documentRevision_, formValues_, removeMetadata_);
     if (!onChanged_) return;
 
     PageModelChange change;
@@ -453,6 +497,7 @@ void PageModel::publish(std::vector<PageEntry> entries, bool orderChanged) {
             }
             if (now->annotations != entry.annotations) change.annotationsChanged.push_back(entry.id);
             if (now->rasterRevision != entry.rasterRevision) change.rasterChanged.push_back(entry.id);
+            if (now->redactionMarks != entry.redactionMarks) change.marksChanged.push_back(entry.id);
         }
     }
     for (const PageEntry& entry : snapshot_->entries()) {

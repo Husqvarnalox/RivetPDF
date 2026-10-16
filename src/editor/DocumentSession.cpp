@@ -267,7 +267,8 @@ core::Status DocumentSession::rebaseOnto(RebaseTarget target, std::optional<std:
             rasterRevision = model_->mintRasterRevision();
         }
         entries.push_back(PageEntry{old.id, target.document, index, page.nativeView, contentRevision,
-                                    page.mediaBox, page.nativeView, std::move(state), rasterRevision, nullptr});
+                                    page.mediaBox, page.nativeView, std::move(state), rasterRevision, nullptr,
+                                    old.redactionMarks});
     }
 
     // Base-level state first: the page-model observer (fired by the model

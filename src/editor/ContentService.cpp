@@ -321,6 +321,14 @@ struct ContentService::Impl {
             const std::uint32_t ordinal = ordinals[o.origin.tag]++;
             ids[i] = createdId(page, o.origin.tag, ordinal, used);
         }
+        // Objects produced by a redaction (ADR-0026) are read-only and never
+        // addressed by edits; they get ids under the reserved tag 0 (block
+        // tags are non-zero) with ordinals from 1, which always mint.
+        std::uint32_t redactionOrdinal = 0;
+        for (std::size_t i = 0; i < content.objects.size(); ++i) {
+            if (content.objects[i].origin.kind != pdf::PdfContentOrigin::Kind::Redaction) continue;
+            ids[i] = createdId(page, 0, ++redactionOrdinal, used);
+        }
         return ids;
     }
 

@@ -113,6 +113,12 @@ std::vector<FormWidgetView> FormService::widgets(core::PageId pageId) const {
         const pdf::PdfFormField& field = info_->fields[widget.field];
         const pdf::PdfBox& rect = field.widgets[widget.widget].rect;
         if (!rect.isValid()) continue;
+        // A widget removed from the page (redaction, ADR-0026) is gone.
+        if (entry->annotations != nullptr &&
+            std::binary_search(entry->annotations->suppressed.begin(), entry->annotations->suppressed.end(),
+                               widget.annotIndex)) {
+            continue;
+        }
         FormWidgetView view;
         view.field = widget.field;
         view.widget = widget.widget;

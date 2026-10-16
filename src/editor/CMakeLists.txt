@@ -10,6 +10,7 @@ add_library(rivet_editor STATIC
     TextBlocks.cpp
     PageCommands.cpp
     PageModel.cpp
+    RedactionCommands.cpp
     PageSelection.cpp
     SelectionModel.cpp
     SelectionText.cpp

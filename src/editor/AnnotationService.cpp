@@ -212,6 +212,13 @@ std::optional<core::AnnotationId> AnnotationService::hitTest(core::PageId pageId
     return std::nullopt;
 }
 
+pdf::PdfPageAnnotationsPtr AnnotationService::originals(core::PageId pageId) const {
+    const PageSnapshotPtr snapshot = session_.pageSnapshot();
+    const PageEntry* entry = snapshot->find(pageId);
+    if (entry == nullptr) return nullptr;
+    return originalsFor(*entry, true);
+}
+
 std::optional<AnnotationService::Located> AnnotationService::locate(core::AnnotationId id) const {
     if (!id) return std::nullopt;
     const PageSnapshotPtr snapshot = session_.pageSnapshot();
