@@ -155,6 +155,9 @@ void ShellController::buildWidgets() {
         contentBar_->refresh();
     });
 
+    // Form filling: its layer sits below the annotation layer (Select tool).
+    forms_ = std::make_unique<FormController>(*context_, *root_, *annotations_);
+
     // File lifecycle (save/save-as/import/merge/extract, dirty close/quit).
     fileLifecycle_ = std::make_unique<FileController>(
         *engine_, *context_, scheduler_, [this](std::string text) { setStatus(std::move(text)); },
@@ -334,6 +337,7 @@ void ShellController::layoutShell() {
     passwordPrompt_->layout(viewport_->frame());
     if (annotations_ != nullptr) annotations_->layout(viewport_->frame());
     if (content_ != nullptr) content_->layout(viewport_->frame());
+    if (forms_ != nullptr) forms_->layout(viewport_->frame());
 }
 
 void ShellController::refreshTabStrip() {
@@ -423,6 +427,7 @@ void ShellController::bindActiveTab() {
         pageEditing_->bindTab(nullptr);
         annotations_->bindTab(nullptr);
         content_->bindTab(nullptr);
+        forms_->bindTab(nullptr);
         if (tab == nullptr) {
             setStatus("No document open");
             setZoomDisplay(viewport_->zoom().zoom());
@@ -452,6 +457,7 @@ void ShellController::bindActiveTab() {
     pageEditing_->bindTab(tab);
     annotations_->bindTab(tab);
     content_->bindTab(tab);
+    forms_->bindTab(tab);
 
     // First bind of a fresh tab: open fit-to-width (Phase 1 behavior). The
     // mode stays active (resizes recompute the zoom) until the user zooms.
@@ -482,6 +488,7 @@ void ShellController::bindMarkdownTab(DocumentTab* tab) {
     pageEditing_->bindTab(nullptr);
     annotations_->bindTab(nullptr);
     content_->bindTab(nullptr);
+    forms_->bindTab(nullptr);
     searchBar_->bindMarkdownTab();
     setPresentationMode(false);
 
@@ -605,6 +612,9 @@ void ShellController::perform(const AppCommand& command) {
     case AppCommand::Kind::Annotation: performAnnotation(command.annotation()); break;
     case AppCommand::Kind::Content: performContent(command.content()); break;
     case AppCommand::Kind::MarkdownMode: performMarkdownMode(command.markdownMode()); break;
+    case AppCommand::Kind::Form:
+        if (forms_ != nullptr) forms_->perform(command.form());
+        break;
     }
 }
 
@@ -617,11 +627,15 @@ bool ShellController::canPerform(const AppCommand& command) const {
     case AppCommand::Kind::Annotation: return canPerformAnnotation(command.annotation());
     case AppCommand::Kind::Content: return canPerformContent(command.content());
     case AppCommand::Kind::MarkdownMode: return canPerformMarkdownMode();
+    case AppCommand::Kind::Form: return forms_ != nullptr && forms_->canPerform(command.form());
     }
     return false;
 }
 
 std::optional<bool> ShellController::isChecked(const AppCommand& command) const {
+    if (command.kind == AppCommand::Kind::Form) {
+        return forms_ != nullptr ? forms_->isChecked(command.form()) : std::nullopt;
+    }
     if (command.kind != AppCommand::Kind::MarkdownMode) return std::nullopt;
     const auto mode = activeMarkdownMode();
     return mode.has_value() && *mode == command.markdownMode();
@@ -678,6 +692,8 @@ bool ShellController::handleKeyEvent(const ui::KeyEvent& event) {
     // Escape: the content tools first (inline editor, a running gesture, the
     // selection), then the find bar / presentation mode below.
     if (event.key == ui::Key::Escape && content_ != nullptr && content_->handleEscape()) return true;
+    // Then the form layer: its popup, then the focused field.
+    if (event.key == ui::Key::Escape && forms_ != nullptr && forms_->handleEscape()) return true;
 
     // Escape closes the search bar / exits presentation mode; otherwise it
     // blurs the focused widget.

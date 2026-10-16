@@ -4,6 +4,7 @@
 #include "app/AnnotationController.hpp"
 #include "app/ContentTool.hpp"
 #include "app/FileController.hpp"
+#include "app/FormLayer.hpp"
 #include "app/MarkdownTabState.hpp"
 #include "app/PageEditingController.hpp"
 
@@ -23,11 +24,11 @@ namespace rivet::app {
 
 // A tagged value identifying any shell command reachable from a menu.
 struct AppCommand {
-    enum class Kind : std::uint8_t { Open, Quit, File, PageEdit, Annotation, Content, MarkdownMode };
+    enum class Kind : std::uint8_t { Open, Quit, File, PageEdit, Annotation, Content, MarkdownMode, Form };
 
     Kind kind = Kind::Open;
     // The underlying enumerator value for File/PageEdit/Annotation/Content/
-    // MarkdownMode; 0 for Open and Quit.
+    // MarkdownMode/Form; 0 for Open and Quit.
     std::uint8_t value = 0;
 
     static AppCommand open() { return {Kind::Open, 0}; }
@@ -36,12 +37,14 @@ struct AppCommand {
     static AppCommand of(PageEditCommand c) { return {Kind::PageEdit, static_cast<std::uint8_t>(c)}; }
     static AppCommand of(AnnotationCommand c) { return {Kind::Annotation, static_cast<std::uint8_t>(c)}; }
     static AppCommand of(ContentCommand c) { return {Kind::Content, static_cast<std::uint8_t>(c)}; }
+    static AppCommand of(FormCommand c) { return {Kind::Form, static_cast<std::uint8_t>(c)}; }
     static AppCommand of(MarkdownDisplayMode m) { return {Kind::MarkdownMode, static_cast<std::uint8_t>(m)}; }
 
     FileCommand file() const { return static_cast<FileCommand>(value); }
     PageEditCommand pageEdit() const { return static_cast<PageEditCommand>(value); }
     AnnotationCommand annotation() const { return static_cast<AnnotationCommand>(value); }
     ContentCommand content() const { return static_cast<ContentCommand>(value); }
+    FormCommand form() const { return static_cast<FormCommand>(value); }
     MarkdownDisplayMode markdownMode() const { return static_cast<MarkdownDisplayMode>(value); }
 
     friend bool operator==(const AppCommand&, const AppCommand&) = default;

@@ -7,6 +7,7 @@
 #include "app/ContentController.hpp"
 #include "app/DocumentWorkspace.hpp"
 #include "app/FileController.hpp"
+#include "app/FormController.hpp"
 #include "app/MarkdownExportController.hpp"
 #include "app/MarkdownHostView.hpp"
 #include "app/MenuModel.hpp"
@@ -234,6 +235,9 @@ private:
     // suspends the annotation layer and uninstalls itself on destruction).
     std::unique_ptr<ContentController> content_;
     std::unique_ptr<ContentBarController> contentBar_;
+    // AcroForm filling (ADR-0024). Declared after annotations_: destroyed
+    // before it (it reads the annotation tool state and owns a viewport layer).
+    std::unique_ptr<FormController> forms_;
 
     // Print flow (panel -> worker spool -> platform print). Declared last:
     // destroyed first, while the sessions its worker borrows are alive.

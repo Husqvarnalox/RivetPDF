@@ -409,11 +409,14 @@ public:
     core::Result<std::unique_ptr<pdf::PdfDocument>> openDocument(const std::filesystem::path&,
                                                                  std::string_view) override {
         auto document = std::make_unique<FakePageDocument>(pageCount_);
+        if (formInfo != nullptr) document->setFormInfo(formInfo);
         lastDocument = document.get();
         return std::unique_ptr<pdf::PdfDocument>(std::move(document));
     }
 
     FakePageDocument* lastDocument = nullptr;
+    // Form description given to every document opened afterwards.
+    pdf::PdfFormInfoPtr formInfo;
 
 private:
     std::size_t pageCount_;
