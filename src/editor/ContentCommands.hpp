@@ -4,6 +4,7 @@
 #include "editor/Command.hpp"
 #include "editor/ContentObjects.hpp"
 #include "editor/DocumentSession.hpp"
+#include "editor/OcrLayer.hpp"
 #include "editor/PageCommands.hpp"
 
 #include "core/Error.hpp"
@@ -14,6 +15,7 @@
 
 #include <memory>
 #include <optional>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -93,6 +95,15 @@ struct NewTextBlock {
     double displayWrapWidth = 0.0;
 };
 core::Result<ContentEdit> addTextBlock(DocumentSession& session, core::PageId page, NewTextBlock block);
+
+// OCR text layer (ADR-0027): one undoable edit that adds the recognized
+// `words` (display space of `view`, the view the page was rasterized
+// through; see OcrLayer.hpp) as invisible text. An OCR layer this function
+// added to the page earlier is replaced. InvalidArgument when no word
+// survives planning (nothing readable), the usual errors of the other
+// factories otherwise (locked session, page content unavailable).
+core::Result<ContentEdit> addInvisibleText(DocumentSession& session, core::PageId page,
+                                           const pdf::PdfPageView& view, std::span<const OcrWord> words);
 
 // Z-order helpers (optional per spec): bring the object(s) to the front or
 // send to the back by re-ordering through transforms is NOT possible in the
