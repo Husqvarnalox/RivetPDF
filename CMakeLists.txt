@@ -7,8 +7,8 @@ project(rivet
 
 # Objective-C++ exists only for the macOS platform backend; Windows/Linux
 # builds must not require it. Linux/UNIX builds the X11 desktop shell when its
-# development packages are present (src/platform/linux); Windows configures
-# the portable libraries and tests only (src/platform/CMakeLists.txt).
+# development packages are present (src/platform/linux); Windows builds the
+# Win32/Direct2D shell (src/platform/windows).
 if(APPLE)
     enable_language(OBJCXX)
     set(CMAKE_OBJCXX_STANDARD 23)
@@ -47,6 +47,14 @@ if(RIVET_WITH_PDFIUM)
     message(STATUS "Rivet: PDFium found: ${PDFIUM_LIBRARY}")
 else()
     message(STATUS "Rivet: building WITHOUT PDFium (RIVET_WITH_PDFIUM=OFF); PDF features are disabled at runtime.")
+endif()
+
+# MSVC: sources are UTF-8; report the real __cplusplus; the CRT's "unsafe
+# function" deprecations (getenv, localtime, ...) are not portability
+# problems for this code base.
+if(MSVC)
+    add_compile_options(/utf-8 /Zc:__cplusplus /EHsc)
+    add_compile_definitions(_CRT_SECURE_NO_WARNINGS _CRT_NONSTDC_NO_WARNINGS)
 endif()
 
 include(RivetWarnings)
