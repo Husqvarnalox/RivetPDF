@@ -26,7 +26,8 @@ Documents never leave the machine: Rivet has no network code of its own, no acco
 | Forms, signatures, OCR, redaction, compression, encryption, document comparison | Not implemented |
 | Windows / Linux shells | Not implemented. Portable layers are built and tested on Ubuntu/GCC in CI |
 | Markdown: Rendered (read-only), Source (with live preview) and Split views; text editing with undo/redo and background save | Implemented (macOS) |
-| Markdown WYSIWYG editing, export to PDF, print, Mermaid, math | Not implemented |
+| Markdown export to PDF (vector, bundled fonts, links) and printing | Implemented (macOS) |
+| Markdown WYSIWYG editing, Mermaid, math | Not implemented |
 
 macOS is currently the primary supported desktop shell; the portable core layers build and are tested elsewhere.
 
