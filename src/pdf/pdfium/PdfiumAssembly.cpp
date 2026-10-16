@@ -22,6 +22,7 @@
 #include "PdfiumDocument.h"
 #include "PdfiumEngine.h"
 #include "PdfiumFileSource.h"
+#include "PdfiumForms.h"
 #include "PdfiumWriting.h"
 #include "fpdf_edit.h"          // FPDF_CreateNewDocument, FPDF_MovePages, FPDFPage_Delete, FPDFPage_SetRotation
 #include "fpdf_ppo.h"           // FPDF_ImportPagesByIndex
@@ -360,8 +361,21 @@ core::Result<std::unique_ptr<PrivateCopy>> openPrivateCopy(const PdfiumDocument&
 // streams, adjusted popup/Note /Rect, toggled /F flags); importing from them
 // would leak those render artifacts into saved or extracted output. Copies
 // are closed with the object, after the assembly. Caller holds the gate.
+//
+// Form values (ADR-0024): when the request fills the base's form, the base's
+// copy gets the values applied (through the form filler, like the working
+// document) right after it is opened, so every imported copy of a base page
+// (duplicates, Extract) carries the filled values and appearances too.
 class ImportSources {
 public:
+    void setFormFill(const PdfiumDocument* base, PdfFormInfoPtr info, PdfFormValuesPtr values,
+                     std::vector<std::string>* failures) {
+        formBase_ = base;
+        formInfo_ = std::move(info);
+        formValues_ = std::move(values);
+        formFailures_ = failures;
+    }
+
     core::Result<FPDF_DOCUMENT> documentFor(const PdfiumDocument& live) {
         const auto it = copies_.find(&live);
         if (it != copies_.end()) {
@@ -372,12 +386,24 @@ public:
             return std::unexpected(copy.error());
         }
         const FPDF_DOCUMENT handle = (*copy)->get();
+        if (&live == formBase_ && formInfo_ != nullptr && formValues_ != nullptr && !formValues_->empty()) {
+            // Identity page map: the copy holds every base page in place.
+            const auto identity = [](std::size_t page) -> std::optional<int> { return static_cast<int>(page); };
+            if (auto filled = internal::applyFormValues(handle, *formInfo_, *formValues_, identity, formFailures_);
+                !filled.has_value()) {
+                return std::unexpected(filled.error());
+            }
+        }
         copies_.emplace(&live, std::move(*copy));
         return handle;
     }
 
 private:
     std::map<const PdfiumDocument*, std::unique_ptr<PrivateCopy>> copies_;
+    const PdfiumDocument* formBase_ = nullptr;
+    PdfFormInfoPtr formInfo_;
+    PdfFormValuesPtr formValues_;
+    std::vector<std::string>* formFailures_ = nullptr;
 };
 
 // Imports `indices` of `source` (its private copy) into `working` at
@@ -543,8 +569,27 @@ core::Status verifyPageCount(FPDF_DOCUMENT working, std::size_t expected, const 
     return core::ok();
 }
 
+// Applies the request's form values to the base pages reused in place in
+// the working document (pages already in final order, content applied,
+// /Annots still the source's). `reusedFinal[p]` is the final index of base
+// page p when it was reused in place, -1 otherwise. Caller holds the gate.
+core::Status applyForms(FPDF_DOCUMENT working,
+                        const PdfiumDocument& base,
+                        const std::vector<int>& reusedFinal,
+                        const PdfAssemblyRequest& request) {
+    if (request.formValues == nullptr || request.formValues->empty()) return core::ok();
+    const auto info = base.formInfoLocked();
+    if (!info.has_value()) return std::unexpected(info.error());
+    const auto pageFor = [&reusedFinal](std::size_t sourcePage) -> std::optional<int> {
+        if (sourcePage >= reusedFinal.size() || reusedFinal[sourcePage] < 0) return std::nullopt;
+        return reusedFinal[sourcePage];
+    };
+    return internal::applyFormValues(working, **info, *request.formValues, pageFor, request.formFailures);
+}
+
 core::Status assemblePreserveBase(const PdfiumDocument& base,
                                   const std::vector<ResolvedPage>& pages,
+                                  const PdfAssemblyRequest& request,
                                   ImportSources& sources,
                                   IPdfByteSink& sink,
                                   std::vector<PdfAssembledPageAnnotations>* report,
@@ -649,6 +694,17 @@ core::Status assemblePreserveBase(const PdfiumDocument& base,
     if (auto edited = applyContent(working.get(), pages, contentReport); !edited.has_value()) {
         return edited;
     }
+    // Forms before annotation edits: widget /Annots indices are still the
+    // source page's (content edits never touch /Annots).
+    std::vector<int> reusedFinal(baseCount, -1);
+    for (std::size_t i = 0; i < finalCount; ++i) {
+        if (pages[i].source == &base && workingIndex[i] == pages[i].sourceIndex) {
+            reusedFinal[static_cast<std::size_t>(pages[i].sourceIndex)] = static_cast<int>(i);
+        }
+    }
+    if (auto filled = applyForms(working.get(), base, reusedFinal, request); !filled.has_value()) {
+        return filled;
+    }
     if (auto annotated = applyAnnotations(working.get(), pages, report); !annotated.has_value()) {
         return annotated;
     }
@@ -718,13 +774,39 @@ core::Status assembleWithPdfium(const PdfiumEngine& engine,
                 return std::unexpected(pages.error());
             }
             ImportSources sources; // closed after the assembly, whatever happens
+            if (request.formValues != nullptr && !request.formValues->empty()) {
+                // Form values belong to the base's fields (also for Extract,
+                // where they reach the imported copies of base pages).
+                const auto base = ownedDocument(engine, request.base, "form base");
+                if (!base.has_value()) {
+                    return std::unexpected(base.error());
+                }
+                auto info = (*base)->formInfoLocked();
+                if (!info.has_value()) {
+                    return std::unexpected(info.error());
+                }
+                if (!(*info)->fillable()) {
+                    return std::unexpected(invalidArgument("the document's form cannot be filled"));
+                }
+                for (const auto& [name, value] : *request.formValues) {
+                    const std::size_t index = (*info)->find(name);
+                    if (index == PdfFormInfo::npos) {
+                        return std::unexpected(invalidArgument("a filled form field does not exist"));
+                    }
+                    if (auto valid = validateFormValue((*info)->fields[index], value); !valid.has_value()) {
+                        return std::unexpected(valid.error());
+                    }
+                }
+                sources.setFormFill(*base, *info, request.formValues, request.formFailures);
+            }
             switch (request.mode) {
                 case PdfAssemblyRequest::Mode::PreserveBase: {
                     const auto base = ownedDocument(engine, request.base, "base");
                     if (!base.has_value()) {
                         return std::unexpected(base.error());
                     }
-                    return assemblePreserveBase(**base, *pages, sources, sink, annotationReport, contentReport);
+                    return assemblePreserveBase(**base, *pages, request, sources, sink, annotationReport,
+                                                contentReport);
                 }
                 case PdfAssemblyRequest::Mode::Fresh:
                     // `base` is ignored: a Fresh document has no base.

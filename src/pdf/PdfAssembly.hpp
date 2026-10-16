@@ -4,11 +4,13 @@
 #include "core/Error.hpp"
 #include "pdf/PdfAnnotation.hpp"
 #include "pdf/PdfContent.hpp"
+#include "pdf/PdfForms.hpp"
 #include "pdf/PdfPageGeometry.hpp"
 
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <string>
 #include <vector>
 
 namespace rivet::pdf {
@@ -64,6 +66,17 @@ struct PdfAssemblyRequest {
     Mode mode = Mode::PreserveBase;
     const PdfDocument* base = nullptr;
     std::vector<PdfAssemblyPage> pages;
+    // Edited AcroForm values of `base`'s fields (ADR-0024; null or empty =
+    // the form is copied unchanged). The backend applies them with its form
+    // filler (JavaScript and XFA disabled) to the base pages reused in place
+    // (PreserveBase) and to every copy of a base page it imports (duplicates;
+    // Extract), so /V and the regenerated /AP are written. A field none of
+    // whose widgets is part of the output is skipped. A field that cannot be
+    // applied fails the assembly (never a silent partial save).
+    PdfFormValuesPtr formValues;
+    // Optional out-parameter: receives the names of fields that could not be
+    // applied (the assembly then fails). Names are untrusted: never log them.
+    std::vector<std::string>* formFailures = nullptr;
 };
 
 } // namespace rivet::pdf

@@ -45,6 +45,11 @@ add_executable(rivet_pdf_tests
     # Document builder round trips (text, links, pixels, metrics consistency,
     # sink failures): PDFium-ON bodies only.
     TestPdfiumBuilder.cpp
+    # AcroForm value model (portable) and the PDFium form adapter (read,
+    # fill through the assembly, persistence): PDFium-ON bodies only for
+    # the latter.
+    TestPdfForms.cpp
+    TestPdfiumForms.cpp
     # Compiled directly into the test binary rather than linked from
     # rivet_pdfium, so the gate tests run with RIVET_WITH_PDFIUM=OFF too. The
     # gate translation unit has no FPDF_* dependency. In PDFium-ON builds the
