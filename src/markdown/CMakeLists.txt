@@ -10,6 +10,11 @@ add_library(rivet_markdown STATIC
     MarkdownPlainText.cpp
     MarkdownSourceMap.cpp
     MarkdownSlug.cpp
+    # Mermaid diagrams (ADR-0032).
+    mermaid/FlowchartLayout.cpp
+    mermaid/Mermaid.cpp
+    mermaid/MermaidParser.cpp
+    mermaid/SequenceLayout.cpp
 )
 
 add_library(rivet::markdown ALIAS rivet_markdown)

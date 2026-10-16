@@ -5,6 +5,8 @@ add_executable(rivet_markdown_tests
     TestMarkdownParser.cpp
     TestMarkdownSlug.cpp
     TestMarkdownSourceMap.cpp
+    # Mermaid diagrams and math (ADR-0032).
+    TestMermaid.cpp
 )
 
 add_test(NAME markdown COMMAND rivet_markdown_tests)
