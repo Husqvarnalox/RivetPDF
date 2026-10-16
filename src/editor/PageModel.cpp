@@ -29,9 +29,10 @@ std::size_t PageModelSnapshot::SourceKeyHash::operator()(const SourceKey& key) c
 
 PageModelSnapshot::PageModelSnapshot(std::shared_ptr<pdf::PdfDocument> base,
                                      std::vector<PageEntry> entries, std::uint64_t orderRevision,
-                                     std::uint64_t documentRevision)
+                                     std::uint64_t documentRevision, pdf::PdfFormValuesPtr formValues)
     : base_(std::move(base)),
       entries_(std::move(entries)),
+      formValues_(std::move(formValues)),
       orderRevision_(orderRevision),
       documentRevision_(documentRevision) {
     indexById_.reserve(entries_.size());
@@ -87,6 +88,7 @@ core::Result<pdf::PdfAssemblyRequest> PageModelSnapshot::toAssemblyRequest(
     AssemblyMode mode, std::span<const core::PageId> subset) const {
     pdf::PdfAssemblyRequest request;
     request.base = base_.get();
+    if (formValues_ != nullptr && !formValues_->empty()) request.formValues = formValues_;
     const auto append = [&request](const PageEntry& entry) {
         std::shared_ptr<const pdf::PdfPageAnnotationEdits> edits;
         if (entry.annotations != nullptr) {
@@ -390,6 +392,24 @@ core::Status PageModel::updateContent(std::span<const ContentUpdate> updates) {
     return core::ok();
 }
 
+core::Status PageModel::updateForms(pdf::PdfFormValuesPtr values, std::span<const RasterUpdate> rasters) {
+    std::vector<PageEntry> entries = snapshot_->entries();
+    if (!rasters.empty()) {
+        std::vector<core::PageId> ids;
+        ids.reserve(rasters.size());
+        for (const RasterUpdate& update : rasters) ids.push_back(update.id);
+        auto positions = positionsOf(ids);
+        if (!positions.has_value()) return std::unexpected(std::move(positions).error());
+        for (const RasterUpdate& update : rasters) {
+            entries[snapshot_->indexOf(update.id)].rasterRevision = update.rasterRevision;
+        }
+    }
+    if (values != nullptr && values->empty()) values = nullptr;
+    formValues_ = std::move(values);
+    publish(std::move(entries), false);
+    return core::ok();
+}
+
 core::Status PageModel::rebase(std::shared_ptr<pdf::PdfDocument> base, std::vector<PageEntry> entries) {
     if (base == nullptr) return std::unexpected(invalid("no base document"));
     const std::vector<PageEntry>& current = snapshot_->entries();
@@ -405,6 +425,7 @@ core::Status PageModel::rebase(std::shared_ptr<pdf::PdfDocument> base, std::vect
         }
     }
     base_ = std::move(base);
+    formValues_ = nullptr;
     publish(std::move(entries), false);
     return core::ok();
 }
@@ -414,13 +435,14 @@ void PageModel::publish(std::vector<PageEntry> entries, bool orderChanged) {
     ++documentRevision_;
     PageSnapshotPtr previous = std::move(snapshot_);
     snapshot_ = std::make_shared<const PageModelSnapshot>(base_, std::move(entries), orderRevision_,
-                                                          documentRevision_);
+                                                          documentRevision_, formValues_);
     if (!onChanged_) return;
 
     PageModelChange change;
     change.previous = previous;
     change.current = snapshot_;
     change.orderChanged = orderChanged;
+    change.formsChanged = previous->formValues() != snapshot_->formValues();
     for (const PageEntry& entry : previous->entries()) {
         const PageEntry* now = snapshot_->find(entry.id);
         if (now == nullptr) {

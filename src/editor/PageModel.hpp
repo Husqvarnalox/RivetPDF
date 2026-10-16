@@ -8,6 +8,7 @@
 #include "pdf/PdfAssembly.hpp"
 #include "pdf/PdfContent.hpp"
 #include "pdf/PdfEngine.hpp"
+#include "pdf/PdfForms.hpp"
 #include "pdf/PdfNavigation.hpp"
 #include "pdf/PdfPageGeometry.hpp"
 
@@ -99,7 +100,8 @@ public:
     static constexpr std::size_t kInvalidIndex = static_cast<std::size_t>(-1);
 
     PageModelSnapshot(std::shared_ptr<pdf::PdfDocument> base, std::vector<PageEntry> entries,
-                      std::uint64_t orderRevision, std::uint64_t documentRevision);
+                      std::uint64_t orderRevision, std::uint64_t documentRevision,
+                      pdf::PdfFormValuesPtr formValues = nullptr);
 
     const std::vector<PageEntry>& entries() const { return entries_; }
     std::size_t size() const { return entries_.size(); }
@@ -108,6 +110,12 @@ public:
     std::uint64_t orderRevision() const { return orderRevision_; }
     std::uint64_t documentRevision() const { return documentRevision_; }
     const std::shared_ptr<pdf::PdfDocument>& base() const { return base_; }
+
+    // Edited AcroForm values of the BASE document's fields (ADR-0024), keyed
+    // by field name; null = the form is untouched. Document-level (a field
+    // may have widgets on several pages), immutable, swapped by
+    // FormValuesCommand; the save request carries it.
+    const pdf::PdfFormValuesPtr& formValues() const { return formValues_; }
 
     // Position of a page (kInvalidIndex when not in the model). O(1).
     std::size_t indexOf(core::PageId id) const;
@@ -133,7 +141,8 @@ public:
                                                       const pdf::PdfDestination& destination) const;
 
     // Save: PreserveBase over every page, base = the model's base document.
-    // Extract: Fresh over `subset` (in MODEL order, duplicates in `subset`
+    // Both modes carry the form values (Extract: they reach the copies of
+    // base pages). Extract: Fresh over `subset` (in MODEL order, duplicates in `subset`
     // ignored); InvalidArgument for an empty subset or an unknown id. The
     // request holds raw document pointers: keep this snapshot alive until
     // the assembly finished.
@@ -153,6 +162,7 @@ private:
 
     std::shared_ptr<pdf::PdfDocument> base_;
     std::vector<PageEntry> entries_;
+    pdf::PdfFormValuesPtr formValues_;
     std::uint64_t orderRevision_ = 0;
     std::uint64_t documentRevision_ = 0;
     bool identityOrder_ = false;
@@ -173,6 +183,7 @@ struct PageModelChange {
     std::vector<core::PageId> contentChanged; // in both, view/contentRevision differ
     std::vector<core::PageId> annotationsChanged; // in both, annotation state pointer differs
     std::vector<core::PageId> rasterChanged;      // in both, rasterRevision differs
+    bool formsChanged = false;                    // the form values pointer differs
 };
 
 // The editor-level mutable page model of one document. Main-thread owned
@@ -283,12 +294,24 @@ public:
     };
     core::Status updateContent(std::span<const ContentUpdate> updates);
 
+    // Replaces the document's form values (may be null) and the
+    // rasterRevision of the given existing pages (the pages whose hidden
+    // widget set changes; may be empty, no duplicates). Transactional; one
+    // publish, orderChanged = false.
+    struct RasterUpdate {
+        core::PageId id;
+        std::uint64_t rasterRevision = 0;
+    };
+    core::Status updateForms(pdf::PdfFormValuesPtr values, std::span<const RasterUpdate> rasters);
+    const pdf::PdfFormValuesPtr& formValues() const { return formValues_; }
+
     // Re-bases the model onto `base` (a document just written from this
     // model and reopened): `entries` replace the current ones one-for-one in
     // the SAME order with the SAME ids (only source/sourcePageIndex/views/
     // boxes/contentRevision may differ). One publish, orderChanged = false.
     // InvalidArgument when the ids/order differ or an entry is incomplete.
-    // Used by DocumentSession::rebaseOnto only.
+    // The form values are cleared (the saved file holds them now). Used by
+    // DocumentSession::rebaseOnto only.
     core::Status rebase(std::shared_ptr<pdf::PdfDocument> base, std::vector<PageEntry> entries);
 
     // Change observer (the owning session). Invoked synchronously after each
@@ -306,6 +329,7 @@ private:
     void publish(std::vector<PageEntry> entries, bool orderChanged);
 
     std::shared_ptr<pdf::PdfDocument> base_;
+    pdf::PdfFormValuesPtr formValues_;
     core::IdGenerator<core::PageIdTag> ids_;
     core::IdGenerator<core::AnnotationIdTag> annotationIds_;
     core::IdGenerator<core::ObjectIdTag> objectIds_;
