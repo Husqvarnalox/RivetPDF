@@ -2,6 +2,8 @@ add_executable(rivet_markdown_tests
     # WYSIWYG editing core (ADR-0031).
     TestMarkdownEditing.cpp
     TestMarkdownLayout.cpp
+    # Diagrams and math in the layout (ADR-0032).
+    TestMarkdownGraphics.cpp
     # Layout pagination for PDF export (ADR-0023).
     TestMarkdownPaginate.cpp
     TestMarkdownParser.cpp

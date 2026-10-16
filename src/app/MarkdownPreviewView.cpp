@@ -200,7 +200,7 @@ void MarkdownPreviewView::doRelayout(double width) {
 
     const auto started = std::chrono::steady_clock::now();
     layout_ = std::make_unique<markdown::MarkdownLayout>(markdown::layoutMarkdown(
-        *document_, width, measurer_, images_.get(), typography_, &measureCache_));
+        *document_, width, measurer_, images_.get(), typography_, &measureCache_, &mathMeasurer_));
     const auto finished = std::chrono::steady_clock::now();
     layoutCostMs_ = std::chrono::duration<double, std::milli>(finished - started).count();
     lastLayoutTime_ = finished;
@@ -770,6 +770,13 @@ void MarkdownPreviewView::paintDecoration(ui::PaintContext& context, const markd
         }
         break;
     }
+    case DecorationKind::Notice: {
+        const double lh = measurer_.lineHeight(d.style);
+        context.drawText(d.text, core::Rect{view.minX(), d.baseline - scrollY_ - kAscentRatio * lh,
+                                            view.size.width + 8.0, lh},
+                         fontFor(d.style), markdownGraphicColor(palette_, GraphicRole::Notice), ui::TextAlign::Left);
+        break;
+    }
     case DecorationKind::ImagePlaceholder: {
         if (d.imageState == markdown::ImageState::Known) {
             if (const std::shared_ptr<const core::Bitmap> bitmap = images_->bitmap(d.url)) {
@@ -873,7 +880,12 @@ void MarkdownPreviewView::paintBlock(ui::PaintContext& context, std::size_t bloc
         clipRight = block.rect.maxX() + off + 32.0;
     }
 
-    if (block.kind == markdown::LayoutBlockKind::Table) {
+    if (block.kind == markdown::LayoutBlockKind::Graphic) {
+        if (block.graphic != 0 && block.graphic <= layout_->graphics.size()) {
+            paintMarkdownGraphic(context, layout_->graphics[block.graphic - 1], core::Point{ox, oy}, palette_,
+                                 palette_.text);
+        }
+    } else if (block.kind == markdown::LayoutBlockKind::Table) {
         const auto cellsBegin = layout_->tableCells.begin() + block.cellBegin;
         const auto cellsEnd = layout_->tableCells.begin() + block.cellEnd;
         auto it = std::partition_point(cellsBegin, cellsEnd, [&](const markdown::TableCellLayout& c) {
@@ -926,6 +938,13 @@ void MarkdownPreviewView::paintRun(ui::PaintContext& context, const markdown::La
                                    const markdown::LayoutBlock& block, std::uint32_t runIndex, double ox,
                                    double oy, double clipLeft, double clipRight) const {
     if (run.text.empty()) return;
+    if (run.graphic != 0) { // an inline formula
+        if (run.graphic > layout_->graphics.size()) return;
+        ui::Color color = colorFor(run.style);
+        if (run.link != 0 && run.link == hoverLink_) color = palette_.linkHover;
+        paintMarkdownGraphic(context, layout_->graphics[run.graphic - 1], core::Point{ox, oy}, palette_, color);
+        return;
+    }
     if (runIndex < warmed_.size() && warmed_[runIndex] == 0) {
         measurer_.warm(run.text, run.style);
         warmed_[runIndex] = 1;

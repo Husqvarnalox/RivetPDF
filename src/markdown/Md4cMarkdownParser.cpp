@@ -4,6 +4,7 @@
 #include "markdown/MarkdownPlainText.hpp"
 #include "markdown/MarkdownSlug.hpp"
 #include "markdown/Utf8.hpp"
+#include "markdown/math/MathDelimiters.hpp"
 
 #include <md4c.h> // the only place MD4C types are visible
 
@@ -345,7 +346,8 @@ public:
         std::vector<Inline>* parent = currentInlineTarget();
         const bool inImage = insideImage();
         const bool supported = type == MD_SPAN_EM || type == MD_SPAN_STRONG || type == MD_SPAN_DEL ||
-                               type == MD_SPAN_CODE || type == MD_SPAN_A || type == MD_SPAN_IMG;
+                               type == MD_SPAN_CODE || type == MD_SPAN_A || type == MD_SPAN_IMG ||
+                               type == MD_SPAN_LATEXMATH || type == MD_SPAN_LATEXMATH_DISPLAY;
         if (!supported || inImage || inline_.size() >= limits_.maxInlineDepth) {
             if (supported && !inImage) {
                 diagOnce(DiagnosticCode::InlineTooDeep, DiagnosticSeverity::Warning,
@@ -363,6 +365,11 @@ public:
         case MD_SPAN_STRONG: in.kind = InlineKind::Strong; break;
         case MD_SPAN_DEL: in.kind = InlineKind::Strike; break;
         case MD_SPAN_CODE: in.kind = InlineKind::Code; break;
+        case MD_SPAN_LATEXMATH:
+        case MD_SPAN_LATEXMATH_DISPLAY:
+            in.kind = InlineKind::Math;
+            in.display = type == MD_SPAN_LATEXMATH_DISPLAY;
+            break;
         case MD_SPAN_A: {
             in.kind = InlineKind::Link;
             const auto* d = static_cast<const MD_SPAN_A_DETAIL*>(detail);
@@ -392,6 +399,7 @@ public:
         if (f.node != nullptr) {
             SourceRange r = spanRange(f, ext);
             f.node->range = r;
+            if (f.node->kind == InlineKind::Math) finishMath(*f.node);
             ext = Extent{};
             ext.add(r.start, r.end);
         }
@@ -444,10 +452,15 @@ public:
         }
         if (!inline_.empty() && inline_.back().node != nullptr) {
             Inline& node = *inline_.back().node;
-            if (node.kind == InlineKind::Image || node.kind == InlineKind::Code) {
+            if (node.kind == InlineKind::Image || node.kind == InlineKind::Code || node.kind == InlineKind::Math) {
                 const std::size_t before = node.text.size();
                 node.text += decoded;
-                if (node.kind == InlineKind::Code) recordSpan(node.spans, before, decoded.size(), r);
+                if (node.kind == InlineKind::Math && inSource(p, size)) {
+                    // TeX is verbatim: no escape adjustment (`\{` is two bytes of TeX).
+                    const auto start = static_cast<std::size_t>(p - src_.data());
+                    r = SourceRange{start, start + size};
+                }
+                if (node.kind != InlineKind::Image) recordSpan(node.spans, before, decoded.size(), r);
                 return 0;
             }
         }
@@ -785,6 +798,31 @@ private:
         return p;
     }
 
+    // A math span MD4C matched: kept when it also passes the money rule
+    // (math::isInlineMathSpan; `$$` spans always pass), else turned back into
+    // the literal text it was ("$ 5 and 6 $"), with exact provenance.
+    void finishMath(Inline& in) {
+        const std::size_t d = in.display ? 2 : 1;
+        const SourceRange r = in.range;
+        const bool delimited = r.size() >= 2 * d && r.end <= n_ && src_[r.start] == '$' && src_[r.end - 1] == '$';
+        bool keep = delimited && !in.text.empty();
+        if (keep && !in.display) keep = math::isInlineMathSpan(src_, r.start, r.end - 1);
+        if (keep) return;
+        const std::string delimiter(d, '$');
+        std::vector<TextSpan> spans;
+        if (delimited) recordSpan(spans, 0, d, SourceRange{r.start, r.start + d});
+        for (TextSpan sp : in.spans) {
+            sp.text += static_cast<std::uint32_t>(delimited ? d : 0);
+            spans.push_back(sp);
+        }
+        std::string text = delimited ? delimiter + in.text + delimiter : in.text;
+        if (delimited) recordSpan(spans, text.size() - d, d, SourceRange{r.end - d, r.end});
+        in.kind = InlineKind::Text;
+        in.display = false;
+        in.text = std::move(text);
+        in.spans = std::move(spans);
+    }
+
     SourceRange spanRange(const InlineFrame& f, const Extent& ext) {
         std::size_t lo = ext.lo;
         std::size_t hi = ext.hi;
@@ -833,6 +871,31 @@ private:
                 d = std::min(before, after);
             }
             if (d > 0) { lo = s - d; hi = e + d; }
+            break;
+        }
+        case MD_SPAN_LATEXMATH:
+        case MD_SPAN_LATEXMATH_DISPLAY: {
+            if (!has) return {std::min(cursor, n_), std::min(cursor, n_)};
+            // Content that starts/ends at a line break leaves a container
+            // prefix ("> ") or blanks between it and the delimiter.
+            const auto gap = [](char c) { return c == ' ' || c == '\t' || c == '\r' || c == '\n' || c == '>'; };
+            std::size_t s = lo;
+            std::size_t e = hi;
+            while (s > 0 && gap(src_[s - 1]) && lo - s < 256) --s;
+            while (e < n_ && gap(src_[e]) && e - hi < 256) ++e;
+            const std::size_t d = f.type == MD_SPAN_LATEXMATH_DISPLAY ? 2 : 1;
+            const auto delimited = [&](std::size_t a, std::size_t b) {
+                bool ok = a >= d && b + d <= n_;
+                for (std::size_t k = 1; ok && k <= d; ++k) ok = src_[a - k] == '$' && src_[b + k - 1] == '$';
+                return ok;
+            };
+            if (delimited(lo, hi)) {
+                lo -= d;
+                hi += d;
+            } else if (delimited(s, e)) {
+                lo = s - d;
+                hi = e + d;
+            }
             break;
         }
         case MD_SPAN_A:
@@ -1200,7 +1263,8 @@ MarkdownDocument Md4cMarkdownParser::parse(std::string_view source, const ParseL
         Builder builder(source, limits, doc);
         MD_PARSER parser{};
         parser.abi_version = 0;
-        parser.flags = MD_FLAG_TABLES | MD_FLAG_STRIKETHROUGH | MD_FLAG_TASKLISTS | MD_FLAG_PERMISSIVEAUTOLINKS;
+        parser.flags = MD_FLAG_TABLES | MD_FLAG_STRIKETHROUGH | MD_FLAG_TASKLISTS | MD_FLAG_PERMISSIVEAUTOLINKS |
+                       MD_FLAG_LATEXMATHSPANS;
         parser.enter_block = &onEnterBlock;
         parser.leave_block = &onLeaveBlock;
         parser.enter_span = &onEnterSpan;

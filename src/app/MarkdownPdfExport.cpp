@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 #include "app/MarkdownPdfExport.hpp"
 
+#include "app/MarkdownGraphics.hpp"
 #include "app/UrlPolicy.hpp"
 #include "markdown/MarkdownPaginate.hpp"
 #include "markdown/MarkdownParser.hpp"
@@ -13,7 +14,9 @@
 #include <cstdint>
 #include <cstring>
 #include <optional>
+#include <type_traits>
 #include <utility>
+#include <variant>
 #include <vector>
 
 namespace rivet::app {
@@ -172,8 +175,16 @@ private:
     // that no page shows, and the build rejects origins outside the page.
     void text(std::string_view utf8, const markdown::TextStyle& style, double x, double baseline,
               pdf::PdfColor color) {
-        if (utf8.empty()) return;
-        const pdf::PdfBundledFont font = exportFontFor(style);
+        textInFont(utf8, exportFontFor(style), style.size, x, baseline, color);
+    }
+
+    void textInFont(std::string_view utf8, pdf::PdfBundledFont font, double size, double x, double baseline,
+                    pdf::PdfColor color) {
+        // Script glyphs of a formula scaled far down can drop below the
+        // smallest size a build accepts: invisible anyway, not written.
+        if (utf8.empty() || !(size >= pdf::kMinFontSize) || size > pdf::kMaxFontSize) return;
+        markdown::TextStyle style; // only the size is used below
+        style.size = size;
         const std::string written = exportText(utf8, font, result_.replacedCharacters);
         const pdf::BundledFontMetrics& metrics = pdf::bundledFontMetrics(font);
         const double y = pdfY(baseline);
@@ -233,6 +244,122 @@ private:
         case DecorationKind::ImagePlaceholder:
             if (ownsTop(r.minY())) emitImage(d);
             break;
+        case DecorationKind::Notice:
+            if (ownsTop(r.minY())) text(d.text, d.style, r.minX(), d.baseline, graphicColor(GraphicRole::Notice));
+            break;
+        }
+    }
+
+    // --- diagrams and formulas ------------------------------------------------
+
+    static pdf::PdfColor graphicColor(GraphicRole role) {
+        return toPdfColor(markdownGraphicColor(MarkdownPreviewPalette{}, role));
+    }
+
+    // A path in layout coordinates (already scaled); dropped when any point
+    // falls outside the page (the layout keeps graphics inside the content
+    // box, so this only guards against arithmetic slack).
+    void path(const std::vector<markdown::mermaid::PathSegment>& segments, const markdown::LayoutGraphic& g,
+              std::optional<pdf::PdfColor> fillColor, std::optional<pdf::PdfColor> strokeColor, double width,
+              markdown::mermaid::DashStyle dash, bool roundJoins) {
+        if (segments.empty() || full() || (!fillColor && !strokeColor)) return;
+        if (segments.size() > pdf::kMaxBuildPathSegments) return;
+        pdf::PdfBuildPath item;
+        item.fill = fillColor;
+        item.stroke = strokeColor;
+        item.strokeWidth = static_cast<float>(std::clamp(width * g.scale, 0.05, pdf::kMaxBuildStrokeWidth));
+        item.roundJoins = roundJoins;
+        for (const double d : diagramDashPattern(dash, width)) {
+            item.dash.push_back(static_cast<float>(std::clamp(d * g.scale, 0.05, pdf::kMaxBuildDashLength)));
+        }
+        const pdf::PdfBox pageBox{0.0, 0.0, options_.pageWidth, options_.pageHeight};
+        bool inside = true;
+        const auto map = [&](core::Point p) {
+            const pdf::PdfPoint q{pdfX(g.origin.x + p.x * g.scale), pdfY(g.origin.y + p.y * g.scale)};
+            inside = inside && std::isfinite(q.x) && std::isfinite(q.y) && q.x >= pageBox.left &&
+                     q.x <= pageBox.right && q.y >= pageBox.bottom && q.y <= pageBox.top;
+            return q;
+        };
+        for (const markdown::mermaid::PathSegment& s : segments) {
+            pdf::PdfPathSegment out;
+            switch (s.kind) {
+            case markdown::mermaid::PathSegment::Kind::MoveTo: out.op = pdf::PdfPathSegment::Op::MoveTo; break;
+            case markdown::mermaid::PathSegment::Kind::LineTo: out.op = pdf::PdfPathSegment::Op::LineTo; break;
+            case markdown::mermaid::PathSegment::Kind::CubicTo: out.op = pdf::PdfPathSegment::Op::CubicTo; break;
+            case markdown::mermaid::PathSegment::Kind::Close: out.op = pdf::PdfPathSegment::Op::Close; break;
+            }
+            if (out.op != pdf::PdfPathSegment::Op::Close) out.p = map(s.p);
+            if (out.op == pdf::PdfPathSegment::Op::CubicTo) {
+                out.c1 = map(s.c1);
+                out.c2 = map(s.c2);
+            }
+            item.segments.push_back(out);
+        }
+        if (!inside || item.segments.front().op != pdf::PdfPathSegment::Op::MoveTo) return;
+        page_->items.emplace_back(std::move(item));
+    }
+
+    // A diagram or formula; the caller decides the page (atoms go on the page
+    // holding their top). `mathColor`: normal formula glyphs.
+    void emitGraphic(const markdown::LayoutGraphic& g, pdf::PdfColor mathColor) {
+        namespace mm = markdown::mermaid;
+        namespace mt = markdown::math;
+        const auto at = [&](core::Point p) {
+            return core::Point{g.origin.x + p.x * g.scale, g.origin.y + p.y * g.scale};
+        };
+        if (g.math != nullptr) {
+            const pdf::PdfColor errorColor = graphicColor(GraphicRole::MathError);
+            for (const mt::MathGlyphRun& run : g.math->runs) {
+                const pdf::PdfColor color = run.color == mt::MathColor::Error ? errorColor : mathColor;
+                if (run.font == mt::MathFont::Math) {
+                    for (const MathGlyphPiece& piece : mathGlyphPieces(run.utf8, run.size)) {
+                        const core::Point o = at(core::Point{run.origin.x + piece.x, run.origin.y});
+                        textInFont(piece.utf8, piece.font, run.size * g.scale, o.x, o.y, color);
+                    }
+                } else {
+                    const core::Point o = at(run.origin);
+                    text(run.utf8, mathTextStyle(run.font, run.size * g.scale), o.x, o.y, color);
+                }
+            }
+            for (const mt::MathRule& rule : g.math->rules) {
+                const core::Point a = at(rule.rect.origin);
+                fill(clippedBox(a.x, a.y, a.x + rule.rect.size.width * g.scale, a.y + rule.rect.size.height * g.scale),
+                     rule.color == mt::MathColor::Error ? errorColor : mathColor);
+            }
+            return;
+        }
+        if (g.diagram == nullptr) return;
+        const auto color = [](mm::DiagramColor c) { return graphicColor(graphicRole(c)); };
+        for (const mm::DiagramItem& item : g.diagram->items) {
+            std::visit(
+                [&](const auto& v) {
+                    using T = std::decay_t<decltype(v)>;
+                    if constexpr (std::is_same_v<T, mm::DiagramRect>) {
+                        const std::optional<pdf::PdfColor> f =
+                            v.filled ? std::optional<pdf::PdfColor>(color(v.fill)) : std::nullopt;
+                        const std::optional<pdf::PdfColor> s =
+                            v.stroked ? std::optional<pdf::PdfColor>(color(v.stroke)) : std::nullopt;
+                        path(diagramRectSegments(v.rect, v.cornerRadius), g, f, s, v.strokeWidth, v.dash, false);
+                    } else if constexpr (std::is_same_v<T, mm::DiagramPath>) {
+                        const std::optional<pdf::PdfColor> f =
+                            v.filled ? std::optional<pdf::PdfColor>(color(v.fill)) : std::nullopt;
+                        const std::optional<pdf::PdfColor> s =
+                            v.stroked ? std::optional<pdf::PdfColor>(color(v.stroke)) : std::nullopt;
+                        path(v.segments, g, f, s, v.strokeWidth, v.dash, false);
+                    } else if constexpr (std::is_same_v<T, mm::DiagramPolyline>) {
+                        std::vector<mm::PathSegment> line;
+                        for (std::size_t i = 0; i < v.points.size(); ++i) {
+                            line.push_back(mm::PathSegment{i == 0 ? mm::PathSegment::Kind::MoveTo
+                                                                  : mm::PathSegment::Kind::LineTo,
+                                                           v.points[i], {}, {}});
+                        }
+                        if (line.size() >= 2) path(line, g, std::nullopt, color(v.color), v.width, v.dash, true);
+                    } else {
+                        const core::Point o = at(v.origin);
+                        text(v.utf8, mm::diagramTextStyle(v.font, v.size * g.scale), o.x, o.y, color(v.color));
+                    }
+                },
+                item);
         }
     }
 
@@ -306,6 +433,12 @@ private:
     // --- blocks ------------------------------------------------------------------
 
     void emitBlock(const markdown::LayoutBlock& block) {
+        if (block.kind == markdown::LayoutBlockKind::Graphic) {
+            if (block.graphic == 0 || block.graphic > layout_.graphics.size()) return;
+            const markdown::LayoutGraphic& g = layout_.graphics[block.graphic - 1];
+            if (ownsTop(g.bounds.minY())) emitGraphic(g, kBlack);
+            return;
+        }
         if (block.kind == markdown::LayoutBlockKind::Table) {
             for (std::uint32_t c = block.cellBegin; c < block.cellEnd; ++c) {
                 const markdown::TableCellLayout& cell = layout_.tableCells[c];
@@ -335,6 +468,10 @@ private:
     void emitRun(const markdown::LayoutRun& run, bool codeBlock) {
         if (run.text.empty()) return;
         const double size = run.style.size;
+        if (run.graphic != 0) { // an inline formula
+            if (run.graphic <= layout_.graphics.size()) emitGraphic(layout_.graphics[run.graphic - 1], colorFor(run.style));
+            return;
+        }
         if (run.isImage) {
             // An inline image is shown as its alt text, like the preview.
             text(run.text, run.style, run.x, run.baseline, kPlaceholderText);
@@ -452,12 +589,17 @@ core::Result<MarkdownExportResult> buildMarkdownPdf(std::string_view source, con
     effective.typography.pageMarginY = 0.0;
     effective.typography.maxImageHeight = std::min(effective.typography.maxImageHeight, contentHeight);
     if (!(effective.typography.maxImageHeight > 0.0)) effective.typography.maxImageHeight = contentHeight;
+    // A diagram always fits on one page too.
+    if (!(effective.typography.maxGraphicHeight > 0.0) || effective.typography.maxGraphicHeight > contentHeight) {
+        effective.typography.maxGraphicHeight = contentHeight;
+    }
 
     const markdown::MarkdownDocument document = markdown::makeMarkdownParser()->parse(source);
     const BundledFontMeasurer measurer;
+    const BundledMathMeasurer mathMeasurer(measurer);
     const SnapshotImageSizes sizes(images);
-    const markdown::MarkdownLayout layout =
-        markdown::layoutMarkdown(document, contentWidth, measurer, &sizes, effective.typography);
+    const markdown::MarkdownLayout layout = markdown::layoutMarkdown(document, contentWidth, measurer, &sizes,
+                                                                     effective.typography, nullptr, &mathMeasurer);
     const std::vector<markdown::PageSlice> slices = markdown::paginateLayout(layout, contentHeight);
     if (slices.size() > pdf::kMaxBuildPages) {
         return std::unexpected(exportError(core::ErrorCode::Unsupported, "the document is too long to export"));

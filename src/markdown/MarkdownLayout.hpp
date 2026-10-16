@@ -21,12 +21,23 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <string_view>
 #include <unordered_map>
 #include <vector>
 
 namespace rivet::markdown {
+
+// The scene types of the dedicated renderers (ADR-0032); include
+// markdown/mermaid/DiagramScene.hpp / markdown/math/MathScene.hpp to use them.
+namespace mermaid {
+struct DiagramScene;
+}
+namespace math {
+struct MathScene;
+class IMathMeasurer;
+} // namespace math
 
 // ------------------------------------------------------------ abstractions
 
@@ -114,6 +125,17 @@ struct Typography {
     double imagePlaceholderHeight = 180.0;
     double imageBlockedWidth = 240.0;
     double imageBlockedHeight = 48.0;
+
+    // Mermaid diagrams and display math (ADR-0032). Diagrams are rendered
+    // with mermaid::DiagramStyle scaled by bodySize / 15 and then scaled down
+    // (never up) to fit the content width and maxGraphicHeight (0 = no
+    // height cap). Display math is set at bodySize, centered, with
+    // displayMathGap above and below.
+    double maxGraphicHeight = 0.0;
+    double displayMathGap = 4.0;
+    // The one-line notice above a diagram/formula that could not be rendered
+    // (its source is shown as a code block below it).
+    double noticeSize = 12.0;
 };
 
 // ----------------------------------------------------------------- caching
@@ -124,9 +146,20 @@ struct StyleMetrics {
     double spaceWidth = 0.0;
 };
 
-// Memoises word widths and per-style metrics. Keep one per (measurer, font
-// configuration) and reuse it across relayouts; clear() it when fonts or the
-// display scale change. Not thread-safe; use one per thread.
+// A rendered Mermaid diagram or typeset formula (or why it failed), shared
+// by every layout made with the same MeasureCache. Immutable.
+struct CachedGraphic {
+    std::shared_ptr<const mermaid::DiagramScene> diagram;
+    std::shared_ptr<const math::MathScene> math;
+    std::string error; // set when neither scene could be produced
+};
+
+// Memoises word widths, per-style metrics and rendered diagrams/formulas
+// (keyed by renderer, font size and source text: the scenes do not depend on
+// the width, which only scales them, so typing elsewhere or resizing never
+// re-renders them). Keep one per (measurer, font configuration) and reuse it
+// across relayouts; clear() it when fonts or the display scale change. Not
+// thread-safe; use one per thread.
 class MeasureCache {
 public:
     double width(const ITextMeasurer& m, std::string_view text, const TextStyle& style);
@@ -134,9 +167,19 @@ public:
     void clear();
     std::size_t size() const { return widths_.size(); }
 
+    // Layout-engine use: the cached graphic of `key`, or null.
+    std::shared_ptr<const CachedGraphic> graphic(const std::string& key) const;
+    void storeGraphic(std::string key, std::shared_ptr<const CachedGraphic> graphic);
+    std::size_t graphicCount() const { return graphics_.size(); }
+    // Graphics rendered (cache misses) since construction; diagnostics/tests.
+    std::size_t graphicsRendered() const { return graphicsRendered_; }
+
 private:
     std::unordered_map<std::string, double> widths_;
     std::unordered_map<std::uint64_t, StyleMetrics> styles_;
+    std::unordered_map<std::string, std::shared_ptr<const CachedGraphic>> graphics_;
+    std::size_t graphicBytes_ = 0;
+    std::size_t graphicsRendered_ = 0;
 };
 
 // ------------------------------------------------------------------ output
@@ -173,6 +216,10 @@ struct LayoutRun {
     // editor uses; `source` above is only the union.
     std::uint32_t spanBegin = 0;
     std::uint32_t spanEnd = 0;
+    // Inline math atom: 1-based index into MarkdownLayout::graphics (0 none).
+    // `text` is then the source ("$x^2$", for copying and search) but the run
+    // is drawn as the graphic; it is one atomic unit for the caret.
+    std::uint32_t graphic = 0;
 };
 
 struct LayoutLine {
@@ -199,16 +246,19 @@ enum class DecorationKind : std::uint8_t {
     TaskCheckbox,
     Rule,
     ImagePlaceholder,
+    // One line of text (`text`, `style`, `baseline`) saying why the diagram or
+    // formula below it could not be rendered; drawn in an error colour.
+    Notice,
 };
 
 struct Decoration {
     DecorationKind kind = DecorationKind::Rule;
     core::Rect rect;
-    // ListNumber: the label ("12."). ImagePlaceholder: alt text.
+    // ListNumber: the label ("12."). ImagePlaceholder: alt text. Notice: the message.
     std::string text;
     // ImagePlaceholder: URL as written in the document.
     std::string url;
-    // ListNumber: style and baseline for drawing the label.
+    // ListNumber / Notice: style and baseline for drawing the text.
     TextStyle style;
     double baseline = 0.0;
     bool checked = false;                  // TaskCheckbox
@@ -227,7 +277,25 @@ struct TableCellLayout {
     SourceRange source;
 };
 
-enum class LayoutBlockKind : std::uint8_t { Paragraph, Heading, Code, Html, Table, Rule, Image };
+// Graphic: a rendered Mermaid diagram or display formula (LayoutBlock::graphic;
+// no lines). A special block that could not be rendered is a Code block
+// (with `special` set) preceded by a Notice decoration.
+enum class LayoutBlockKind : std::uint8_t { Paragraph, Heading, Code, Html, Table, Rule, Image, Graphic };
+
+// A diagram or formula placed in the document. Exactly one of `diagram` /
+// `math` is set. Scene coordinates map to document space as
+// doc = origin + scene * scale, where `origin` is the scene's top-left for a
+// diagram and the left end of the formula's baseline for math (MathScene
+// puts its baseline at y = 0). `bounds` is the drawn box in document space.
+struct LayoutGraphic {
+    std::shared_ptr<const mermaid::DiagramScene> diagram;
+    std::shared_ptr<const math::MathScene> math;
+    core::Point origin;
+    double scale = 1.0;
+    core::Rect bounds;
+    std::uint32_t blockId = 0;
+    bool display = false; // math: display style
+};
 
 struct LayoutBlock {
     std::uint32_t blockId = 0;
@@ -247,12 +315,13 @@ struct LayoutBlock {
     std::uint32_t cellEnd = 0;
     std::uint32_t decoBegin = 0; // decorations created by this block (code bg, rule, image, markers)
     std::uint32_t decoEnd = 0;
+    std::uint32_t graphic = 0;   // Graphic blocks: 1-based index into MarkdownLayout::graphics
 
     bool overflowsHorizontally() const { return contentWidth > rect.size.width + 0.5; }
     // Not edited in place by the WYSIWYG editor (see markdown::isReadOnlyIsland).
     bool readOnlyIsland() const {
         return special != SpecialBlock::None || kind == LayoutBlockKind::Table || kind == LayoutBlockKind::Html ||
-               kind == LayoutBlockKind::Image;
+               kind == LayoutBlockKind::Image || kind == LayoutBlockKind::Graphic;
     }
 };
 
@@ -282,6 +351,8 @@ struct MarkdownLayout {
     std::vector<LinkTarget> links;
     // Source provenance of run text (see LayoutRun::spanBegin).
     std::vector<TextSpan> runSpans;
+    // Diagrams and formulas (Graphic blocks and inline math runs), in document order.
+    std::vector<LayoutGraphic> graphics;
     // Block id -> index in `blocks` (container ids map to their first leaf);
     // kNoBlock when the block produced nothing.
     std::vector<std::uint32_t> blockIndexById;
@@ -322,9 +393,12 @@ struct MarkdownLayout {
 };
 
 // Lays out `doc` for the given viewport width. `images` may be null (all
-// images Unknown). `cache` may be null (a temporary one is used).
+// images Unknown). `cache` may be null (a temporary one is used). `math`
+// measures formula glyphs (ink extents, ADR-0032); null typesets with
+// `measurer` (font-wide extents, every font role in the body style). Diagram
+// text is measured with `measurer` (mermaid::diagramTextStyle).
 MarkdownLayout layoutMarkdown(const MarkdownDocument& doc, double viewportWidth, const ITextMeasurer& measurer,
                               const IImageSizeProvider* images = nullptr, const Typography& typography = {},
-                              MeasureCache* cache = nullptr);
+                              MeasureCache* cache = nullptr, const math::IMathMeasurer* math = nullptr);
 
 } // namespace rivet::markdown

@@ -29,6 +29,7 @@ bool isBackground(DecorationKind kind) {
     case DecorationKind::TaskCheckbox:
     case DecorationKind::Rule:
     case DecorationKind::ImagePlaceholder:
+    case DecorationKind::Notice:
         return false;
     }
     return false;
@@ -45,7 +46,9 @@ std::vector<Span> forbiddenSpans(const MarkdownLayout& layout) {
     };
     for (const LayoutLine& line : layout.lines) add(line.top, line.height);
     for (const LayoutBlock& block : layout.blocks) {
-        if (block.kind == LayoutBlockKind::Image) add(block.rect.origin.y, block.rect.size.height);
+        if (block.kind == LayoutBlockKind::Image || block.kind == LayoutBlockKind::Graphic) {
+            add(block.rect.origin.y, block.rect.size.height);
+        }
     }
     for (const Decoration& decoration : layout.decorations) {
         if (!isBackground(decoration.kind)) add(decoration.rect.origin.y, decoration.rect.size.height);

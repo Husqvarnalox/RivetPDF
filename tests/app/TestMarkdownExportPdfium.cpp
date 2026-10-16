@@ -43,6 +43,58 @@ const char* kSource = "# Export Heading\n"
 
 } // namespace
 
+RIVET_TEST(markdownExportWritesDiagramsAndMathThroughPdfium) {
+    std::unique_ptr<pdf::PdfEngine> engine = pdf::createEngine();
+    if (engine == nullptr || !engine->isAvailable()) return;
+    const char* source = "# Diagrams\n\n"
+                         "Energy $E = mc^2$ and $\\alpha + \\beta$ inline.\n\n"
+                         "$$\n\\sum_{k=1}^{n} k = \\frac{n(n+1)}{2}\n$$\n\n"
+                         "```mermaid\nflowchart LR\n  A[Start] --> B{Check}\n  B -->|ok| C[Finish]\n  B -.-> A\n```\n\n"
+                         "```mermaid\nsequenceDiagram\n  Alice->>Bob: Request\n  Bob-->>Alice: Response\n```\n";
+    auto built = app::buildMarkdownPdf(source, app::MarkdownExportOptions{}, {});
+    CHECK(built.has_value());
+    if (!built.has_value()) return;
+    StringSink sink;
+    CHECK(engine->buildDocument(built->document, sink).has_value());
+    // The bundled math face is embedded (its PostScript name is in the file).
+    CHECK(sink.bytes.find("NotoSansMath") != std::string::npos);
+
+    const fs::path file = fs::temp_directory_path() / "rivet-mdexport-graphics.pdf";
+    {
+        std::ofstream out(file, std::ios::binary | std::ios::trunc);
+        out.write(sink.bytes.data(), static_cast<std::streamsize>(sink.bytes.size()));
+    }
+    {
+        auto opened = engine->openDocument(file);
+        CHECK(opened.has_value());
+        if (opened.has_value()) {
+            pdf::PdfDocument& document = **opened;
+            std::string all;
+            for (std::size_t p = 0; p < document.info().pageCount; ++p) {
+                auto text = document.textPage(p);
+                CHECK(text.has_value());
+                if (text.has_value()) all += (*text)->text();
+            }
+            // Diagram labels.
+            for (const char* label : {"Start", "Check", "Finish", "ok", "Alice", "Bob", "Request", "Response"}) {
+                CHECK(all.find(label) != std::string::npos);
+            }
+            // Formula glyphs written in the math face: the summation sign,
+            // the relations and operators, the digits. (The mathematical
+            // italic letters are outside the BMP: PdfTextPage reports each
+            // UTF-16 half as U+FFFD, so they are not compared here.)
+            CHECK(all.find("\xE2\x88\x91") != std::string::npos); // U+2211
+            CHECK(all.find("= ") != std::string::npos);
+            CHECK(all.find("+ 1)") != std::string::npos);
+            CHECK(all.find("=1") != std::string::npos);
+            auto bitmap = document.renderPage(0, core::Rect{0.0, 0.0, 300.0, 400.0}, 1.0);
+            CHECK(bitmap.has_value());
+        }
+    }
+    std::error_code ignored;
+    fs::remove(file, ignored);
+}
+
 RIVET_TEST(markdownExportReopensThroughPdfium) {
     std::unique_ptr<pdf::PdfEngine> engine = pdf::createEngine();
     if (engine == nullptr || !engine->isAvailable()) return;

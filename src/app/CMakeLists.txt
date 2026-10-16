@@ -7,6 +7,7 @@ add_library(rivet_app STATIC
     MarkdownFind.cpp
     MarkdownExportController.cpp
     MarkdownImageStore.cpp
+    MarkdownGraphics.cpp
     MarkdownPaintMeasurer.cpp
     MarkdownParseCoordinator.cpp
     MarkdownPdfExport.cpp

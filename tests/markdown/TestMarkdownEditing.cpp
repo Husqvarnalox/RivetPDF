@@ -382,6 +382,41 @@ RIVET_TEST(backspaceAndDeleteInsideAndAcrossInlineMarkup) {
     CHECK(same(Rendered(backspace(ls, 1)).text(), "- y"));
 }
 
+RIVET_TEST(inlineMathIsOneCaretUnit) {
+    const std::string src = "a $x^2 + y$ b **$z$**";
+    Rendered r(src);
+    const std::size_t open = at(src, "$x");
+    const std::size_t close = at(src, "$ b") + 1;
+    // No stop inside the formula's source; its edges are stops.
+    bool before = false;
+    bool after = false;
+    for (const TextPosition& p : r.stops()) {
+        const std::size_t s = r.map.sourceOf(p);
+        CHECK(!(s > open && s < close));
+        before = before || s == open;
+        after = after || s == close;
+    }
+    CHECK(before && after);
+    // One step right skips the whole formula.
+    const std::optional<TextPosition> start = r.map.positionOf(open);
+    CHECK(start.has_value());
+    if (!start) return;
+    const std::optional<TextPosition> next = r.map.next(*start);
+    CHECK(next.has_value());
+    if (!next) return;
+    CHECK_EQ(r.map.sourceOf(*next), close);
+    CHECK(r.layout.runs[start->run].graphic != 0 || r.layout.runs[next->run].graphic != 0);
+    // Backspace after it / delete before it removes it as a whole.
+    CHECK(same(backspace(src, close), "a  b **$z$**"));
+    CHECK(same(forwardDelete(src, open), "a  b **$z$**"));
+    // Inside emphasis too; the emphasis goes with its only content.
+    CHECK(same(backspace(src, at(src, "$z$") + 3), "a $x^2 + y$ b "));
+    // A word selection never cuts into it.
+    const auto [w0, w1] = r.map.wordAt(*start);
+    CHECK(r.map.sourceOf(w0) <= open);
+    CHECK(r.map.sourceOf(w1) == open || r.map.sourceOf(w1) >= close);
+}
+
 RIVET_TEST(backspaceJoinsBlocksAndRespectsIslands) {
     CHECK(same(backspace("para\n\n# Head\n", 8), "paraHead\n"));
     CHECK(same(backspace("- a\n- b\n", 6), "- ab\n"));

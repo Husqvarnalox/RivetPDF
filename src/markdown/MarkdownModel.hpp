@@ -62,6 +62,12 @@ enum class InlineKind : std::uint8_t {
     Image,
     SoftBreak,
     HardBreak,
+    // TeX math between dollar signs (ADR-0032): `$...$` (inline style) or
+    // `$$...$$` inside a paragraph (display style, still laid out inline).
+    // `text` is the TeX between the delimiters, verbatim; `range` includes the
+    // delimiters. Laid out as one atomic box; the WYSIWYG caret treats it as
+    // a single unit (one atomic span over the whole source).
+    Math,
 };
 
 struct Inline {
@@ -70,7 +76,7 @@ struct Inline {
     // (see MarkdownParser.hpp for accuracy limits).
     SourceRange range;
     // Text: decoded text (entities resolved, escapes removed).
-    // Code: the code span contents.
+    // Code: the code span contents. Math: the TeX source.
     // Image: the alt text flattened to plain text.
     std::string text;
     // Link / Image: destination and optional title.
@@ -78,7 +84,9 @@ struct Inline {
     std::string title;
     // Emphasis / Strong / Strike / Link: nested inlines.
     std::vector<Inline> children;
-    // Text / Code: where each piece of `text` came from, in text order
+    // Math: `$$...$$` (display style) rather than `$...$`.
+    bool display = false;
+    // Text / Code / Math: where each piece of `text` came from, in text order
     // (non-overlapping, ascending in both text and source). Used by the
     // WYSIWYG editor to map rendered positions back to source bytes.
     std::vector<TextSpan> spans;
