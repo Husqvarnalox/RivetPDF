@@ -98,3 +98,29 @@ implementation removes more, never less:
 - **Whole objects.** Paths are removed when their bounds (which ignore any
   clip) intersect: a page-sized background rectangle or a table grid is
   removed entirely.
+
+### Security-review hardening (2026-10-16)
+
+Rule: never under-redact; when PDFium's public API cannot remove
+something, the apply is refused with a reason.
+
+- **Page thumbnails.** PDFium cannot delete a page's `/Thumb`, which would
+  survive the save and can show the unredacted page. The source-page load
+  detects it (`FPDFPage_GetRawThumbnailData`) and the apply is refused for
+  that page: "page has an embedded thumbnail Rivet cannot remove".
+- **XFA.** A document with XFA form data (`PdfFormInfo::hasXfa`) refuses the
+  apply: XFA datasets keep field values Rivet cannot clear.
+- **Annotations.** A `/Rect` with a non-finite component counts as
+  intersecting and is removed.
+- **Images.** If bounds overlap but redaction changed no pixel, the image
+  object is removed whole instead of being kept.
+- **Confirmation text** lists what is not scanned: bookmark/outline titles,
+  structure-tree alt/actual text, annotation comments elsewhere, and
+  metadata unless its removal is chosen.
+- **Unapplied marks** are not written. Save, Save As, Extract, Split and
+  Print ask "N redaction marks are not applied. Continue without redacting?"
+  (`confirmUnappliedRedactions`); declining, or having no alert service,
+  aborts.
+- **Undo after save.** `rebaseOnto` clears the command history, so Apply
+  Redactions cannot be undone once a save succeeded; a second save writes
+  the already-redacted base (covered by a round-trip test).

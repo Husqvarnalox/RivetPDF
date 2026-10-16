@@ -153,3 +153,60 @@ RIVET_TEST(redactionRoundTripRemovesTextWidgetAndFieldValue) {
         if (city != pdf::PdfFormInfo::npos) CHECK_EQ((*form)->fields[city].value, std::string("Paris"));
     }
 }
+
+// A save rebases the session onto the written file and drops the undo
+// history: undoing "Apply Redactions" afterwards cannot bring the redacted
+// content back, and a second save writes none of it.
+RIVET_TEST(redactionCannotBeUndoneAcrossASaveSoASecondSaveStaysRedacted) {
+    auto engine = pdf::createEngine();
+    if (engine == nullptr || !engine->isAvailable()) return;
+    TempDir dir;
+    const fs::path path = dir / "undo.pdf";
+    {
+        const std::string bytes = pdffix::formPdf();
+        std::ofstream out(path, std::ios::binary);
+        out.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+    }
+    core::TaskScheduler scheduler{2};
+    QueueDispatcher dispatcher;
+    auto created = DocumentSession::create(*engine, scheduler, &dispatcher, path);
+    CHECK(created.has_value());
+    if (!created.has_value()) return;
+    DocumentSession& session = **created;
+    const core::PageId page = session.pageId(0);
+    session.forms().ensureLoaded();
+    CHECK(settle(dispatcher, [&] {
+        return session.forms().state() == FormService::State::Ready &&
+               session.contentService().content(page)->loaded &&
+               session.annotations().originals(page) != nullptr;
+    }));
+    auto marks = addRedactionMarks(session, {{page, userRect(15, 335, 205, 365)}});
+    CHECK(marks.has_value());
+    if (!marks.has_value()) return;
+    CHECK(session.execute(std::move(*marks)).has_value());
+    auto apply = applyRedactions(session, {});
+    CHECK(apply.has_value());
+    if (!apply.has_value()) return;
+    CHECK(session.execute(std::move(*apply)).has_value());
+
+    const auto saveOnce = [&]() {
+        auto job = makeSaveJob(session, path);
+        CHECK(job.has_value());
+        if (!job) return false;
+        auto result = runDocumentWrite(*engine, *job);
+        CHECK(result.written.has_value());
+        if (!result.written || !result.rebase || !result.rebase->has_value()) return false;
+        job->snapshot.reset();
+        CHECK(session.rebaseOnto(std::move(**result.rebase)).has_value());
+        return true;
+    };
+    if (!saveOnce()) return;
+    CHECK(readAll(path).find("Alice") == std::string::npos);
+
+    // Undo after the save: nothing to undo (history fenced by the rebase).
+    CHECK(!session.undo());
+    CHECK(session.pageSnapshot()->formValues() == nullptr);
+    // Even if an edit makes the session dirty again, the written file stays clean.
+    if (!saveOnce()) return;
+    CHECK(readAll(path).find("Alice") == std::string::npos);
+}

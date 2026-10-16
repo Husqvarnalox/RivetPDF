@@ -447,3 +447,28 @@ RIVET_TEST(redactionValidationLimits) {
 
     CHECK(!edits.empty());
 }
+
+RIVET_TEST(pageWithEmbeddedThumbnailIsDetectedAndOthersAreNot) {
+    auto engine = pdfiumEngine();
+    if (!engine) return;
+    using pdffix::buildPdf;
+    using pdffix::streamObject;
+    // Page 1 carries a /Thumb image (PDFium cannot drop it: redaction must
+    // refuse the page); page 2 does not.
+    auto document = openText(
+        *engine,
+        buildPdf({"<< /Type /Catalog /Pages 2 0 R >>", "<< /Type /Pages /Kids [3 0 R 6 0 R] /Count 2 >>",
+                  "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 4 0 R /Thumb 5 0 R >>",
+                  streamObject("", "0 0 1 rg 20 20 60 40 re f\n"),
+                  streamObject("/Type /XObject /Subtype /Image /Width 1 /Height 1 /ColorSpace /DeviceRGB "
+                               "/BitsPerComponent 8 /Filter /ASCIIHexDecode",
+                               "FF0000>"),
+                  "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 4 0 R >>"}));
+    if (!document) return;
+    auto withThumb = document->pageContent(0, nullptr);
+    CHECK(withThumb.has_value());
+    if (withThumb.has_value()) CHECK((*withThumb)->hasEmbeddedThumbnail);
+    auto without = document->pageContent(1, nullptr);
+    CHECK(without.has_value());
+    if (without.has_value()) CHECK(!(*without)->hasEmbeddedThumbnail);
+}
