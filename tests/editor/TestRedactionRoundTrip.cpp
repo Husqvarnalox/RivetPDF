@@ -25,6 +25,7 @@
 #include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <sstream>
 #include <iterator>
 #include <memory>
 #include <string>
@@ -59,7 +60,9 @@ private:
 
 std::string readAll(const fs::path& path) {
     std::ifstream in(path, std::ios::binary);
-    return std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+    std::ostringstream contents;
+    contents << in.rdbuf();
+    return contents.str();
 }
 
 // formPdf() pages are 300 x 400 (display y = 400 - user y).

@@ -176,6 +176,7 @@ RIVET_TEST(signatureStoreIgnoresCorruptFiles) {
         return body;
     };
     std::vector<std::uint8_t> body(good.begin(), good.end() - 4);
+    CHECK(body.size() > 35);
     std::vector<std::uint8_t> version = body;
     version[4] = 2;
     expectCorrupt(withChecksum(version));

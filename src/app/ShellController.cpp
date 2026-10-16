@@ -602,6 +602,7 @@ bool ShellController::canPerformCompare() const {
 void ShellController::performCompare() {
     if (!canPerformCompare()) return;
     const DocumentTab* tab = context_->readyPdfTab();
+    if (tab == nullptr || tab->session() == nullptr) return; // canPerformCompare() guarantees both
     // Both sides are read from disk: the left one is the active document as
     // last saved (ADR-0029), the right one is picked here.
     const std::filesystem::path leftPath = tab->session()->path();

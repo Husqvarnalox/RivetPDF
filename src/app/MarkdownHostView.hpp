@@ -65,7 +65,7 @@ public:
     // SOURCE text in Source and Split mode (the source is authoritative).
     // One stable target for the whole binding; it re-targets itself and keeps
     // its query when the mode changes. Null while nothing is bound.
-    virtual ISearchTarget* searchTarget() { return nullptr; }
+    virtual ISearchTarget* searchTarget() = 0;
     // Edit-menu actions on the displayed view; false when not applicable.
     virtual bool copySelection() { return false; }
     virtual bool selectAll() { return false; }
@@ -81,11 +81,12 @@ public:
         core::Rect divider; // Split mode: the 1 px line between the two
     };
     virtual Panes panes() const { return {}; }
-    // The hosted views and the parser (tests and shell wiring); null when the
-    // implementation has none.
-    virtual MarkdownPreviewView* previewView() { return nullptr; }
-    virtual MarkdownSourcePane* sourcePane() { return nullptr; }
-    virtual const MarkdownParseCoordinator* parseCoordinator() const { return nullptr; }
+    // The hosted views and the parser (tests and shell wiring). Pure virtual
+    // so GCC cannot speculatively devirtualize to a null-returning default
+    // (spurious -Wnull-dereference at every call site).
+    virtual MarkdownPreviewView* previewView() = 0;
+    virtual MarkdownSourcePane* sourcePane() = 0;
+    virtual const MarkdownParseCoordinator* parseCoordinator() const = 0;
 
     MarkdownTabState* state() const { return state_; }
     const MarkdownHostEnvironment& environment() const { return environment_; }
