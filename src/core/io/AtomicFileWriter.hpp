@@ -83,9 +83,16 @@ struct AtomicWriteOptions {
 //     (fcopyfile COPYFILE_XATTR). Elsewhere they are NOT preserved, nor are
 //     ACLs, hard links (the name is re-pointed, other links keep the old
 //     inode) or file creation dates. Documented limitation.
-//   * Windows: not implemented; begin() returns ErrorCode::Unsupported. See
-//     docs/adr/ADR-0010-atomic-save-replacement.md for the planned
-//     ReplaceFileW / MoveFileExW design and its open-file limitation.
+//   * Windows: the temp file is created with CreateFileW(CREATE_NEW) next to
+//     the destination, flushed with FlushFileBuffers and swapped in with
+//     ReplaceFileW (an existing destination keeps its ACLs, attributes and
+//     alternate streams) or MoveFileExW(MOVEFILE_WRITE_THROUGH, plus
+//     MOVEFILE_REPLACE_EXISTING when overwriting). Symlinks are followed via
+//     std::filesystem; a read-only destination is refused with
+//     PermissionDenied. Limitation (ADR-0010): the replace fails with
+//     PermissionDenied while another process holds the destination open
+//     without FILE_SHARE_DELETE. There is no directory fsync on Windows; the
+//     DirSync fault point is still consulted (and only logged).
 //
 // Threading: an instance is not thread-safe; use it from one thread at a
 // time (typically a background save worker). Distinct instances are
@@ -126,15 +133,21 @@ private:
     std::filesystem::path destination_;
     std::filesystem::path tempPath_;
     AtomicWriteOptions options_;
+#if defined(_WIN32)
+    void* handle_ = nullptr; // HANDLE of the temp file (null = closed)
+#else
     int fd_ = -1;
+#endif
     std::uint64_t bytesWritten_ = 0;
     State state_ = State::Open;
     Error error_;
     // Metadata to apply at commit.
-    unsigned finalMode_ = 0644;
     bool destinationExisted_ = false;
+#if !defined(_WIN32)
+    unsigned finalMode_ = 0644;
     long long ownerUid_ = -1;
     long long ownerGid_ = -1;
+#endif
 };
 
 // Convenience: begin(), run `produce` against the writer, commit(). Any
