@@ -32,7 +32,8 @@ class WindowsMenuBar;
 //     character the key types WITHOUT Ctrl/Alt (like -[NSEvent characters]);
 //     plain text arrives through WM_CHAR (dead keys, IME, surrogate pairs).
 //     Menu shortcuts are matched before the key handler, as NSMenu key
-//     equivalents are.
+//     equivalents are. Alt+character stays a menu mnemonic (it never types
+//     text or reaches the key handler) unless it is an Alt menu shortcut.
 //   - Thread-safe redraw sink: coalesces into one InvalidateRect per burst;
 //     painting happens on WM_PAINT.
 //   - Native HMENU menu bar (WM_INITMENUPOPUP refresh, WM_COMMAND routing),

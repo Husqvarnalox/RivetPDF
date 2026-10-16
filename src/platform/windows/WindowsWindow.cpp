@@ -347,9 +347,13 @@ bool WindowsWindow::handleKeyDown(WPARAM virtualKey, bool system) {
         text = win::narrow(std::wstring_view(buffer, static_cast<std::size_t>(length)));
     }
     if (text.empty() || static_cast<unsigned char>(text[0]) < 0x20 || text[0] == 0x7F) return false;
-    const bool handled = dispatchKey(textEvent(std::move(text), event.modifiers));
-    // Ctrl chords never type text; an unhandled Alt chord stays with
-    // DefWindowProc (menu mnemonics via WM_SYSCHAR).
+    const ui::KeyEvent chord = textEvent(std::move(text), event.modifiers);
+    // Alt+character (without Ctrl) is a Windows menu mnemonic, never text
+    // (unlike macOS Option+key): only an Alt menu shortcut may claim it,
+    // otherwise DefWindowProc opens the menu via WM_SYSCHAR.
+    const bool altOnly = event.modifiers.option && !event.modifiers.command;
+    const bool handled = altOnly ? (menuBar_ != nullptr && menuBar_->handleShortcut(chord)) : dispatchKey(chord);
+    // Ctrl chords never type text.
     if (handled || !system) removeQueuedChars();
     return handled || !system;
 }
