@@ -44,3 +44,18 @@ mermaid.js nor KaTeX/MathJax can run.
 - Only the listed subsets; complex Mermaid types (gantt, class, state) and
   full LaTeX are out of scope.
 - One new bundled font asset with a permissive license.
+
+## Implementation notes
+
+- Phase 1 (engines only, not yet wired into layout/preview/export):
+  `src/markdown/mermaid/` (`Mermaid.hpp`: `renderMermaid`, `isMermaidFenceInfo`;
+  `DiagramScene` of rects, paths, polylines and text with semantic colour and
+  font roles; text measured with `diagramTextStyle()` through
+  `ITextMeasurer`) and `src/markdown/math/` (`MathScene.hpp`: `typesetMath`
+  with an `IMathMeasurer` that reports ink extents per font role Math / Text
+  / TextBold; `MathDelimiters.hpp`: `findMathSpans`, `isInlineMathSpan`).
+- The math face is Noto Sans Math 3.000 (SIL OFL 1.1), subset and bundled
+  as `PdfBundledFont::MathRegular` (`third_party/fonts/README.md`). It has
+  no spacing accents, so `\hat`/`\tilde` use ASCII `^`/`~`, `\dot` uses `.`
+  and `\bar` a rule. Large delimiters, radicals and display operators are
+  the base glyphs scaled (no OpenType MATH variants).
