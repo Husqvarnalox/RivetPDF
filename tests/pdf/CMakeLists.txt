@@ -42,6 +42,10 @@ add_executable(rivet_pdf_tests
     # Phase 5 content backend (extraction, probe, edits, assembly): PDFium-ON
     # bodies only.
     TestPdfiumContent.cpp
+    # True redaction (ADR-0026): glyph/pixel/object removal, fill boxes,
+    # remove-metadata save, probe refusal. PDFium-ON bodies only (the
+    # validation limits run everywhere).
+    TestPdfiumRedaction.cpp
     # Document builder round trips (text, links, pixels, metrics consistency,
     # sink failures): PDFium-ON bodies only.
     TestPdfiumBuilder.cpp

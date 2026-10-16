@@ -137,6 +137,24 @@ core::Status validate(const PdfPageContentEdits& edits, std::size_t sourceObject
     }
     // Total text accepted per page is bounded by the counts above
     // (kMaxTextBlocksPerPage * kMaxTextBlockBytes).
+
+    // --- Redactions ---------------------------------------------------------
+    if (edits.redactions.size() > kMaxRedactionsPerPage) return invalid("too many redaction areas");
+    const auto unitComponent = [](float v) { return std::isfinite(v) && v >= 0.0F && v <= 1.0F; };
+    for (const PdfRedaction& redaction : edits.redactions) {
+        const PdfBox& area = redaction.area;
+        if (!finiteBounded(area.left) || !finiteBounded(area.bottom) || !finiteBounded(area.right) ||
+            !finiteBounded(area.top)) {
+            return invalid("redaction area is not finite");
+        }
+        if (!(area.right > area.left) || !(area.top > area.bottom)) {
+            return invalid("redaction area must have a positive width and height");
+        }
+        if (!unitComponent(redaction.fill.r) || !unitComponent(redaction.fill.g) ||
+            !unitComponent(redaction.fill.b)) {
+            return invalid("redaction fill color out of range");
+        }
+    }
     return core::ok();
 }
 

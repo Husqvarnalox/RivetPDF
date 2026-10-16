@@ -77,6 +77,14 @@ struct PdfAssemblyRequest {
     // Optional out-parameter: receives the names of fields that could not be
     // applied (the assembly then fails). Names are untrusted: never log them.
     std::vector<std::string>* formFailures = nullptr;
+    // ADR-0026: write the document without its metadata (the /Info
+    // dictionary and the catalog's XMP /Metadata). PDFium has no API to edit
+    // either, so the backend rebuilds the output as a fresh document holding
+    // the assembled pages: like Extract, document-level structure (outline,
+    // AcroForm, page labels, structure tree, named destinations, ...) is not
+    // carried over. Refused (InvalidArgument) for an encrypted base, whose
+    // encryption a rebuild would drop.
+    bool removeMetadata = false;
 };
 
 } // namespace rivet::pdf

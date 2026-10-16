@@ -40,6 +40,8 @@ inline constexpr std::size_t kMaxTextBlocksPerPage = 4096;
 inline constexpr std::uint32_t kMaxImageSide = 10000;
 inline constexpr std::uint64_t kMaxImagePixels = 50'000'000;
 inline constexpr std::size_t kMaxImageEncodedBytes = 64u * 1024u * 1024u;
+// Most redaction areas one page's edits may carry (ADR-0026).
+inline constexpr std::size_t kMaxRedactionsPerPage = 1024;
 // Font sizes a text edit accepts (effective size, user-space points).
 inline constexpr double kMinFontSize = 1.0;
 inline constexpr double kMaxFontSize = 500.0;
@@ -52,8 +54,12 @@ enum class PdfContentObjectType : std::uint8_t { Text, Image, Path, Shading, For
 //   Source:  the top-level object at `sourceIndex` of the SOURCE page as
 //            stored in its file (possibly modified in place by an edit).
 //   Created: appended by the text block edit whose tag is `tag`.
+//   Redaction: produced by applying the redactions (ADR-0026): a surviving
+//            run of a redacted text object (`sourceIndex` = the source
+//            index of that object, or 0 when it was created by an edit) or
+//            an opaque fill box. Never addressable by object edits.
 struct PdfContentOrigin {
-    enum class Kind : std::uint8_t { Source, Created };
+    enum class Kind : std::uint8_t { Source, Created, Redaction };
     Kind kind = Kind::Source;
     std::uint32_t sourceIndex = 0; // Source only
     std::uint64_t tag = 0;         // Created only
@@ -211,17 +217,45 @@ struct PdfObjectEdit {
     std::shared_ptr<const PdfImageData> replaceImage;
 };
 
+// One area to redact (ADR-0026), user space of the source page. Everything
+// painted inside it is removed from the page content (not covered), and an
+// opaque rectangle in `fill` is painted over it.
+struct PdfRedaction {
+    PdfBox area;   // normalized, positive width and height
+    PdfColor fill; // default black
+    bool operator==(const PdfRedaction&) const = default;
+};
+
 // All content edits of one page, against its SOURCE page. Immutable once
 // shared (the page model and the backend caches hold it by pointer).
 //
 // Application order (ADR-0017): object edits (removals, transforms, image
-// replacements) in source order, then text blocks in vector order. Objects a
-// text block creates are appended on top of the page (new content is always
-// in front); members reused by a block keep their z-position.
+// replacements) in source order, then text blocks in vector order, then the
+// redactions over EVERY object the page then has (ADR-0026). Objects a text
+// block creates are appended on top of the page (new content is always in
+// front); members reused by a block keep their z-position.
+//
+// Redaction semantics (the backend never under-redacts; when it cannot do
+// better it removes more):
+//   - text: glyphs whose box intersects an area are removed; the surviving
+//     glyphs of the object are rewritten as one new text object per
+//     contiguous run (same font, size, matrix, render mode and colors), or
+//     the whole object is removed when its glyphs cannot be rewritten
+//     faithfully (unmappable characters, Type 3 font, clipped text, failed
+//     round trip);
+//   - images: the pixels intersecting an area are set to the fill color in
+//     the decoded image, which is re-embedded; an image that cannot be
+//     decoded is removed;
+//   - paths, shadings, form XObjects and unknown objects intersecting an
+//     area are removed whole;
+//   - one opaque filled rectangle per area is appended on top.
+// Annotations are not touched here: the editor removes the intersecting
+// ones through the page's annotation edits.
 struct PdfPageContentEdits {
     std::vector<PdfObjectEdit> objects;       // sorted by sourceIndex, unique
     std::vector<PdfTextBlockEdit> textBlocks; // creation order
-    bool empty() const { return objects.empty() && textBlocks.empty(); }
+    std::vector<PdfRedaction> redactions;     // application order
+    bool empty() const { return objects.empty() && textBlocks.empty() && redactions.empty(); }
 };
 using PdfPageContentEditsPtr = std::shared_ptr<const PdfPageContentEdits>;
 
@@ -230,7 +264,9 @@ using PdfPageContentEditsPtr = std::shared_ptr<const PdfPageContentEdits>;
 // not removed or claimed by another block and are not transformed by an
 // object edit, tags non-zero and unique, finite rigid placements, font sizes
 // in [kMinFontSize, kMaxFontSize], positive line advance, the size limits
-// above, image data consistent with its format. InvalidArgument otherwise.
+// above, image data consistent with its format, at most
+// kMaxRedactionsPerPage finite, normalized, non-empty redaction areas with
+// fill components in [0, 1]. InvalidArgument otherwise.
 core::Status validate(const PdfPageContentEdits& edits, std::size_t sourceObjectCount);
 
 // Per output page of an assembly with content edits: the origin of every

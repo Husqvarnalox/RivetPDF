@@ -1042,6 +1042,503 @@ core::Status applyTextBlock(ApplyContext& context, const PdfTextBlockEdit& block
     return core::ok();
 }
 
+// --- Redactions (ADR-0026) ------------------------------------------------------------
+//
+// Rule of thumb for everything below: when the public API cannot do the
+// precise thing, remove MORE (the whole object), never less.
+
+bool overlapsArea(const PdfBox& area, double left, double bottom, double right, double top) {
+    return left < area.right && area.left < right && bottom < area.top && area.bottom < top;
+}
+
+bool overlapsAny(const std::vector<PdfRedaction>& redactions, double left, double bottom, double right,
+                 double top) {
+    for (const PdfRedaction& redaction : redactions) {
+        if (overlapsArea(redaction.area, left, bottom, right, top)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+class ScopedBitmap {
+public:
+    explicit ScopedBitmap(FPDF_BITMAP bitmap) : bitmap_(bitmap) {}
+    ~ScopedBitmap() {
+        if (bitmap_ != nullptr) {
+            FPDFBitmap_Destroy(bitmap_);
+        }
+    }
+    ScopedBitmap(const ScopedBitmap&) = delete;
+    ScopedBitmap& operator=(const ScopedBitmap&) = delete;
+    FPDF_BITMAP get() const { return bitmap_; }
+
+private:
+    FPDF_BITMAP bitmap_;
+};
+
+// Sets every pixel of `image` whose page-space footprint intersects an area
+// to that area's fill, in the DECODED image, and re-embeds the result in
+// place (the original stream data is gone from the saved file). False when
+// the image cannot be processed: the caller then removes it whole.
+bool redactImage(FPDF_PAGE page, FPDF_PAGEOBJECT image, const std::vector<PdfRedaction>& redactions) {
+    FS_MATRIX fs{};
+    if (FPDFPageObj_GetMatrix(image, &fs) == 0) {
+        return false;
+    }
+    const core::Matrix frame = fromFs(fs);
+    const std::optional<core::Matrix> inverse = frame.inverted();
+    if (!inverse.has_value()) {
+        return false;
+    }
+    unsigned int pixelWidth = 0;
+    unsigned int pixelHeight = 0;
+    if (FPDFImageObj_GetImagePixelSize(image, &pixelWidth, &pixelHeight) == 0 || pixelWidth == 0 ||
+        pixelHeight == 0 || pixelWidth > kMaxImageSide || pixelHeight > kMaxImageSide ||
+        static_cast<std::uint64_t>(pixelWidth) * pixelHeight > kMaxImagePixels) {
+        return false;
+    }
+    ScopedBitmap bitmap(FPDFImageObj_GetBitmap(image));
+    if (bitmap.get() == nullptr) {
+        return false;
+    }
+    const int width = FPDFBitmap_GetWidth(bitmap.get());
+    const int height = FPDFBitmap_GetHeight(bitmap.get());
+    const int stride = FPDFBitmap_GetStride(bitmap.get());
+    auto* buffer = static_cast<std::uint8_t*>(FPDFBitmap_GetBuffer(bitmap.get()));
+    int bytesPerPixel = 0;
+    switch (FPDFBitmap_GetFormat(bitmap.get())) {
+    case FPDFBitmap_Gray: bytesPerPixel = 1; break;
+    case FPDFBitmap_BGR: bytesPerPixel = 3; break;
+    case FPDFBitmap_BGRx:
+    case FPDFBitmap_BGRA: bytesPerPixel = 4; break;
+    default: return false;
+    }
+    if (width <= 0 || height <= 0 || buffer == nullptr || stride < width * bytesPerPixel ||
+        static_cast<std::uint64_t>(width) * static_cast<std::uint64_t>(height) > kMaxImagePixels) {
+        return false;
+    }
+
+    // Image space: (0,0) = bottom-left of the unit square; bitmap row 0 is
+    // the TOP row. A pixel's footprint is a parallelogram; its axis-aligned
+    // bounding box is tested (over-redacts the edges of rotated images).
+    const double du = 1.0 / static_cast<double>(width);
+    const double dv = 1.0 / static_cast<double>(height);
+    const double halfX = 0.5 * (std::fabs(frame.a) * du + std::fabs(frame.c) * dv);
+    const double halfY = 0.5 * (std::fabs(frame.b) * du + std::fabs(frame.d) * dv);
+    bool changed = false;
+    for (const PdfRedaction& redaction : redactions) {
+        const PdfBox& area = redaction.area;
+        double minU = std::numeric_limits<double>::infinity();
+        double maxU = -minU;
+        double minV = minU;
+        double maxV = -minU;
+        for (const core::Point corner : {core::Point{area.left, area.bottom}, core::Point{area.right, area.bottom},
+                                         core::Point{area.right, area.top}, core::Point{area.left, area.top}}) {
+            const core::Point unit = inverse->map(corner);
+            minU = std::min(minU, unit.x);
+            maxU = std::max(maxU, unit.x);
+            minV = std::min(minV, unit.y);
+            maxV = std::max(maxV, unit.y);
+        }
+        if (!std::isfinite(minU) || !std::isfinite(maxU) || !std::isfinite(minV) || !std::isfinite(maxV)) {
+            return false;
+        }
+        const auto clampIndex = [](double value, int limit) {
+            return static_cast<int>(std::clamp(value, 0.0, static_cast<double>(limit)));
+        };
+        const int x0 = clampIndex(std::floor(minU * width) - 1.0, width);
+        const int x1 = clampIndex(std::ceil(maxU * width) + 1.0, width);
+        const int y0 = clampIndex(std::floor((1.0 - maxV) * height) - 1.0, height);
+        const int y1 = clampIndex(std::ceil((1.0 - minV) * height) + 1.0, height);
+        const unsigned int red = toByte(redaction.fill.r);
+        const unsigned int green = toByte(redaction.fill.g);
+        const unsigned int blue = toByte(redaction.fill.b);
+        const auto gray = static_cast<std::uint8_t>(
+            std::lround(0.299 * static_cast<double>(red) + 0.587 * static_cast<double>(green) +
+                        0.114 * static_cast<double>(blue)));
+        for (int y = y0; y < y1; ++y) {
+            std::uint8_t* row = buffer + static_cast<std::ptrdiff_t>(y) * stride;
+            for (int x = x0; x < x1; ++x) {
+                const core::Point center =
+                    frame.map(core::Point{(x + 0.5) * du, 1.0 - (y + 0.5) * dv});
+                if (!overlapsArea(area, center.x - halfX, center.y - halfY, center.x + halfX, center.y + halfY)) {
+                    continue;
+                }
+                std::uint8_t* pixel = row + static_cast<std::ptrdiff_t>(x) * bytesPerPixel;
+                if (bytesPerPixel == 1) {
+                    pixel[0] = gray;
+                } else {
+                    pixel[0] = static_cast<std::uint8_t>(blue);
+                    pixel[1] = static_cast<std::uint8_t>(green);
+                    pixel[2] = static_cast<std::uint8_t>(red);
+                    if (bytesPerPixel == 4) {
+                        pixel[3] = 0xFF;
+                    }
+                }
+                changed = true;
+            }
+        }
+    }
+    if (!changed) {
+        return true;
+    }
+    FPDF_PAGE pages[1] = {page};
+    return FPDFImageObj_SetBitmap(pages, 1, image, bitmap.get()) != 0;
+}
+
+// One surviving run of a redacted text object.
+struct SurvivingRun {
+    int firstChar = 0;          // text page index of its first character
+    std::u32string text;        // as extracted
+    FPDF_PAGEOBJECT object = nullptr; // the rewritten run (owned by the page once inserted)
+};
+
+struct RedactedText {
+    FPDF_PAGEOBJECT original = nullptr;
+    bool rewrite = true; // false: removed whole
+    std::vector<SurvivingRun> runs;
+};
+
+// The text page characters of `objects`, in text page order.
+std::unordered_map<FPDF_PAGEOBJECT, std::vector<int>> charactersOf(FPDF_TEXTPAGE textPage,
+                                                                    const std::unordered_set<FPDF_PAGEOBJECT>& objects) {
+    std::unordered_map<FPDF_PAGEOBJECT, std::vector<int>> chars;
+    const int count = FPDFText_CountChars(textPage);
+    for (int i = 0; i < count; ++i) {
+        if (FPDFText_IsGenerated(textPage, i) == 1) {
+            continue;
+        }
+        const FPDF_PAGEOBJECT object = FPDFText_GetTextObject(textPage, i);
+        if (object != nullptr && objects.count(object) != 0) {
+            chars[object].push_back(i);
+        }
+    }
+    return chars;
+}
+
+bool characterHit(FPDF_TEXTPAGE textPage, int index, const std::vector<PdfRedaction>& redactions) {
+    double left = 0.0;
+    double right = 0.0;
+    double bottom = 0.0;
+    double top = 0.0;
+    if (FPDFText_GetCharBox(textPage, index, &left, &right, &bottom, &top) == 0) {
+        return true; // unknown geometry: removed
+    }
+    if (overlapsAny(redactions, std::min(left, right), std::min(bottom, top), std::max(left, right),
+                    std::max(bottom, top))) {
+        return true;
+    }
+    FS_RECTF loose{};
+    if (FPDFText_GetLooseCharBox(textPage, index, &loose) == 0) {
+        return true;
+    }
+    return overlapsAny(redactions, wide(std::min(loose.left, loose.right)), wide(std::min(loose.bottom, loose.top)),
+                       wide(std::max(loose.left, loose.right)), wide(std::max(loose.bottom, loose.top)));
+}
+
+// Splits `plan.original` into its surviving runs (text only; objects are
+// created later). False = the object cannot be rewritten faithfully.
+bool planTextRuns(FPDF_TEXTPAGE textPage, const std::vector<int>& chars, const std::vector<PdfRedaction>& redactions,
+                  RedactedText& plan) {
+    const FPDF_FONT font = FPDFTextObj_GetFont(plan.original);
+    if (font == nullptr || isType3(font)) {
+        return false;
+    }
+    if (const FPDF_CLIPPATH clip = FPDFPageObj_GetClipPath(plan.original);
+        clip != nullptr && FPDFClipPath_CountPaths(clip) > 0) {
+        return false; // the rewritten runs could not carry the clip
+    }
+    const int mode = static_cast<int>(FPDFTextObj_GetTextRenderMode(plan.original));
+    if (mode < 0 || mode > 3) {
+        return false;
+    }
+    SurvivingRun current;
+    char32_t pendingHigh = 0;
+    const auto flush = [&]() {
+        if (!current.text.empty() && !withoutSpaces(current.text).empty()) {
+            plan.runs.push_back(std::move(current));
+        }
+        current = SurvivingRun{};
+        pendingHigh = 0;
+    };
+    for (const int index : chars) {
+        if (characterHit(textPage, index, redactions)) {
+            flush();
+            continue;
+        }
+        if (FPDFText_HasUnicodeMapError(textPage, index) == 1) {
+            return false;
+        }
+        const unsigned int unit = FPDFText_GetUnicode(textPage, index);
+        if (unit == 0 || unit == 0xFFFE || unit == 0xFFFF || unit == 0xFFFD) {
+            return false;
+        }
+        if (current.text.empty() && pendingHigh == 0) {
+            current.firstChar = index;
+        }
+        if (unit >= 0xD800 && unit <= 0xDBFF) {
+            pendingHigh = static_cast<char32_t>(unit);
+            continue;
+        }
+        char32_t code = static_cast<char32_t>(unit);
+        if (unit >= 0xDC00 && unit <= 0xDFFF) {
+            if (pendingHigh == 0) {
+                return false;
+            }
+            code = 0x10000 + ((pendingHigh - 0xD800) << 10) + (static_cast<char32_t>(unit) - 0xDC00);
+            pendingHigh = 0;
+        }
+        if (code < 0x20) {
+            return false;
+        }
+        current.text.push_back(code);
+    }
+    flush();
+    return true;
+}
+
+// Creates the object of one surviving run with the original's font, size,
+// matrix (translated to the run's first glyph origin), render mode and
+// colors. Null on failure.
+FPDF_PAGEOBJECT createRunObject(ApplyContext& context, FPDF_TEXTPAGE textPage, FPDF_PAGEOBJECT original,
+                                const SurvivingRun& run) {
+    const FPDF_FONT font = FPDFTextObj_GetFont(original);
+    float size = 0.0F;
+    FS_MATRIX matrix{};
+    double originX = 0.0;
+    double originY = 0.0;
+    if (font == nullptr || FPDFTextObj_GetFontSize(original, &size) == 0 || !(size > 0.0F) ||
+        FPDFPageObj_GetMatrix(original, &matrix) == 0 ||
+        FPDFText_GetCharOrigin(textPage, run.firstChar, &originX, &originY) == 0) {
+        return nullptr;
+    }
+    OwnedObject object(FPDFPageObj_CreateTextObj(context.document, font, size));
+    if (object.get() == nullptr) {
+        return nullptr;
+    }
+    const std::vector<FPDF_WCHAR> utf16 = toUtf16(run.text);
+    if (FPDFText_SetText(object.get(), utf16.data()) == 0) {
+        return nullptr;
+    }
+    matrix.e = static_cast<float>(originX);
+    matrix.f = static_cast<float>(originY);
+    if (FPDFPageObj_SetMatrix(object.get(), &matrix) == 0) {
+        return nullptr;
+    }
+    const FPDF_TEXT_RENDERMODE mode = FPDFTextObj_GetTextRenderMode(original);
+    if (static_cast<int>(mode) != 0 && FPDFTextObj_SetTextRenderMode(object.get(), mode) == 0) {
+        return nullptr;
+    }
+    unsigned int r = 0;
+    unsigned int g = 0;
+    unsigned int b = 0;
+    unsigned int a = 0;
+    if (FPDFPageObj_GetFillColor(original, &r, &g, &b, &a) != 0) {
+        FPDFPageObj_SetFillColor(object.get(), r, g, b, a);
+    }
+    if (FPDFPageObj_GetStrokeColor(original, &r, &g, &b, &a) != 0) {
+        FPDFPageObj_SetStrokeColor(object.get(), r, g, b, a);
+    }
+    float strokeWidth = 0.0F;
+    if (FPDFPageObj_GetStrokeWidth(original, &strokeWidth) != 0) {
+        FPDFPageObj_SetStrokeWidth(object.get(), strokeWidth);
+    }
+    return object.release();
+}
+
+// Rewrites the intersecting text objects (see planTextRuns). Originals are
+// detached from the page right away (and destroyed by the caller after
+// every run exists, which keeps their fonts alive); each run is inserted
+// directly above its original and verified by reading it back through a
+// fresh text page. An object any of whose runs fails is removed whole.
+core::Status redactTexts(ApplyContext& context, const std::vector<FPDF_PAGEOBJECT>& texts,
+                         const std::vector<PdfRedaction>& redactions, std::vector<FPDF_PAGEOBJECT>& detached) {
+    std::vector<RedactedText> plans;
+    plans.reserve(texts.size());
+    {
+        ScopedTextPage textPage(FPDFText_LoadPage(context.page));
+        const std::unordered_set<FPDF_PAGEOBJECT> targets(texts.begin(), texts.end());
+        std::unordered_map<FPDF_PAGEOBJECT, std::vector<int>> chars;
+        if (textPage.get() != nullptr) {
+            chars = charactersOf(textPage.get(), targets);
+        }
+        for (const FPDF_PAGEOBJECT text : texts) {
+            RedactedText plan;
+            plan.original = text;
+            plan.rewrite = textPage.get() != nullptr && planTextRuns(textPage.get(), chars[text], redactions, plan);
+            if (plan.rewrite) {
+                for (SurvivingRun& run : plan.runs) {
+                    run.object = createRunObject(context, textPage.get(), text, run);
+                    if (run.object == nullptr) {
+                        plan.rewrite = false;
+                        break;
+                    }
+                }
+            }
+            if (!plan.rewrite) {
+                for (SurvivingRun& run : plan.runs) {
+                    if (run.object != nullptr) {
+                        FPDFPageObj_Destroy(run.object);
+                        run.object = nullptr;
+                    }
+                }
+                plan.runs.clear();
+            }
+            plans.push_back(std::move(plan));
+        }
+    }
+
+    // Swap each original for its runs (same z-position).
+    std::unordered_map<FPDF_PAGEOBJECT, RedactedText*> planOf;
+    for (RedactedText& plan : plans) {
+        planOf.emplace(plan.original, &plan);
+    }
+    for (int i = 0; i < FPDFPage_CountObjects(context.page); ++i) {
+        const FPDF_PAGEOBJECT object = FPDFPage_GetObject(context.page, i);
+        const auto found = planOf.find(object);
+        if (found == planOf.end()) {
+            continue;
+        }
+        RedactedText& plan = *found->second;
+        const auto origin = context.originOf.find(object);
+        const PdfContentOrigin derived{PdfContentOrigin::Kind::Redaction,
+                                       origin != context.originOf.end() &&
+                                               origin->second.kind == PdfContentOrigin::Kind::Source
+                                           ? origin->second.sourceIndex
+                                           : 0,
+                                       0};
+        if (FPDFPage_RemoveObject(context.page, object) == 0) {
+            return fail(core::ErrorCode::Internal, "PDFium could not remove a redacted text object");
+        }
+        context.originOf.erase(object);
+        context.tagOf.erase(object);
+        detached.push_back(object);
+        int at = i;
+        for (SurvivingRun& run : plan.runs) {
+            if (FPDFPage_InsertObjectAtIndex(context.page, run.object, static_cast<size_t>(at)) == 0) {
+                return fail(core::ErrorCode::Internal, "PDFium could not insert a redacted text run");
+            }
+            context.originOf[run.object] = derived;
+            ++at;
+        }
+        i = at - 1;
+    }
+
+    // Read every run back; a mismatch removes all runs of that object.
+    bool anyRun = false;
+    for (const RedactedText& plan : plans) {
+        anyRun = anyRun || !plan.runs.empty();
+    }
+    if (!anyRun) {
+        return core::ok();
+    }
+    std::unordered_map<FPDF_PAGEOBJECT, ObjectText> readBack;
+    {
+        ScopedTextPage verify(FPDFText_LoadPage(context.page));
+        if (verify.get() != nullptr) {
+            readBack = collectObjectTexts(verify.get());
+        }
+    }
+    for (RedactedText& plan : plans) {
+        bool ok = true;
+        for (const SurvivingRun& run : plan.runs) {
+            const auto found = readBack.find(run.object);
+            ok = ok && found != readBack.end() && !found->second.mapError &&
+                 withoutSpaces(found->second.text) == withoutSpaces(run.text);
+        }
+        if (ok) {
+            continue;
+        }
+        for (SurvivingRun& run : plan.runs) {
+            if (FPDFPage_RemoveObject(context.page, run.object) == 0) {
+                return fail(core::ErrorCode::Internal, "PDFium could not remove a redacted text run");
+            }
+            context.originOf.erase(run.object);
+            FPDFPageObj_Destroy(run.object);
+            run.object = nullptr;
+        }
+        plan.runs.clear();
+    }
+    return core::ok();
+}
+
+core::Status applyRedactions(ApplyContext& context, const std::vector<PdfRedaction>& redactions) {
+    if (redactions.empty()) {
+        return core::ok();
+    }
+    const std::unordered_set<FPDF_PAGEOBJECT> removing(context.pendingRemoval.begin(), context.pendingRemoval.end());
+    std::vector<FPDF_PAGEOBJECT> texts;
+    std::vector<FPDF_PAGEOBJECT> remove;
+    const int count = FPDFPage_CountObjects(context.page);
+    if (count < 0) {
+        return fail(core::ErrorCode::Internal, "PDFium could not enumerate the page objects");
+    }
+    for (int i = 0; i < count; ++i) {
+        const FPDF_PAGEOBJECT object = FPDFPage_GetObject(context.page, i);
+        if (object == nullptr) {
+            return fail(core::ErrorCode::Internal, "PDFium returned a null page object");
+        }
+        if (removing.count(object) != 0) {
+            continue;
+        }
+        float left = 0.0F;
+        float bottom = 0.0F;
+        float right = 0.0F;
+        float top = 0.0F;
+        if (FPDFPageObj_GetBounds(object, &left, &bottom, &right, &top) != 0 &&
+            !overlapsAny(redactions, wide(std::min(left, right)), wide(std::min(bottom, top)),
+                         wide(std::max(left, right)), wide(std::max(bottom, top)))) {
+            continue;
+        }
+        // Intersecting (or of unknown extent).
+        switch (FPDFPageObj_GetType(object)) {
+        case kObjText:
+            texts.push_back(object);
+            break;
+        case kObjImage:
+            if (!redactImage(context.page, object, redactions)) {
+                remove.push_back(object);
+            }
+            break;
+        default:
+            remove.push_back(object);
+            break;
+        }
+    }
+
+    std::vector<FPDF_PAGEOBJECT> detached;
+    const core::Status rewritten = redactTexts(context, texts, redactions, detached);
+    // Destroyed after every run exists (runs hold their own font references).
+    for (const FPDF_PAGEOBJECT object : detached) {
+        FPDFPageObj_Destroy(object);
+    }
+    if (!rewritten.has_value()) {
+        return rewritten;
+    }
+    for (const FPDF_PAGEOBJECT object : remove) {
+        context.pendingRemoval.push_back(object);
+    }
+
+    // The fill boxes, on top of everything.
+    for (const PdfRedaction& redaction : redactions) {
+        const PdfBox& area = redaction.area;
+        OwnedObject box(FPDFPageObj_CreateNewRect(static_cast<float>(area.left), static_cast<float>(area.bottom),
+                                                  static_cast<float>(area.width()),
+                                                  static_cast<float>(area.height())));
+        if (box.get() == nullptr ||
+            FPDFPageObj_SetFillColor(box.get(), toByte(redaction.fill.r), toByte(redaction.fill.g),
+                                     toByte(redaction.fill.b), 255) == 0 ||
+            FPDFPath_SetDrawMode(box.get(), FPDF_FILLMODE_WINDING, 0) == 0) {
+            return fail(core::ErrorCode::Internal, "PDFium could not create a redaction box");
+        }
+        const FPDF_PAGEOBJECT handle = box.release();
+        FPDFPage_InsertObject(context.page, handle);
+        context.originOf[handle] = PdfContentOrigin{PdfContentOrigin::Kind::Redaction, 0, 0};
+    }
+    return core::ok();
+}
+
 } // namespace
 
 core::Result<ContentApplyResult> applyContentEdits(FPDF_DOCUMENT document,
@@ -1125,6 +1622,10 @@ core::Result<ContentApplyResult> applyContentEdits(FPDF_DOCUMENT document,
         if (core::Status applied = applyTextBlock(context, block); !applied.has_value()) {
             return std::unexpected(applied.error());
         }
+    }
+
+    if (core::Status redacted = applyRedactions(context, edits.redactions); !redacted.has_value()) {
+        return std::unexpected(redacted.error());
     }
 
     for (const FPDF_PAGEOBJECT object : context.pendingRemoval) {

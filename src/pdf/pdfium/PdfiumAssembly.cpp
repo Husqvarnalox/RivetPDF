@@ -559,6 +559,27 @@ core::Status saveTo(FPDF_DOCUMENT working, IPdfByteSink& sink) {
     return internal::saveDocumentToSink(working, sink);
 }
 
+// Remove-metadata save (ADR-0026): PDFium has no API to edit /Info or the
+// catalog's /Metadata, so the finished working document's pages are imported
+// (all at once, so links between them survive) into a fresh document, which
+// has neither, and that is written instead. Document-level structure is lost
+// exactly as for Extract (see the top of this file). Caller holds the gate.
+core::Status saveWithoutMetadata(FPDF_DOCUMENT working, std::size_t pageCount, IPdfByteSink& sink) {
+    ScopedDocument fresh(FPDF_CreateNewDocument());
+    if (fresh.get() == nullptr) {
+        return std::unexpected(core::makeError(core::ErrorCode::OutOfMemory,
+                                               "PDFium could not create a new document", "pdf"));
+    }
+    if (FPDF_ImportPagesByIndex(fresh.get(), working, nullptr, 0, 0) == 0) {
+        return std::unexpected(internalError("PDFium could not rebuild the document without its metadata"));
+    }
+    if (auto counted = verifyPageCount(fresh.get(), pageCount, "removing the metadata"); !counted.has_value()) {
+        return counted;
+    }
+    FPDF_CopyViewerPreferences(fresh.get(), working);
+    return saveTo(fresh.get(), sink);
+}
+
 core::Status verifyPageCount(FPDF_DOCUMENT working, std::size_t expected, const char* step) {
     const int count = FPDF_GetPageCount(working);
     if (count < 0 || static_cast<std::size_t>(count) != expected) {
@@ -708,6 +729,9 @@ core::Status assemblePreserveBase(const PdfiumDocument& base,
     if (auto annotated = applyAnnotations(working.get(), pages, report); !annotated.has_value()) {
         return annotated;
     }
+    if (request.removeMetadata) {
+        return saveWithoutMetadata(working.get(), finalCount, sink);
+    }
     return saveTo(working.get(), sink);
 }
 
@@ -804,6 +828,11 @@ core::Status assembleWithPdfium(const PdfiumEngine& engine,
                     const auto base = ownedDocument(engine, request.base, "base");
                     if (!base.has_value()) {
                         return std::unexpected(base.error());
+                    }
+                    if (request.removeMetadata && (*base)->info().isEncrypted) {
+                        // A rebuild would silently drop the encryption.
+                        return std::unexpected(
+                            invalidArgument("the metadata of an encrypted document cannot be removed"));
                     }
                     return assemblePreserveBase(**base, *pages, request, sources, sink, annotationReport,
                                                 contentReport);
