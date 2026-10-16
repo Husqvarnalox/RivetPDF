@@ -12,8 +12,7 @@
 #include "render/RenderPriority.hpp"
 #include "render/RenderRequest.hpp"
 
-#include <sys/stat.h>
-#include <unistd.h>
+#include "TestProcess.hpp"
 
 #include <chrono>
 #include <cmath>
@@ -44,7 +43,7 @@ public:
     TempDir() {
         static int counter = 0;
         path_ = fs::temp_directory_path() /
-                ("rivet-annot-" + std::to_string(::getpid()) + "-" +
+                ("rivet-annot-" + std::to_string(rivet::test::processId()) + "-" +
                  std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + "-" +
                  std::to_string(counter++));
         fs::create_directories(path_);

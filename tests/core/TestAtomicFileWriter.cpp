@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 #include "RivetTest.h"
+#include "TestProcess.hpp"
 
 #include "core/io/AtomicFileWriter.hpp"
 

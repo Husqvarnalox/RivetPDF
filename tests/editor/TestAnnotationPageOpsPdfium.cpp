@@ -21,7 +21,7 @@
 #include "pdf/PdfEngine.hpp"
 #include "pdf/PdfSystem.hpp"
 
-#include <unistd.h>
+#include "TestProcess.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -56,7 +56,7 @@ public:
     TempDir() {
         static std::atomic<int> counter{0};
         path_ = fs::temp_directory_path() /
-                ("rivet-annot-ops-" + std::to_string(::getpid()) + "-" +
+                ("rivet-annot-ops-" + std::to_string(rivet::test::processId()) + "-" +
                  std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + "-" +
                  std::to_string(counter.fetch_add(1)));
         fs::create_directories(path_);
