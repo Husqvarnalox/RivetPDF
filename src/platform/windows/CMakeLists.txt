@@ -17,6 +17,7 @@ add_library(rivet_platform_windows STATIC
     WindowsExternalUrlOpener.cpp
     WindowsFileDialog.cpp
     WindowsImageDecoder.cpp
+    WindowsImageEncoder.cpp
     WindowsMainThreadDispatcher.cpp
     WindowsMenuBar.cpp
     WindowsPaintContext.cpp
