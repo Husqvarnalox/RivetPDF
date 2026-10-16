@@ -18,6 +18,7 @@
 #include "app/SearchBarController.hpp"
 #include "app/ShellContext.hpp"
 #include "app/SidebarController.hpp"
+#include "app/SignatureSheetController.hpp"
 #include "app/StatusBarController.hpp"
 #include "app/TextInteractionController.hpp"
 #include "app/TextLabel.hpp"
@@ -180,6 +181,8 @@ private:
     void setPresentationMode(bool enabled);
     bool presentationMode() const { return presentationMode_; }
     void handlePrintRequest();
+    // Annotate > Sign... (manage = false) / Manage Signatures... (ADR-0025).
+    void openSignatureSheet(bool manage);
     // Cancels (and waits for) a print spool that renders the tab's document;
     // must run before the tab's session is destroyed.
     void cancelPrintForTab(std::size_t index);
@@ -242,6 +245,7 @@ private:
     // Redaction (ADR-0026). Declared after content_: destroyed before it (it
     // reads and switches the shared tool state and owns a viewport layer).
     std::unique_ptr<RedactionController> redaction_;
+    std::unique_ptr<SignatureSheetController> signatureSheet_;
 
     // Print flow (panel -> worker spool -> platform print). Declared last:
     // destroyed first, while the sessions its worker borrows are alive.
