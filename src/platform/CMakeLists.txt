@@ -16,10 +16,10 @@ if(APPLE)
     add_subdirectory(macos)
 endif()
 
-# TODO(backend): Windows backend. Uncomment when src/platform/windows exists.
-# if(WIN32)
-#     add_subdirectory(windows)
-# endif()
+# Windows: Win32 + Direct2D/DirectWrite backend (src/platform/windows).
+if(WIN32)
+    add_subdirectory(windows)
+endif()
 
 # Linux and other non-Apple UNIX: X11 + cairo backend. It skips only the
 # executable (with a STATUS message) when the X11/cairo development packages
