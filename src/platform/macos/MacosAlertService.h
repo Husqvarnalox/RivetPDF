@@ -13,6 +13,7 @@ public:
     void showError(std::string_view title, std::string_view message) override;
     std::optional<std::string> promptForText(std::string_view title, std::string_view message,
                                              std::string_view defaultText) override;
+    bool confirm(std::string_view title, std::string_view message, std::string_view okLabel) override;
 };
 
 } // namespace rivet::platform

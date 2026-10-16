@@ -78,6 +78,17 @@ void MacosAlertService::showError(std::string_view title, std::string_view messa
     [alert runModal];
 }
 
+bool MacosAlertService::confirm(std::string_view title, std::string_view message, std::string_view okLabel) {
+    NSAlert* alert = [[NSAlert alloc] init];
+    alert.alertStyle = NSAlertStyleWarning;
+    alert.messageText = toNSString(title);
+    alert.informativeText = toNSString(message);
+    [alert addButtonWithTitle:toNSString(okLabel)];
+    NSButton* cancel = [alert addButtonWithTitle:@"Cancel"];
+    cancel.keyEquivalent = @"\033";
+    return [alert runModal] == NSAlertFirstButtonReturn;
+}
+
 std::optional<std::string> MacosAlertService::promptForText(std::string_view title,
                                                             std::string_view message,
                                                             std::string_view defaultText) {

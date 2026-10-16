@@ -38,8 +38,8 @@ public:
                                              std::string_view defaultText) override;
 
     // Two-button confirmation (Cancel | `confirmLabel`, the default). Used by
-    // the Linux print and save dialogs.
-    bool confirm(std::string_view title, std::string_view message, std::string_view confirmLabel);
+    // the Linux print and save dialogs and by IAlertService callers.
+    bool confirm(std::string_view title, std::string_view message, std::string_view confirmLabel) override;
 
 private:
     X11Connection& connection_;

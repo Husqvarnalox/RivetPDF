@@ -45,6 +45,16 @@ public:
         (void)defaultText;
         return std::nullopt;
     }
+
+    // Modal two-button confirmation: Cancel (Esc) and `okLabel` (the default
+    // button). True when confirmed; false when cancelled or when the
+    // platform has no confirmation dialog (the default: never confirm).
+    virtual bool confirm(std::string_view title, std::string_view message, std::string_view okLabel) {
+        (void)title;
+        (void)message;
+        (void)okLabel;
+        return false;
+    }
 };
 
 } // namespace rivet::platform
