@@ -24,6 +24,8 @@ add_library(rivet_editor STATIC
     DocumentSaver.cpp
     PrintSpooler.cpp
     PageRangeParser.cpp
+    TextDiff.cpp
+    DocumentComparison.cpp
 )
 
 add_library(rivet::editor ALIAS rivet_editor)
