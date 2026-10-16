@@ -36,6 +36,10 @@ inline constexpr double kMaxBuildPageSize = 14400.0;
 inline constexpr double kMaxBuildStrokeWidth = 100.0;
 // Bytes of a link URI.
 inline constexpr std::size_t kMaxBuildUriBytes = 2048;
+// Segments of one path item, and entries of its dash array.
+inline constexpr std::size_t kMaxBuildPathSegments = 65536;
+inline constexpr std::size_t kMaxBuildDashCount = 16;
+inline constexpr double kMaxBuildDashLength = 1000.0;
 // Slack allowed when checking that a box lies within its page (layout
 // arithmetic rounds); boxes beyond it are rejected, never clamped.
 inline constexpr double kBuildPageEpsilon = 1.0e-6;
@@ -69,7 +73,22 @@ struct PdfBuildImage {
     PdfBox box;
 };
 
-using PdfBuildItem = std::variant<PdfBuildRect, PdfBuildText, PdfBuildImage>; // painted in order
+// A vector path (Markdown diagrams, ADR-0032): absolute segments in page
+// user space, the first a MoveTo; every point (control points included) lies
+// inside the page. Filled with the nonzero winding rule and/or stroked (at
+// least one). `dash` (points, alternating on/off lengths; empty = solid)
+// applies to the stroke. Round joins and caps when `roundJoins`, else miter
+// joins and butt caps.
+struct PdfBuildPath {
+    std::vector<PdfPathSegment> segments;
+    std::optional<PdfColor> fill;
+    std::optional<PdfColor> stroke;
+    float strokeWidth = 1.0F; // points, used when `stroke` is set
+    std::vector<float> dash;  // at most kMaxBuildDashCount entries in (0, kMaxBuildDashLength]
+    bool roundJoins = false;
+};
+
+using PdfBuildItem = std::variant<PdfBuildRect, PdfBuildText, PdfBuildImage, PdfBuildPath>; // painted in order
 
 // An external link annotation: clicking `box` opens `uri` (http, https or
 // mailto only; printable ASCII).
@@ -93,6 +112,8 @@ struct PdfBuildDocument {
 // in-range page sizes; valid (positive-size) boxes lying within their page;
 // text origins inside the page; font sizes in [kMinFontSize, kMaxFontSize];
 // color components in [0, 1]; stroke widths in (0, kMaxBuildStrokeWidth];
+// paths starting with a MoveTo, at most kMaxBuildPathSegments segments with
+// every point inside the page, fill and/or stroke, valid dash arrays;
 // text runs non-empty valid UTF-8 whose every code point the run's font
 // covers (the first offending one is named as U+XXXX); image data consistent
 // with its format (validateImageData); link URIs with an allowed scheme

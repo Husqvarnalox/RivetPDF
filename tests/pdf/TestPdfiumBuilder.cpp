@@ -270,6 +270,55 @@ RIVET_TEST(builderRoundTripsTextLinksAndPixels) {
     CHECK(edge.r < 100);
 }
 
+RIVET_TEST(builderWritesFilledAndDashedPaths) {
+    auto engine = pdfiumEngine();
+    if (!engine) return;
+    PdfBuildDocument doc;
+    PdfBuildPage page;
+    // A filled red square as a path (with a cubic edge), a dashed black
+    // polyline and a round-joined stroke.
+    PdfBuildPath square;
+    square.segments.push_back({PdfPathSegment::Op::MoveTo, {100.0, 600.0}, {}, {}});
+    square.segments.push_back({PdfPathSegment::Op::LineTo, {200.0, 600.0}, {}, {}});
+    square.segments.push_back({PdfPathSegment::Op::CubicTo, {200.0, 700.0}, {205.0, 630.0}, {205.0, 670.0}});
+    square.segments.push_back({PdfPathSegment::Op::LineTo, {100.0, 700.0}, {}, {}});
+    square.segments.push_back({PdfPathSegment::Op::Close, {}, {}, {}});
+    square.fill = PdfColor{1.0F, 0.0F, 0.0F};
+    page.items.emplace_back(square);
+    PdfBuildPath dashed;
+    dashed.segments.push_back({PdfPathSegment::Op::MoveTo, {300.0, 650.0}, {}, {}});
+    dashed.segments.push_back({PdfPathSegment::Op::LineTo, {500.0, 650.0}, {}, {}});
+    dashed.stroke = PdfColor{0.0F, 0.0F, 0.0F};
+    dashed.strokeWidth = 6.0F;
+    dashed.dash = {20.0F, 20.0F};
+    page.items.emplace_back(dashed);
+    PdfBuildPath round = dashed;
+    round.dash.clear();
+    round.roundJoins = true;
+    round.segments = {{PdfPathSegment::Op::MoveTo, {300.0, 500.0}, {}, {}},
+                      {PdfPathSegment::Op::LineTo, {400.0, 500.0}, {}, {}},
+                      {PdfPathSegment::Op::LineTo, {400.0, 400.0}, {}, {}}};
+    page.items.emplace_back(round);
+    doc.pages.push_back(std::move(page));
+
+    MemorySink sink;
+    CHECK(engine->buildDocument(doc, sink).has_value());
+    auto reopened = reopen(*engine, sink);
+    if (!reopened) return;
+    auto bitmap = reopened->renderPage(0, core::Rect(0.0, 0.0, 612.0, 792.0), 1.0);
+    CHECK(bitmap.has_value());
+    if (!bitmap.has_value()) return;
+    // Display space is y-down: user y 650 is row 792 - 650 = 142.
+    const Pixel inside = pixelAt(*bitmap, 150, 142);
+    CHECK(inside.r > 200 && inside.g < 60 && inside.b < 60);
+    const Pixel dashOn = pixelAt(*bitmap, 310, 142);  // first dash: x 300..320
+    const Pixel dashOff = pixelAt(*bitmap, 330, 142); // first gap: x 320..340
+    CHECK(dashOn.r < 80 && dashOn.g < 80 && dashOn.b < 80);
+    CHECK(dashOff.r > 200 && dashOff.g > 200 && dashOff.b > 200);
+    const Pixel corner = pixelAt(*bitmap, 400, 292); // the round-joined corner
+    CHECK(corner.r < 80);
+}
+
 RIVET_TEST(builderTextWidthsMatchBundledMetrics) {
     auto engine = pdfiumEngine();
     if (!engine) return;

@@ -109,6 +109,53 @@ RIVET_TEST(pdfBuildRejectsStructuralProblems) {
     CHECK(rejected(doc));
 }
 
+RIVET_TEST(pdfBuildValidatesPaths) {
+    const auto triangle = [] {
+        PdfBuildPath path;
+        path.segments.push_back({PdfPathSegment::Op::MoveTo, {100.0, 100.0}, {}, {}});
+        path.segments.push_back({PdfPathSegment::Op::LineTo, {200.0, 100.0}, {}, {}});
+        path.segments.push_back({PdfPathSegment::Op::CubicTo, {150.0, 180.0}, {210.0, 150.0}, {170.0, 190.0}});
+        path.segments.push_back({PdfPathSegment::Op::Close, {}, {}, {}});
+        path.fill = PdfColor{0.2F, 0.4F, 0.6F};
+        path.stroke = PdfColor{};
+        path.strokeWidth = 1.5F;
+        path.dash = {4.0F, 3.0F};
+        return path;
+    };
+    PdfBuildDocument doc = onePage();
+    doc.pages[0].items.emplace_back(triangle());
+    CHECK(validatePdfBuild(doc).has_value());
+
+    const auto rejectedWith = [&](auto mutate) {
+        PdfBuildDocument bad = onePage();
+        PdfBuildPath path = triangle();
+        mutate(path);
+        bad.pages[0].items.emplace_back(std::move(path));
+        return rejected(bad);
+    };
+    CHECK(rejectedWith([](PdfBuildPath& p) { p.segments.clear(); }));
+    CHECK(rejectedWith([](PdfBuildPath& p) { p.segments.front().op = PdfPathSegment::Op::LineTo; }));
+    CHECK(rejectedWith([](PdfBuildPath& p) { p.segments[1].p.x = 700.0; }));  // off the page
+    CHECK(rejectedWith([](PdfBuildPath& p) { p.segments[2].c2.y = -1.0; })); // a control point too
+    CHECK(rejectedWith([](PdfBuildPath& p) { p.segments[1].p.y = std::numeric_limits<double>::infinity(); }));
+    CHECK(rejectedWith([](PdfBuildPath& p) {
+        p.fill.reset();
+        p.stroke.reset();
+    }));
+    CHECK(rejectedWith([](PdfBuildPath& p) { p.fill = PdfColor{1.5F, 0.0F, 0.0F}; }));
+    CHECK(rejectedWith([](PdfBuildPath& p) { p.strokeWidth = 0.0F; }));
+    CHECK(rejectedWith([](PdfBuildPath& p) { p.dash = {4.0F, 0.0F}; }));
+    CHECK(rejectedWith([](PdfBuildPath& p) { p.dash.assign(kMaxBuildDashCount + 1, 1.0F); }));
+    CHECK(rejectedWith([](PdfBuildPath& p) {
+        p.segments.resize(kMaxBuildPathSegments + 1, PdfPathSegment{PdfPathSegment::Op::LineTo, {150.0, 150.0}, {}, {}});
+    }));
+    // A dash pattern is ignored without a stroke but must still be valid; fill only is fine.
+    CHECK(!rejectedWith([](PdfBuildPath& p) {
+        p.stroke.reset();
+        p.dash.clear();
+    }));
+}
+
 RIVET_TEST(pdfBuildRejectsBadText) {
     std::string message;
     PdfBuildDocument doc = onePage();

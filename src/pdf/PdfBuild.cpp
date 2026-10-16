@@ -86,6 +86,34 @@ core::Status validateText(const PdfBuildText& text, const PdfBuildPage& page, co
     return core::ok();
 }
 
+core::Status validatePath(const PdfBuildPath& path, const PdfBuildPage& page, const std::string& at) {
+    if (path.segments.empty() || path.segments.size() > kMaxBuildPathSegments) {
+        return invalid(at + "path has no segments or too many");
+    }
+    if (path.segments.front().op != PdfPathSegment::Op::MoveTo) return invalid(at + "path does not start with a move");
+    for (const PdfPathSegment& s : path.segments) {
+        if (s.op == PdfPathSegment::Op::Close) continue;
+        bool ok = pointOnPage(s.p, page);
+        if (s.op == PdfPathSegment::Op::CubicTo) ok = ok && pointOnPage(s.c1, page) && pointOnPage(s.c2, page);
+        if (!ok) return invalid(at + "path point is not finite or outside the page");
+    }
+    if (!path.fill.has_value() && !path.stroke.has_value()) return invalid(at + "path has neither fill nor stroke");
+    if (path.fill.has_value() && !validColor(*path.fill)) return invalid(at + "fill color out of range");
+    if (path.stroke.has_value()) {
+        if (!validColor(*path.stroke)) return invalid(at + "stroke color out of range");
+        const double width = static_cast<double>(path.strokeWidth);
+        if (!std::isfinite(width) || width <= 0.0 || width > kMaxBuildStrokeWidth) {
+            return invalid(at + "stroke width out of range");
+        }
+    }
+    if (path.dash.size() > kMaxBuildDashCount) return invalid(at + "dash array is too long");
+    for (const float d : path.dash) {
+        const double v = static_cast<double>(d);
+        if (!std::isfinite(v) || v <= 0.0 || v > kMaxBuildDashLength) return invalid(at + "dash length out of range");
+    }
+    return core::ok();
+}
+
 core::Status validateImage(const PdfBuildImage& image, const PdfBuildPage& page, const std::string& at) {
     if (!boxOnPage(image.box, page)) return invalid(at + "image box is empty, not finite or outside the page");
     if (core::Status status = validateImageData(image.image); !status) {
@@ -148,7 +176,10 @@ core::Status validatePdfBuild(const PdfBuildDocument& document) {
                         return validateRect(item, page, at);
                     } else if constexpr (std::is_same_v<T, PdfBuildText>) {
                         return validateText(item, page, at);
+                    } else if constexpr (std::is_same_v<T, PdfBuildPath>) {
+                        return validatePath(item, page, at);
                     } else {
+                        static_assert(std::is_same_v<T, PdfBuildImage>);
                         return validateImage(item, page, at);
                     }
                 },

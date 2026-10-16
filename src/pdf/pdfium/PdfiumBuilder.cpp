@@ -44,6 +44,10 @@
 //            start of its first glyph. The written widths come from the
 //            font's hmtx, so BundledFontMetrics measures the same advances
 //            (no kerning is applied).
+//   - Path:  FPDFPageObj_CreateNewPath at the first MoveTo, then
+//            FPDFPath_MoveTo / LineTo / BezierTo / Close, fill and stroke
+//            like a Rect, FPDFPageObj_SetLineJoin/SetLineCap and
+//            FPDFPageObj_SetDashArray for dashed strokes.
 //   - Image: FPDFPageObj_NewImageObj; JPEG bytes are embedded inline as
 //            /DCTDecode, BGRA pixels through a borrowed FPDF_BITMAP (alpha
 //            becomes a soft mask); matrix {w,0,0,h,left,bottom}.
@@ -155,6 +159,51 @@ core::Status addRect(FPDF_PAGE page, const PdfBuildRect& rect) {
     return insert(page, object);
 }
 
+core::Status addPath(FPDF_PAGE page, const PdfBuildPath& path) {
+    const PdfPathSegment& first = path.segments.front(); // validated: a MoveTo
+    OwnedObject object(FPDFPageObj_CreateNewPath(static_cast<float>(first.p.x), static_cast<float>(first.p.y)));
+    if (object.get() == nullptr) return fail("PDFium could not create a path");
+    for (std::size_t i = 1; i < path.segments.size(); ++i) {
+        const PdfPathSegment& s = path.segments[i];
+        const auto x = static_cast<float>(s.p.x);
+        const auto y = static_cast<float>(s.p.y);
+        FPDF_BOOL ok = 1;
+        switch (s.op) {
+        case PdfPathSegment::Op::MoveTo: ok = FPDFPath_MoveTo(object.get(), x, y); break;
+        case PdfPathSegment::Op::LineTo: ok = FPDFPath_LineTo(object.get(), x, y); break;
+        case PdfPathSegment::Op::CubicTo:
+            ok = FPDFPath_BezierTo(object.get(), static_cast<float>(s.c1.x), static_cast<float>(s.c1.y),
+                                   static_cast<float>(s.c2.x), static_cast<float>(s.c2.y), x, y);
+            break;
+        case PdfPathSegment::Op::Close: ok = FPDFPath_Close(object.get()); break;
+        }
+        if (ok == 0) return fail("PDFium could not add a path segment");
+    }
+    if (path.fill.has_value() &&
+        FPDFPageObj_SetFillColor(object.get(), toByte(path.fill->r), toByte(path.fill->g), toByte(path.fill->b), 255) ==
+            0) {
+        return fail("PDFium could not set a path's fill color");
+    }
+    if (path.stroke.has_value()) {
+        if (FPDFPageObj_SetStrokeColor(object.get(), toByte(path.stroke->r), toByte(path.stroke->g),
+                                       toByte(path.stroke->b), 255) == 0 ||
+            FPDFPageObj_SetStrokeWidth(object.get(), path.strokeWidth) == 0 ||
+            FPDFPageObj_SetLineJoin(object.get(), path.roundJoins ? FPDF_LINEJOIN_ROUND : FPDF_LINEJOIN_MITER) == 0 ||
+            FPDFPageObj_SetLineCap(object.get(), path.roundJoins ? FPDF_LINECAP_ROUND : FPDF_LINECAP_BUTT) == 0) {
+            return fail("PDFium could not set a path's stroke");
+        }
+        if (!path.dash.empty() &&
+            FPDFPageObj_SetDashArray(object.get(), path.dash.data(), path.dash.size(), 0.0F) == 0) {
+            return fail("PDFium could not set a path's dash pattern");
+        }
+    }
+    if (FPDFPath_SetDrawMode(object.get(), path.fill.has_value() ? FPDF_FILLMODE_WINDING : FPDF_FILLMODE_NONE,
+                             path.stroke.has_value() ? 1 : 0) == 0) {
+        return fail("PDFium could not set a path's draw mode");
+    }
+    return insert(page, object);
+}
+
 core::Status addText(FPDF_DOCUMENT document, FPDF_PAGE page, const PdfBuildText& text, FontCache& fonts) {
     const FPDF_FONT font = fonts.get(text.font);
     if (font == nullptr) return fail("PDFium rejected a bundled font program");
@@ -225,7 +274,10 @@ core::Status buildPage(FPDF_DOCUMENT document, int index, const PdfBuildPage& sp
                     return addRect(page.get(), value);
                 } else if constexpr (std::is_same_v<T, PdfBuildText>) {
                     return addText(document, page.get(), value, fonts);
+                } else if constexpr (std::is_same_v<T, PdfBuildPath>) {
+                    return addPath(page.get(), value);
                 } else {
+                    static_assert(std::is_same_v<T, PdfBuildImage>);
                     return addImage(document, page.get(), value);
                 }
             },
