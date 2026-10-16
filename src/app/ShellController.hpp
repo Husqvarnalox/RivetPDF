@@ -9,6 +9,7 @@
 #include "app/DocumentWorkspace.hpp"
 #include "app/FileController.hpp"
 #include "app/FormController.hpp"
+#include "app/OcrController.hpp"
 #include "app/RedactionController.hpp"
 #include "app/MarkdownExportController.hpp"
 #include "app/MarkdownHostView.hpp"
@@ -254,6 +255,8 @@ private:
     // Redaction (ADR-0026). Declared after content_: destroyed before it (it
     // reads and switches the shared tool state and owns a viewport layer).
     std::unique_ptr<RedactionController> redaction_;
+    // Text recognition (ADR-0027); reads the shell context only.
+    std::unique_ptr<OcrController> ocr_;
     std::unique_ptr<SignatureSheetController> signatureSheet_;
 
     // Print flow (panel -> worker spool -> platform print). Declared last:

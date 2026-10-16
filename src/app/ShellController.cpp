@@ -169,6 +169,7 @@ void ShellController::buildWidgets() {
     // Redaction marks (Redact tool, Apply Redactions): part of the content
     // tool state.
     redaction_ = std::make_unique<RedactionController>(*context_, *content_);
+    ocr_ = std::make_unique<OcrController>(*context_, scheduler_);
 
     // Visual signatures (ADR-0025): the sheet floats above everything over
     // the viewport; Done arms the Sign tool with the chosen signature.
@@ -708,10 +709,17 @@ bool ShellController::canPerformAnnotation(AnnotationCommand command) const {
 }
 
 void ShellController::performContent(ContentCommand command) {
+    if (command == ContentCommand::RecognizeTextMissing || command == ContentCommand::RecognizeTextAll) {
+        if (ocr_ != nullptr) ocr_->perform(command);
+        return;
+    }
     if (content_ != nullptr) content_->perform(command);
 }
 
 bool ShellController::canPerformContent(ContentCommand command) const {
+    if (command == ContentCommand::RecognizeTextMissing || command == ContentCommand::RecognizeTextAll) {
+        return ocr_ != nullptr && ocr_->canPerform(command);
+    }
     return content_ != nullptr && content_->canPerform(command);
 }
 
@@ -777,6 +785,9 @@ std::optional<bool> ShellController::isChecked(const AppCommand& command) const 
 
 void ShellController::requestCloseTab(std::size_t index) {
     cancelPrintForTab(index);
+    if (ocr_ != nullptr) {
+        if (DocumentTab* closing = workspace_.tab(index); closing != nullptr) ocr_->cancelForTab(closing->id());
+    }
     DocumentTab* tab = workspace_.tab(index);
     if (tab != nullptr && fileLifecycle_ != nullptr) {
         // The prompt is modal and the controller may close the tab itself
@@ -812,6 +823,7 @@ void ShellController::setFocus(ui::Widget* widget) {
 bool ShellController::handleKeyEvent(const ui::KeyEvent& event) {
     // 0. Escape cancels a print job being prepared before anything else.
     if (event.key == ui::Key::Escape && printCoordinator_.requestCancel()) return true;
+    if (event.key == ui::Key::Escape && ocr_ != nullptr && ocr_->requestCancel()) return true;
     if (event.key == ui::Key::Escape && markdownExport_ != nullptr && markdownExport_->requestCancelPrint()) {
         return true;
     }

@@ -33,6 +33,7 @@ add_library(rivet_app STATIC
     FormLayout.cpp
     MenuModel.cpp
     PageEditingController.cpp
+    OcrController.cpp
     PasswordPromptController.cpp
     PrintCoordinator.cpp
     SearchBarController.cpp

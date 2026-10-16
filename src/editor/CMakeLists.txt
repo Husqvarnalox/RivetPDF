@@ -19,6 +19,7 @@ add_library(rivet_editor STATIC
     TextSearchController.cpp
     TextService.cpp
     LinkService.cpp
+    OcrLayer.cpp
     CommandStack.cpp
     DocumentRenderer.cpp
     DocumentSession.cpp

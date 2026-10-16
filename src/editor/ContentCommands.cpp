@@ -521,6 +521,18 @@ core::Result<ContentEdit> addTextBlock(DocumentSession& session, core::PageId pa
     return editor->finish("Add Text", {id});
 }
 
+core::Result<ContentEdit> addInvisibleText(DocumentSession& session, core::PageId page,
+                                           const pdf::PdfPageView& view, std::span<const OcrWord> words) {
+    InvisibleTextPlan plan = planInvisibleText(view, words);
+    if (plan.runs.empty()) return std::unexpected(invalid("no readable text was found"));
+    auto editor = PageEditor::open(session, page);
+    if (!editor) return std::unexpected(editor.error());
+    pdf::PdfPageContentEdits& work = editor->work();
+    work.invisibleRuns = std::move(plan.runs);
+    work.invisibleTag = session.pageModel().mintObjectId().value();
+    return editor->finish("Recognize Text", {});
+}
+
 core::Result<ContentEdit> bringToFront(DocumentSession& session, core::PageId page, core::ObjectId id) {
     auto editor = PageEditor::open(session, page);
     if (!editor) return std::unexpected(editor.error());

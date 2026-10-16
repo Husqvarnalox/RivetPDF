@@ -110,6 +110,11 @@ std::vector<Menu> buildMenuBar() {
     content.items.push_back(
         item("Apply Redactions\xE2\x80\xA6", AppCommand::of(RedactCommand::ApplyRedactions)));
     content.items.push_back(item("Clear Redaction Marks", AppCommand::of(RedactCommand::ClearMarks)));
+    // OCR (ADR-0027): enabled only where the platform has a text recognizer.
+    content.items.push_back(item("Recognize Text (Pages Without Text)",
+                                 AppCommand::of(ContentCommand::RecognizeTextMissing), std::nullopt, true));
+    content.items.push_back(
+        item("Recognize Text (All Pages)", AppCommand::of(ContentCommand::RecognizeTextAll)));
     bar.push_back(std::move(content));
 
     // No single-letter shortcuts: they would clash with typing.

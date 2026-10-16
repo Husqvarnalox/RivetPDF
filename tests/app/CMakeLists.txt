@@ -10,6 +10,8 @@ add_executable(rivet_app_tests
     TestFormController.cpp
     # Redaction tool, marks and Apply Redactions (ADR-0026), fake backend.
     TestRedactionController.cpp
+    # Recognize Text (ADR-0027) with a fake ITextRecognizer.
+    TestOcrController.cpp
     TestAnnotationController.cpp
     TestAnnotationStress.cpp
     TestAnnotationInteraction.cpp

@@ -25,10 +25,11 @@ Documents never leave the machine: Rivet has no network code of its own, no acco
 | Content editing: select/move/resize/delete page objects, retype text, add text, replace images | Implemented (macOS), with the limits below |
 | Forms (AcroForm): fill text, check box, radio, combo and list fields with undo/redo, Reset Form, field highlighting; saved with the document. XFA and form scripts are not supported | Implemented (macOS) |
 | Redaction: mark areas or selected text, review, apply as one undo step; on save the content under the marks (glyphs, image pixels, drawings, links, form widgets and their values) is removed, not covered; optional metadata removal | Implemented (macOS) |
-| Reduce file size: File > Save Reduced Copy (High / Medium / Small) downsamples and JPEG-recompresses oversized images in a copy; Remove Password and Save As for documents opened with a password. Adding a password is not supported | Implemented (macOS, Linux encoder), with the limits in ADR-0028 |
+| Reduce file size: File > Save Reduced Copy (High / Medium / Small) downsamples and JPEG-recompresses oversized images in a copy; Remove Password and Save As for documents opened with a password. Adding a password is not supported | Implemented (macOS; Linux and Windows image encoders, Windows pending a PDFium build), with the limits in ADR-0028 |
 | Signatures: place a drawn, typed or image signature (saved signatures are remembered); existing digital signatures are listed as present but are not verified, and saving edits over them warns first. No cryptographic signing | Implemented (macOS) |
 | Document comparison: File > Compare With… shows two PDFs side by side with synchronized scrolling, word-level text differences (deletions red, insertions green), a change list and inserted/deleted pages; text only, no visual diff, compares the saved files | Implemented (macOS) |
-| OCR, encryption (adding a password) | Not implemented |
+| OCR: Content > Recognize Text adds an invisible text layer to scanned pages (searchable, selectable); recognition uses the system engine (Vision), so it is available on macOS only; accuracy on real scans is not measured | Implemented (macOS) |
+| Encryption (adding a password) | Not implemented (needs an approved crypto dependency) |
 | Windows (Win32 + Direct2D) and Linux (X11 + Cairo) shells | Implemented; see docs/BUILDING.md for platform differences |
 | Markdown: Rendered (read-only), Source (with live preview) and Split views; text editing with undo/redo and background save | Implemented (macOS) |
 | Markdown export to PDF (vector, bundled fonts, links) and printing | Implemented (macOS) |
@@ -104,8 +105,8 @@ CI (GitHub Actions) builds with `-Werror` and runs CTest on macOS (AppleClang) a
 
 ## Roadmap
 
-Done: PDF viewer, page editing, annotations, content editing, form filling, redaction, file size reduction, password removal, visual signatures, document comparison, Markdown viewing, source editing and export (see Status).
-Next: OCR, Markdown WYSIWYG, Mermaid and math.
+Done: PDF viewer, page editing, annotations, content editing, form filling, redaction, file size reduction, password removal, visual signatures, document comparison, OCR, Markdown viewing, source editing and export (see Status).
+Next: Markdown WYSIWYG, Mermaid and math.
 
 ## Contributing
 

@@ -18,6 +18,7 @@
 #include "WindowsExternalUrlOpener.hpp"
 #include "WindowsFileDialog.hpp"
 #include "WindowsImageDecoder.hpp"
+#include "WindowsImageEncoder.hpp"
 #include "WindowsMainThreadDispatcher.hpp"
 #include "WindowsMenuBar.hpp"
 #include "WindowsPrintService.hpp"
@@ -109,6 +110,7 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int showCommand) {
     const auto fileDialog =
         std::make_unique<platform::WindowsFileDialog>(hwnd, dispatcher.get(), alertService.get());
     const auto imageDecoder = std::make_unique<platform::WindowsImageDecoder>();
+    const auto imageEncoder = std::make_unique<platform::WindowsImageEncoder>();
     const auto appData = std::make_unique<platform::WindowsAppDataLocation>();
     const auto clipboard = std::make_unique<platform::WindowsClipboard>(hwnd);
     const auto urlOpener = std::make_unique<platform::WindowsExternalUrlOpener>();
@@ -120,6 +122,7 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int showCommand) {
     services.mainDispatcher = dispatcher.get();
     services.fileDialog = fileDialog.get();
     services.imageDecoder = imageDecoder.get();
+    services.imageEncoder = imageEncoder.get();
     services.appData = appData.get();
     services.clipboard = clipboard.get();
     services.urlOpener = urlOpener.get();

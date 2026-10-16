@@ -35,6 +35,8 @@ add_executable(rivet_editor_tests
     TestContentService.cpp
     TestContentCommands.cpp
     TestContentSession.cpp
+    # OCR text layer planning (ADR-0027).
+    TestOcrLayer.cpp
     # AcroForm values (ADR-0024): portable service/commands and the
     # PDFium-ON fill -> save -> rebase -> reopen round trip.
     TestFormCommands.cpp
