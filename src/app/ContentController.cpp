@@ -972,6 +972,8 @@ void ContentController::perform(ContentCommand command) {
     case ContentCommand::ReplaceImage: replaceSelectedImage(); break;
     case ContentCommand::BringToFront: bringSelectedToFront(); break;
     case ContentCommand::DeleteObject: deleteSelected(); break;
+    case ContentCommand::RecognizeTextMissing:
+    case ContentCommand::RecognizeTextAll: break; // OcrController (routed by the shell)
     }
 }
 

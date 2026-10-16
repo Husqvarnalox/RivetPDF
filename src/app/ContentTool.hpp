@@ -25,6 +25,8 @@ enum class ContentCommand : std::uint8_t {
     ReplaceImage = 3, // file dialog, decode on a worker, replaceImage
     BringToFront = 4,
     DeleteObject = 5,
+    RecognizeTextMissing = 6, // OCR the pages without text (OcrController, ADR-0027)
+    RecognizeTextAll = 7,     // OCR every page
 };
 
 } // namespace rivet::app
