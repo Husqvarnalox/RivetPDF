@@ -42,7 +42,11 @@ private:
 // every later block refused; a recorded sink error (or exception) is
 // reported even when PDFium claims success, because PDFium drops the result
 // of its final flush. Caller holds the gate.
-core::Status saveDocumentToSink(FPDF_DOCUMENT document, IPdfByteSink& sink);
+//
+// `removeSecurity` (ADR-0030): FPDF_REMOVE_SECURITY - the output carries no
+// /Encrypt dictionary (objects are written decrypted), so it opens without a
+// password. The caller must have opened the document with a valid password.
+core::Status saveDocumentToSink(FPDF_DOCUMENT document, IPdfByteSink& sink, bool removeSecurity = false);
 
 // In-memory FPDF_FILEACCESS source over a JPEG file (m_Param), for
 // FPDFImageObj_LoadJpegFileInline. `data` must outlive the load call.

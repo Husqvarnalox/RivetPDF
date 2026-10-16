@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 #include "app/FileController.hpp"
 
+#include "app/JpegEncoderAdapter.hpp"
 #include "app/MarkdownExportController.hpp"
 #include "app/RedactionController.hpp"
 
@@ -16,6 +17,31 @@ namespace {
 constexpr const char* kUnavailable = "File dialogs are not available on this platform backend";
 
 std::string describeFailure(const core::Error& error) { return core::describe(error); }
+
+// "812 KB", "3.4 MB" (status bar sizes).
+std::string formatSize(std::uint64_t bytes) {
+    if (bytes < 1024) return std::format("{} B", bytes);
+    if (bytes < 1024ull * 1024ull) return std::format("{:.0f} KB", static_cast<double>(bytes) / 1024.0);
+    return std::format("{:.1f} MB", static_cast<double>(bytes) / (1024.0 * 1024.0));
+}
+
+std::optional<pdf::ReduceQuality> reduceQualityOf(FileCommand command) {
+    switch (command) {
+    case FileCommand::SaveReducedHigh: return pdf::ReduceQuality::High;
+    case FileCommand::SaveReducedMedium: return pdf::ReduceQuality::Medium;
+    case FileCommand::SaveReducedSmall: return pdf::ReduceQuality::Small;
+    default: return std::nullopt;
+    }
+}
+
+const char* reduceQualityName(pdf::ReduceQuality quality) {
+    switch (quality) {
+    case pdf::ReduceQuality::High: return "high quality";
+    case pdf::ReduceQuality::Medium: return "medium quality";
+    case pdf::ReduceQuality::Small: return "small size";
+    }
+    return "";
+}
 
 } // namespace
 
@@ -79,6 +105,14 @@ bool FileController::canPerform(FileCommand command) const {
     const DocumentTab* tab = activeFileTab();
     if (tab == nullptr) return false;
     if (command == FileCommand::Save || command == FileCommand::SaveAs) return true;
+    if (command == FileCommand::SaveAsRemovePassword) {
+        return tab->isPdf() && tab->session() != nullptr && engine_.isAvailable() &&
+               tab->session()->info().isEncrypted;
+    }
+    if (reduceQualityOf(command).has_value()) {
+        return tab->isPdf() && tab->session() != nullptr && tab->session()->pageCount() > 0 &&
+               engine_.isAvailable() && context_.services.imageEncoder != nullptr;
+    }
     if (command == FileCommand::ExportPdf) return markdownExporter_ != nullptr && markdownExporter_->canExport(*tab);
     if (!tab->isPdf()) return false; // import/merge/extract/split are PDF page operations
     if (command == FileCommand::Extract && selectionProvider_ != nullptr) {
@@ -113,6 +147,12 @@ void FileController::perform(FileCommand command) {
         if (selectionProvider_ != nullptr) extract(*tab, selectionProvider_());
         break;
     case FileCommand::Split: split(*tab); break;
+    case FileCommand::SaveAsRemovePassword: saveAsRemovingPassword(*tab); break;
+    case FileCommand::SaveReducedHigh:
+    case FileCommand::SaveReducedMedium:
+    case FileCommand::SaveReducedSmall:
+        if (const auto quality = reduceQualityOf(command)) saveReducedCopy(*tab, *quality);
+        break;
     case FileCommand::ExportPdf: break; // handled above
     }
 }
@@ -131,7 +171,17 @@ void FileController::save(DocumentTab& tab) {
     requestSave(tab, savePathOf(tab), false, true);
 }
 
-void FileController::saveAs(DocumentTab& tab) {
+void FileController::saveAs(DocumentTab& tab) { runSaveAs(tab, false); }
+
+void FileController::saveAsRemovingPassword(DocumentTab& tab) {
+    if (!tab.isPdf() || tab.session() == nullptr || !tab.session()->info().isEncrypted) {
+        setStatus_("The document is not password protected");
+        return;
+    }
+    runSaveAs(tab, true);
+}
+
+void FileController::runSaveAs(DocumentTab& tab, bool removePassword) {
     if (!tab.canSave()) return;
     commitPendingEdits();
     if (context_.services.saveDialog == nullptr) {
@@ -141,7 +191,7 @@ void FileController::saveAs(DocumentTab& tab) {
     const TabId tabId = tab.id();
     platform::ISaveDialog::Options options;
     options.suggestedName = tab.path().filename().string();
-    options.title = "Save As";
+    options.title = removePassword ? "Save Without Password" : "Save As";
     options.prompt = "Save";
     if (tab.isMarkdown()) {
         // Keep the Markdown extension: the tab's own first, then the others.
@@ -169,7 +219,7 @@ void FileController::saveAs(DocumentTab& tab) {
     // extension (a backend that ignores the filter) gets ".md".
     if (current->isMarkdown() && !hasMarkdownExtension(*chosen)) chosen->replace_extension(
         chosen->extension().empty() ? ".md" : chosen->extension().string() + ".md");
-    if (*chosen == savePathOf(*current)) {
+    if (*chosen == savePathOf(*current) && !removePassword) {
         save(*current);
         return;
     }
@@ -179,7 +229,7 @@ void FileController::saveAs(DocumentTab& tab) {
         setStatus_("A document with this path is already open in another tab");
         return;
     }
-    requestSave(*current, *chosen, false, true);
+    requestSave(*current, *chosen, false, true, removePassword);
 }
 
 bool FileController::allowUnappliedRedactions(DocumentTab& tab) {
@@ -190,7 +240,7 @@ bool FileController::allowUnappliedRedactions(DocumentTab& tab) {
 }
 
 void FileController::requestSave(DocumentTab& tab, std::filesystem::path destination,
-                                 bool closeTabWhenDone, bool interactive) {
+                                 bool closeTabWhenDone, bool interactive, bool removePassword) {
     if (!tab.hasContent()) return;
     commitPendingEdits();
     if (!allowUnappliedRedactions(tab)) {
@@ -205,12 +255,12 @@ void FileController::requestSave(DocumentTab& tab, std::filesystem::path destina
         }
         // The quit lifecycle chains behind the running save.
         queuedSaves_.push_back(
-            SaveRequest{tab.id(), ++generationCounter_, std::move(destination), closeTabWhenDone});
+            SaveRequest{tab.id(), ++generationCounter_, std::move(destination), closeTabWhenDone, removePassword});
         return;
     }
     WorkerToken token = enterWorkerScope();
     if (token == nullptr) return; // the controller is being destroyed
-    SaveRequest request{tab.id(), ++generationCounter_, std::move(destination), closeTabWhenDone};
+    SaveRequest request{tab.id(), ++generationCounter_, std::move(destination), closeTabWhenDone, removePassword};
     if (tab.isMarkdown()) {
         launchMarkdownSave(tab, std::move(request), std::move(token));
         return;
@@ -218,6 +268,7 @@ void FileController::requestSave(DocumentTab& tab, std::filesystem::path destina
 
     core::Result<editor::DocumentWriteJob> job =
         editor::makeSaveJob(*tab.session(), request.destination);
+    if (job.has_value()) job->request.removeSecurity = request.removePassword;
     if (!job.has_value()) {
         setStatus_("Could not prepare the save: " + describeFailure(job.error()));
         // Whoever waits for this save (a deferred quit) must learn that it
@@ -273,6 +324,7 @@ void FileController::startNextSave() {
     }
     core::Result<editor::DocumentWriteJob> job =
         editor::makeSaveJob(*tab->session(), request.destination);
+    if (job.has_value()) job->request.removeSecurity = request.removePassword;
     if (!job.has_value()) {
         tab->session()->setEditingLocked(false);
         setStatus_("Could not prepare the save: " + describeFailure(job.error()));
@@ -387,7 +439,9 @@ void FileController::handleSaveCompleted(
     }
     session.markSaved();
     session.setEditingLocked(false);
-    setStatus_(std::format("Saved {}", session.path().filename().string()));
+    setStatus_(request.removePassword
+                   ? std::format("Saved {} without a password", session.path().filename().string())
+                   : std::format("Saved {}", session.path().filename().string()));
     saveSettled(request.tab, true);
 }
 
@@ -468,6 +522,84 @@ void FileController::extract(DocumentTab& tab, std::span<const core::PageId> pag
                     setStatus_("Exported");
                 } else {
                     setStatus_("Export failed: " + describeFailure(write.written.error()));
+                }
+            });
+        }
+    });
+}
+
+// --- Save Reduced Copy (ADR-0028) -------------------------------------------
+
+void FileController::saveReducedCopy(DocumentTab& tab, pdf::ReduceQuality quality) {
+    if (!tab.isPdf() || tab.session() == nullptr || tab.state() != DocumentTab::State::Ready) return;
+    commitPendingEdits();
+    if (context_.services.saveDialog == nullptr || context_.services.imageEncoder == nullptr ||
+        !engine_.isAvailable()) {
+        setStatus_(kUnavailable);
+        return;
+    }
+    const TabId tabId = tab.id();
+    platform::ISaveDialog::Options options;
+    options.suggestedName = tab.path().stem().string() + " (reduced).pdf";
+    options.title = "Save Reduced Copy";
+    options.prompt = "Save";
+    const std::optional<std::filesystem::path> chosen = context_.services.saveDialog->runSavePanel(options);
+    if (!chosen.has_value()) return;
+    DocumentTab* current = readyTab(tabId);
+    if (current == nullptr) {
+        setStatus_("Save cancelled: the document was closed");
+        return;
+    }
+    // Never overwrite the document being edited with a lossy copy.
+    std::error_code ec;
+    if (*chosen == current->path() || std::filesystem::equivalent(*chosen, current->path(), ec)) {
+        setStatus_("Choose a different file: a reduced copy cannot replace the open document");
+        return;
+    }
+    core::Result<editor::DocumentWriteJob> job = editor::makeSaveJob(*current->session(), *chosen);
+    if (!job.has_value()) {
+        setStatus_("Could not prepare the copy: " + describeFailure(job.error()));
+        return;
+    }
+    job->prepareRebase = false;
+    const pdf::ReducePreset preset = pdf::reducePreset(quality);
+    auto encoder = std::make_shared<JpegEncoderAdapter>(*context_.services.imageEncoder);
+    auto reduced = std::make_shared<std::size_t>(0);
+    job->request.reduceImages = pdf::PdfImageReduction{preset.dpi, preset.jpegQuality, encoder.get(), reduced.get()};
+
+    std::uint64_t oldSize = 0;
+    {
+        std::error_code sizeError;
+        const auto size = std::filesystem::file_size(current->path(), sizeError);
+        if (!sizeError) oldSize = size;
+    }
+    WorkerToken token = enterWorkerScope();
+    if (token == nullptr) return;
+    setStatus_(std::format("Saving reduced copy ({})\u2026", reduceQualityName(quality)));
+    auto result = std::make_shared<std::optional<editor::DocumentWriteResult>>();
+    editor::DocumentWriteJob captured = std::move(*job);
+    scheduler_.post([this, token = std::move(token), result, captured = std::move(captured),
+                     encoder = std::move(encoder), reduced = std::move(reduced), oldSize,
+                     alive = alive_]() mutable {
+        editor::DocumentWriteControl control;
+        control.cancelled = [t = token.get()] { return t->cancelled(); };
+        *result = editor::runDocumentWrite(engine_, captured, control);
+        if (context_.services.mainDispatcher != nullptr) {
+            context_.services.mainDispatcher->post([this, result, reduced, oldSize, alive] {
+                if (!*alive) return;
+                editor::DocumentWriteResult& write = **result;
+                if (!write.written.has_value()) {
+                    setStatus_("Reduced copy failed: " + describeFailure(write.written.error()));
+                    return;
+                }
+                const std::uint64_t newSize = write.bytesWritten;
+                if (oldSize > 0) {
+                    setStatus_(std::format("Saved reduced copy: {} \u2192 {} ({} image{} reduced)",
+                                           formatSize(oldSize), formatSize(newSize), *reduced,
+                                           *reduced == 1 ? "" : "s"));
+                } else {
+                    setStatus_(std::format("Saved reduced copy: {} ({} image{} reduced)", formatSize(newSize),
+                                           *reduced, *reduced == 1 ? "" : "s"));
                 }
             });
         }

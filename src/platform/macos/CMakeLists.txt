@@ -4,6 +4,7 @@ add_library(rivet_platform_macos STATIC
     MacosExternalUrlOpener.mm
     MacosFileDialog.mm
     MacosImageDecoder.mm
+    MacosImageEncoder.mm
     MacosLifecycle.mm
     MacosMainThreadDispatcher.mm
     MacosPrintService.mm

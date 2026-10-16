@@ -8,6 +8,7 @@
 #include "platform/Clipboard.hpp"
 #include "platform/ExternalUrlOpener.hpp"
 #include "platform/ImageDecoder.hpp"
+#include "platform/ImageEncoder.hpp"
 #include "platform/Print.hpp"
 
 #include <filesystem>
@@ -136,6 +137,10 @@ struct ShellServices {
     // Image decoder for Replace Image. May be null (the command then reports
     // that images cannot be read on this backend). Thread-safe.
     IImageDecoder* imageDecoder = nullptr;
+
+    // JPEG encoder for Save Reduced Copy (ADR-0028). May be null (the
+    // command is then unavailable on this backend). Thread-safe.
+    IImageEncoder* imageEncoder = nullptr;
 };
 
 } // namespace rivet::platform

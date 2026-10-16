@@ -51,13 +51,14 @@ int writeToSink(FPDF_FILEWRITE* self, const void* data, unsigned long size) noex
 
 } // namespace
 
-core::Status saveDocumentToSink(FPDF_DOCUMENT document, IPdfByteSink& sink) {
+core::Status saveDocumentToSink(FPDF_DOCUMENT document, IPdfByteSink& sink, bool removeSecurity) {
     SinkWriter writer;
     writer.version = 1;
     writer.WriteBlock = &writeToSink;
     writer.sink = &sink;
 
-    const bool saved = FPDF_SaveAsCopy(document, &writer, FPDF_NO_INCREMENTAL) != 0;
+    const bool saved = FPDF_SaveAsCopy(document, &writer,
+                                       removeSecurity ? FPDF_REMOVE_SECURITY : FPDF_NO_INCREMENTAL) != 0;
     // Checked BEFORE `saved`: the final flush's result is dropped by PDFium.
     if (writer.error.has_value()) {
         return std::unexpected(std::move(*writer.error));

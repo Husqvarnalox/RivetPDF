@@ -38,6 +38,7 @@ add_library(rivet_platform_linux STATIC
     LinuxExternalUrlOpener.cpp
     LinuxFileDialog.cpp
     LinuxImageDecoder.cpp
+    LinuxImageEncoder.cpp
     LinuxMainThreadDispatcher.cpp
     LinuxMenuBar.cpp
     LinuxPaintContext.cpp

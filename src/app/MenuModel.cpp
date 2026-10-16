@@ -33,6 +33,12 @@ std::vector<Menu> buildMenuBar() {
     file.items.push_back(item("Open\xE2\x80\xA6", AppCommand::open(), cmd("o")));
     file.items.push_back(item("Save", AppCommand::of(FileCommand::Save), cmd("s"), true));
     file.items.push_back(item("Save As\xE2\x80\xA6", AppCommand::of(FileCommand::SaveAs), cmd("s", true)));
+    file.items.push_back(item("Remove Password and Save As\xE2\x80\xA6",
+                              AppCommand::of(FileCommand::SaveAsRemovePassword)));
+    file.items.push_back(item("Save Reduced Copy (High)\xE2\x80\xA6", AppCommand::of(FileCommand::SaveReducedHigh)));
+    file.items.push_back(
+        item("Save Reduced Copy (Medium)\xE2\x80\xA6", AppCommand::of(FileCommand::SaveReducedMedium)));
+    file.items.push_back(item("Save Reduced Copy (Small)\xE2\x80\xA6", AppCommand::of(FileCommand::SaveReducedSmall)));
     file.items.push_back(item("Export as PDF\xE2\x80\xA6", AppCommand::of(FileCommand::ExportPdf)));
     file.items.push_back(item("Insert Pages Before Current\xE2\x80\xA6", AppCommand::of(FileCommand::ImportBefore),
                               std::nullopt, true));

@@ -9,6 +9,7 @@ add_library(rivet_pdfium STATIC
     PdfiumContent.cpp
     PdfiumDocument.cpp
     PdfiumForms.cpp
+    PdfiumImageReduce.cpp
     PdfiumFileSource.cpp
     PdfiumTextPage.cpp
     PdfiumLibrary.cpp
