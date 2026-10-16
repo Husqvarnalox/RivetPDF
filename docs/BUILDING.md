@@ -234,8 +234,19 @@ build/debug/src/platform/windows/rivet.exe file.pdf
 
 clang/LLVM-MinGW also builds it (CI-independent cross check, e.g. from the
 `mstorsjo/llvm-mingw` image with `-DCMAKE_SYSTEM_NAME=Windows` and
-`x86_64-w64-mingw32-clang++` / `aarch64-w64-mingw32-clang++`). PDFium on
-Windows is not wired up yet (`RIVET_WITH_PDFIUM=OFF`).
+`x86_64-w64-mingw32-clang++` / `aarch64-w64-mingw32-clang++`).
+
+PDFium on Windows: the code side is in place (the `_WIN32` branch of
+`src/pdf/pdfium/PdfiumFileSource.cpp` streams the file with `CreateFileW` and
+positioned `ReadFile` calls, share mode read|write|delete, so documents open
+without a full read and can be replaced by the atomic writer), but no PDFium
+binary is wired into the Windows build or CI yet. It was only syntax-checked
+against the PDFium headers with the llvm-mingw cross compiler and has never
+run on Windows, so the supported Windows configuration stays
+`RIVET_WITH_PDFIUM=OFF` for now. The shell supplies a WIC JPEG encoder
+(`WindowsImageEncoder`), so Save Reduced Copy has its image encoder there once
+PDFium is available. There is no Windows OCR engine yet (Recognize Text is
+disabled; see ADR-0027).
 
 `rivet.exe` embeds a manifest: per-monitor-v2 DPI awareness, common controls
 v6 and UTF-8 as the process code page (so `std::filesystem::path::string()`
