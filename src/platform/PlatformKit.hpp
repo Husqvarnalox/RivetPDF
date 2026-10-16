@@ -11,6 +11,7 @@
 #include "platform/ImageDecoder.hpp"
 #include "platform/ImageEncoder.hpp"
 #include "platform/Print.hpp"
+#include "platform/TextRecognizer.hpp"
 
 #include <filesystem>
 #include <functional>
@@ -142,6 +143,12 @@ struct ShellServices {
     // JPEG encoder for Save Reduced Copy (ADR-0028). May be null (the
     // command is then unavailable on this backend). Thread-safe.
     IImageEncoder* imageEncoder = nullptr;
+
+    // Text recognition for Recognize Text (ADR-0027). May be null (the
+    // commands are then disabled with a reason: Linux and Windows today).
+    // Thread-safe.
+    ITextRecognizer* textRecognizer = nullptr;
+
     // The per-user application-data directory (saved signatures, ADR-0025).
     // May be null (signatures are then not remembered between sessions).
     IAppDataLocation* appData = nullptr;

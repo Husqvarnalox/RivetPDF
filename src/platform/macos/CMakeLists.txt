@@ -10,6 +10,7 @@ add_library(rivet_platform_macos STATIC
     MacosMainThreadDispatcher.mm
     MacosPrintService.mm
     MacosPaintContext.mm
+    MacosTextRecognizer.mm
     RivetContentView.mm
 )
 
@@ -34,8 +35,9 @@ find_library(COCOA_FRAMEWORK Cocoa REQUIRED)
 find_library(CORETEXT_FRAMEWORK CoreText REQUIRED)
 find_library(COREGRAPHICS_FRAMEWORK CoreGraphics REQUIRED)
 find_library(IMAGEIO_FRAMEWORK ImageIO REQUIRED)
+find_library(VISION_FRAMEWORK Vision REQUIRED)
 target_link_libraries(rivet_platform_macos PUBLIC "${COCOA_FRAMEWORK}" "${CORETEXT_FRAMEWORK}"
-    "${COREGRAPHICS_FRAMEWORK}" "${IMAGEIO_FRAMEWORK}")
+    "${COREGRAPHICS_FRAMEWORK}" "${IMAGEIO_FRAMEWORK}" "${VISION_FRAMEWORK}")
 find_library(UTI_FRAMEWORK UniformTypeIdentifiers)
 if(UTI_FRAMEWORK)
     target_link_libraries(rivet_platform_macos PUBLIC "${UTI_FRAMEWORK}")
