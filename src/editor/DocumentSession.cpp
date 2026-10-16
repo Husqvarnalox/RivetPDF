@@ -64,7 +64,8 @@ DocumentSession::DocumentSession(core::DocumentId id,
       linkService_(*this),
       annotationService_(*this),
       contentService_(*this),
-      formService_(*this) {
+      formService_(*this),
+      signatureService_(*this) {
     layout_.setPageGapPoints(16.0);
     layout_.setPageMarginPoints(24.0);
     rebuildLayout();
@@ -289,6 +290,8 @@ core::Status DocumentSession::rebaseOnto(RebaseTarget target, std::optional<std:
     // Forms: the description belongs to the previous base; the values are
     // cleared by the model rebase below.
     formService_.rebased();
+    // Signatures: the list describes the previous file.
+    signatureService_.rebased();
     // Recorded commands reference entries of the previous documents; they
     // cannot be re-targeted (see header). Clear before the publish so no
     // stale command can run against the new model.

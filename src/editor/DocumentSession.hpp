@@ -6,6 +6,7 @@
 #include "AnnotationService.hpp"
 #include "ContentService.hpp"
 #include "FormService.hpp"
+#include "SignatureService.hpp"
 #include "LinkService.hpp"
 #include "PageModel.hpp"
 #include "TextService.hpp"
@@ -301,6 +302,10 @@ public:
     FormService& forms() { return formService_; }
     const FormService& forms() const { return formService_; }
 
+    // Digital signatures of the base document (ADR-0025), lazily loaded.
+    SignatureService& signatures() { return signatureService_; }
+    const SignatureService& signatures() const { return signatureService_; }
+
     // RENDER revision (tile-cache epoch), bumped only by markModified().
     // Page-model edits do NOT bump it: tiles are keyed by (PageId,
     // contentRevision) so edits invalidate only the affected pages. Starts
@@ -361,6 +366,7 @@ private:
     AnnotationService annotationService_;
     ContentService contentService_;
     FormService formService_;
+    SignatureService signatureService_;
 };
 
 } // namespace rivet::editor

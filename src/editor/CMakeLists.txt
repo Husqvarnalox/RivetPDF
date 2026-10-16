@@ -7,6 +7,7 @@ add_library(rivet_editor STATIC
     ContentService.cpp
     FormCommands.cpp
     FormService.cpp
+    SignatureService.cpp
     TextBlocks.cpp
     PageCommands.cpp
     PageModel.cpp
