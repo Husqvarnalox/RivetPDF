@@ -15,7 +15,9 @@
 
 namespace rivet::ui {
 
-// Horizontal strip of document tabs: title, active state, close button.
+// Horizontal strip of document tabs (ADR-0033 §5): title, dirty dot, close
+// button on hover; the active tab is filled with the toolbar color so it
+// visually joins the toolbar below.
 // Tab widths come from title measurement clamped to [kMinTabWidth,
 // kMaxTabWidth]; titles that do not fit are ellipsized. Tabs beyond the
 // strip's width are not painted and do not hit-test (documented simple
@@ -29,12 +31,14 @@ namespace rivet::ui {
 // production always paints before input.
 class TabStrip final : public Widget {
 public:
-    static constexpr double kTabHeight = 28.0;
+    static constexpr double kTabHeight = 32.0;      // the strip's height
+    static constexpr double kTabTopInset = 5.0;     // tabs hang from the top inset
+    static constexpr double kLeadingInset = 8.0;    // first tab's x
     static constexpr double kTabGap = 2.0;
-    static constexpr double kTabLeftPadding = 6.0;
-    static constexpr double kMinTabWidth = 64.0;
-    static constexpr double kMaxTabWidth = 180.0;
-    static constexpr double kCloseButtonSize = 14.0;
+    static constexpr double kTabLeftPadding = 10.0;
+    static constexpr double kMinTabWidth = 96.0;
+    static constexpr double kMaxTabWidth = 220.0;
+    static constexpr double kCloseButtonSize = 16.0;
 
     struct Tab {
         std::string title;
@@ -86,6 +90,8 @@ private:
     mutable std::vector<core::Rect> tabRects_;
     mutable std::size_t visibleCount_ = 0;
     std::optional<std::size_t> pressedClose_; // armed close button (tab index)
+    std::optional<std::size_t> hoveredTab_;   // close button shows on hover
+    bool hoveredClose_ = false;
     std::function<void(std::size_t)> onTabActivated_;
     std::function<void(std::size_t)> onTabCloseRequested_;
 };

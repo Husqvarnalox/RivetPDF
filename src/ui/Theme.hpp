@@ -22,6 +22,7 @@ struct Palette {
     Color chromeBackground;    // tab strip, toolbar, sidebar, status bar
     Color chromeSeparator;     // hairlines between chrome areas
     Color chromeActiveTab;     // the active tab (joins the toolbar)
+    Color tabStripBackground;  // behind the tabs (a step darker than the toolbar)
     Color canvasBackground;    // behind PDF pages
     Color pageBackground;      // PDF "paper" (pages stay as authored: white)
     Color pageBorder;          // 1 px page outline

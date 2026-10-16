@@ -43,4 +43,26 @@ private:
     Color backgroundColor_{0.0, 0.0, 0.0, 0.0}; // transparent by default
 };
 
+// A chrome strip (context bar, status bar): the chrome background with
+// optional 1 px separators along its top and bottom edges.
+class ChromeBar : public Container {
+public:
+    ChromeBar(bool topHairline, bool bottomHairline) : top_(topHairline), bottom_(bottomHairline) {
+        setBackground(&Palette::chromeBackground);
+    }
+    void paintSelf(PaintContext& context) const override {
+        Container::paintSelf(context);
+        const core::Rect rect = bounds();
+        if (rect.size.height <= 0.0) return;
+        if (top_) context.fillRect(core::Rect{rect.minX(), rect.minY(), rect.size.width, 1.0}, colors().chromeSeparator);
+        if (bottom_) {
+            context.fillRect(core::Rect{rect.minX(), rect.maxY() - 1.0, rect.size.width, 1.0}, colors().chromeSeparator);
+        }
+    }
+
+private:
+    bool top_;
+    bool bottom_;
+};
+
 } // namespace rivet::ui

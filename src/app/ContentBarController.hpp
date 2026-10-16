@@ -77,6 +77,9 @@ private:
     std::vector<ui::Button*> familyButtons_;
     std::vector<ui::Button*> swatches_;
     ui::Button* boldButton_ = nullptr;
+    ui::Button* editToolButton_ = nullptr;
+    ui::Button* addTextToolButton_ = nullptr;
+    std::size_t toolItemCount_ = 0;
     ui::Button* sizeLabel_ = nullptr;
     ui::Button* pixelLabel_ = nullptr;
     ui::Widget* hint_ = nullptr;

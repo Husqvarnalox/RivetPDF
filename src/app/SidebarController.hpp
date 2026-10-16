@@ -15,7 +15,7 @@
 #include <vector>
 
 namespace rivet::ui {
-class Button;
+class SegmentedControl;
 class Container;
 class PageThumbnailList;
 class Widget;
@@ -72,7 +72,7 @@ public:
     enum class Mode { Pages, Outline, Signatures };
 
     static constexpr double kWidth = 220.0;
-    static constexpr double kHeaderHeight = 34.0;
+    static constexpr double kHeaderHeight = 38.0;
 
     // Builds the sidebar into `parent` (appended as its next child).
     SidebarController(ShellContext& context, ui::Widget& parent);
@@ -101,6 +101,8 @@ public:
     void layout(const core::Rect& frame);
 
     Mode mode() const { return mode_; }
+    // The segmented mode header (tests).
+    const ui::SegmentedControl& header() const { return *header_; }
     void setMode(Mode mode);
 
     // Outline row interaction (the panel's callbacks; public for tests).
@@ -122,9 +124,7 @@ private:
     ShellContext& context_;
     // Raw pointers into widgets owned by the parent's tree.
     ui::Container* container_ = nullptr;
-    ui::Button* pagesButton_ = nullptr;
-    ui::Button* outlineButton_ = nullptr;
-    ui::Button* signaturesButton_ = nullptr;
+    ui::SegmentedControl* header_ = nullptr;
     ui::PageThumbnailList* thumbnails_ = nullptr;
     ui::OutlinePanel* outlinePanel_ = nullptr;
     ui::OutlinePanel* signaturesPanel_ = nullptr;

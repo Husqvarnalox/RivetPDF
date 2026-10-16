@@ -27,6 +27,7 @@ Palette lightPalette(const Color& accentIn) {
     p.chromeBackground = hex(0xF2F2F2);
     p.chromeSeparator = hex(0x000000, 0.11);
     p.chromeActiveTab = hex(0xF2F2F2);
+    p.tabStripBackground = hex(0xE2E2E2);
     p.canvasBackground = hex(0xE3E3E3);
     p.pageBackground = kWhite;
     p.pageBorder = hex(0x000000, 0.16);
@@ -104,6 +105,7 @@ Palette darkPalette(const Color& accentIn) {
     p.chromeBackground = hex(0x2B2B2B);
     p.chromeSeparator = hex(0x000000, 0.55);
     p.chromeActiveTab = hex(0x2B2B2B);
+    p.tabStripBackground = hex(0x1D1D1D);
     p.canvasBackground = hex(0x161616);
     p.pageBorder = hex(0x000000, 0.60);
     p.pageShadow = hex(0x000000, 0.45);

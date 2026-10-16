@@ -69,6 +69,14 @@ ContentBarController::ContentBarController(ShellContext& context, ui::Widget& pa
                (content_.tool() == ContentTool::AddText && !content_.selected().has_value());
     };
 
+    // The Edit mode's two tools (ADR-0033 §5: the context bar of the mode).
+    const auto always = [] { return true; };
+    editToolButton_ =
+        addButton("Edit Objects", 96.0, [this] { content_.setTool(ContentTool::SelectObject); }, 4.0, always);
+    addTextToolButton_ =
+        addButton("Add Text", 76.0, [this] { content_.setTool(ContentTool::AddText); }, kGroupGap, always);
+    toolItemCount_ = items_.size();
+
     using Family = ContentController::FontFamily;
     const std::array<std::pair<const char*, Family>, 3> families = {
         {{"Sans", Family::Sans}, {"Serif", Family::Serif}, {"Mono", Family::Mono}}};
@@ -160,6 +168,8 @@ void ContentBarController::refresh() {
     const std::array<Family, 3> order = {Family::Sans, Family::Serif, Family::Mono};
     for (std::size_t i = 0; i < familyButtons_.size(); ++i) familyButtons_[i]->setActive(style.family == order[i]);
     boldButton_->setActive(style.bold);
+    editToolButton_->setActive(content_.tool() == ContentTool::SelectObject);
+    addTextToolButton_->setActive(content_.tool() == ContentTool::AddText);
     for (std::size_t i = 0; i < swatches_.size(); ++i) swatches_[i]->setActive(style.color == kTextColors[i]);
     sizeLabel_->setLabel(std::format("{} pt", static_cast<int>(std::lround(style.size))));
     const auto [w, h] = content_.selectedImagePixels();
@@ -175,7 +185,9 @@ void ContentBarController::positionItems() {
     double x = kPadding;
     bool any = false;
     const bool barVisible = visible() && !strip_->frame().isEmpty();
-    for (const Item& item : items_) {
+    double hintX = kPadding;
+    for (std::size_t i = 0; i < items_.size(); ++i) {
+        const Item& item = items_[i];
         const bool shown = barVisible && item.applies && item.applies();
         if (!shown) {
             item.widget->setFrame(kHiddenFrame);
@@ -183,10 +195,14 @@ void ContentBarController::positionItems() {
         }
         item.widget->setFrame(core::Rect{x, y, item.width, kButtonHeight});
         x += item.width + item.gapAfter;
-        any = true;
+        if (i < toolItemCount_) {
+            hintX = x; // the tool toggles always show; the hint follows them
+        } else {
+            any = true;
+        }
     }
     if (barVisible && !any) {
-        hint_->setFrame(core::Rect{kPadding, y, std::max(0.0, strip_->frame().size.width - 2.0 * kPadding),
+        hint_->setFrame(core::Rect{hintX, y, std::max(0.0, strip_->frame().size.width - hintX - kPadding),
                                    kButtonHeight});
     } else {
         hint_->setFrame(kHiddenFrame);

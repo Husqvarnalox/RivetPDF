@@ -95,7 +95,7 @@ struct Typography {
     double lineHeightFactor = 1.45;
 
     double pageMarginX = 24.0;
-    double pageMarginY = 16.0;
+    double pageMarginY = 24.0;
     double minContentWidth = 8.0; // available width is never narrower than this
 
     double paragraphGap = 12.0;

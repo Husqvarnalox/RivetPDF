@@ -4,20 +4,81 @@
 #include "app/MarkdownPreviewView.hpp"
 #include "app/RedactionController.hpp"
 
+#include "app/WelcomeView.hpp"
 #include "core/Error.hpp"
 #include "ui/Button.hpp"
+#include "ui/IconButton.hpp"
+#include "ui/Icons.hpp"
+#include "ui/SegmentedControl.hpp"
+#include "ui/TextField.hpp"
 #include "ui/Theme.hpp"
+#include "ui/Tooltip.hpp"
+#include "ui/ZoomControl.hpp"
 
 #include <algorithm>
+#include <cctype>
+#include <cmath>
 #include <format>
+#include <thread>
 #include <utility>
 
 namespace rivet::app {
 
 namespace {
 
-constexpr double kTabStripHeight = 28.0;
-constexpr double kToolbarHeight = 40.0;
+// "⌘S" on macOS, "Ctrl+S" elsewhere (tooltips and the overflow menu).
+std::string shortcutText(const Shortcut& shortcut) {
+    std::string key = shortcut.key;
+    for (char& c : key) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+#if defined(__APPLE__)
+    std::string text;
+    if (shortcut.alt) text += "\xE2\x8C\xA5";   // ⌥
+    if (shortcut.shift) text += "\xE2\x87\xA7"; // ⇧
+    if (shortcut.primary) text += "\xE2\x8C\x98"; // ⌘
+    return text + key;
+#else
+    std::string text;
+    if (shortcut.primary) text += "Ctrl+";
+    if (shortcut.alt) text += "Alt+";
+    if (shortcut.shift) text += "Shift+";
+    return text + key;
+#endif
+}
+
+// The sidebar's resize handle (ADR-0033 §5: 220 px, resizable): a 6 px hit
+// area straddling the sidebar's right edge that draws the separator line.
+class SidebarSplitter final : public ui::Widget {
+public:
+    explicit SidebarSplitter(std::function<void(double)> onResize) : onResize_(std::move(onResize)) {}
+    bool onMouse(const ui::PointerEvent& event) override {
+        const double rootX = event.position.x + originInRoot().x;
+        switch (event.type) {
+        case ui::PointerEventType::Down:
+            dragging_ = true;
+            grabOffset_ = event.position.x - 3.0;
+            return true;
+        case ui::PointerEventType::Move:
+            if (!dragging_ || event.button == 0) {
+                dragging_ = false;
+                return bounds().contains(event.position);
+            }
+            if (onResize_) onResize_(rootX - grabOffset_);
+            return true;
+        case ui::PointerEventType::Up:
+            dragging_ = false;
+            return true;
+        default: return false;
+        }
+    }
+    void paintSelf(ui::PaintContext& context) const override {
+        context.fillRect(core::Rect{2.0, 0.0, 1.0, frame().size.height}, ui::colors().chromeSeparator);
+    }
+
+private:
+    std::function<void(double)> onResize_;
+    bool dragging_ = false;
+    double grabOffset_ = 0.0;
+};
 
 } // namespace
 
@@ -34,6 +95,7 @@ std::unique_ptr<ShellController> ShellController::createWithEngine(const platfor
 
 ShellController::ShellController(const platform::ShellServices& services, std::unique_ptr<pdf::PdfEngine> engine)
     : services_(services),
+      recentFiles_(services.appData),
       scheduler_(0),
       engine_(std::move(engine)),
       workspace_(*engine_, scheduler_, services.mainDispatcher),
@@ -41,6 +103,8 @@ ShellController::ShellController(const platform::ShellServices& services, std::u
                         [this](std::string text) { setStatus(std::move(text)); }) {}
 
 ShellController::~ShellController() {
+    alive_.reset(); // no tooltip delay runs from here on
+    delayScope_.closeAndWait();
     if (services_.appearance != nullptr) services_.appearance->onChange(nullptr);
     // The Markdown exporter's workers use the engine and hand documents to
     // the print coordinator: stop them first.
@@ -88,12 +152,16 @@ void ShellController::buildWidgets() {
     tabStrip_->setOnTabCloseRequested([this](std::size_t index) { requestCloseTab(index); });
     root_->addChild(std::move(tabStrip));
 
-    auto toolbar = std::make_unique<ui::Toolbar>(kToolbarHeight);
+    auto toolbar = std::make_unique<ui::Toolbar>(ui::metrics::kToolbarHeight);
     toolbar_ = toolbar.get();
     root_->addChild(std::move(toolbar));
     buildToolbar();
 
     sidebar_ = std::make_unique<SidebarController>(*context_, *root_);
+    auto splitter = std::make_unique<SidebarSplitter>([this](double width) { setSidebarWidth(width); });
+    sidebarSplitter_ = splitter.get();
+    splitter->setFrame(kHiddenFrame);
+    root_->addChild(std::move(splitter));
 
     viewport_->setZoomChangedCallback([this](double zoom) { setZoomDisplay(zoom); });
     viewport_->setOnFocusRequested([this] { setFocus(nullptr); });
@@ -126,6 +194,15 @@ void ShellController::buildWidgets() {
     comparisonView_->setFrame(kHiddenFrame);
     root_->addChild(std::move(comparisonView));
 
+    // Empty workspace: the welcome view (ADR-0033 §5).
+    auto welcome = std::make_unique<WelcomeView>();
+    welcome_ = welcome.get();
+    welcome->setFrame(kHiddenFrame);
+    welcome->setOnOpen([this] { handleOpenRequest(); });
+    welcome->setOnOpenRecent([this](const std::filesystem::path& path) { openDocument(path); });
+    root_->addChild(std::move(welcome));
+    refreshWelcome();
+
     // Loading / error overlay, drawn above the viewport area.
     auto overlay = std::make_unique<TextLabel>("", ui::Font{14.0, ui::Font::Weight::Semibold},
                                                &ui::Palette::textSecondary, ui::TextAlign::Center);
@@ -133,12 +210,15 @@ void ShellController::buildWidgets() {
     root_->addChild(std::move(overlay));
 
     searchBar_ = std::make_unique<SearchBarController>(*context_, *root_);
+    searchBar_->field().setLeadingIcon(ui::Icon::Search);
     searchBar_->setMarkdownTargetProvider(
         [this]() -> ISearchTarget* { return markdownView_ != nullptr ? markdownView_->searchTarget() : nullptr; });
     passwordPrompt_ = std::make_unique<PasswordPromptController>(*context_, *root_);
     statusBar_ = std::make_unique<StatusBarController>(
         *context_, *root_,
         engine_->isAvailable() ? "Ready" : "Ready — PDF support is not built into this binary");
+    // The page indicator lives in the toolbar's page navigation.
+    statusBar_->attachPageIndicator(*pageNavigator_);
 
     // Text interaction over the active tab.
     textInteraction_ = std::make_unique<TextInteractionController>(*context_);
@@ -151,22 +231,16 @@ void ShellController::buildWidgets() {
     // floats over them) and their strip under the main toolbar.
     annotations_ = std::make_unique<AnnotationController>(*context_, *root_);
     annotationBar_ = std::make_unique<AnnotationBarController>(*context_, *root_, *annotations_);
-    annotationBar_->setOnVisibilityChanged([this] {
-        if (annotateButton_ != nullptr) annotateButton_->setActive(annotationBar_->visible());
-    });
+    annotationBar_->setOnVisibilityChanged([this] { syncChrome(); });
 
     // Content editing (Edit / Add Text tools) and its properties strip. The
     // tools share one tool state with the annotation tools.
     content_ = std::make_unique<ContentController>(*context_, *root_, *annotations_, scheduler_,
                                                    createEditorContentBackend());
     contentBar_ = std::make_unique<ContentBarController>(*context_, *root_, *content_);
-    const auto syncContentButtons = [this] {
-        if (editButton_ != nullptr) editButton_->setActive(content_->tool() == ContentTool::SelectObject);
-        if (addTextButton_ != nullptr) addTextButton_->setActive(content_->tool() == ContentTool::AddText);
-    };
-    content_->setOnStateChanged([this, syncContentButtons] {
-        syncContentButtons();
+    content_->setOnStateChanged([this] {
         contentBar_->refresh();
+        syncChrome();
     });
 
     // Form filling: its layer sits below the annotation layer (Select tool).
@@ -221,6 +295,18 @@ void ShellController::buildWidgets() {
     workspace_.setOnTabsChanged([this] { refreshTabStrip(); });
     workspace_.setOnActiveTabChanged([this] { bindActiveTab(); });
 
+    // Context bars, then the floating popover menu and tooltip above all.
+    buildContextBars();
+    auto popup = std::make_unique<ui::PopupMenu>();
+    popup_ = popup.get();
+    popup->setFrame(kHiddenFrame);
+    root_->addChild(std::move(popup));
+    auto tooltip = std::make_unique<ui::Tooltip>(&delayedRunner_);
+    tooltip_ = tooltip.get();
+    tooltip->setFrame(kHiddenFrame);
+    root_->addChild(std::move(tooltip));
+    root_->onPointer = [this](const ui::PointerEvent& event, bool handled) { trackPointer(event, handled); };
+
     // Layout only once every controller exists (the controllers relayout the
     // shell through the context).
     root_->onLayout = [this] { layoutShell(); };
@@ -229,96 +315,204 @@ void ShellController::buildWidgets() {
     bindActiveTab();
 }
 
-// Toolbar items. Fixed frames: the toolbar positions items from their
-// current frame sizes. Open is common; the zoom/annotate/edit/print items are
-// PDF-only and the mode switcher Markdown-only (applyChromeForKind toggles
-// them per active tab kind).
+// Toolbar (ADR-0033 §5). Leading: sidebar toggle, open, save. Center: the
+// zoom control and page navigation (PDF) or the display-mode switch
+// (Markdown). Trailing: the tool modes (PDF), then search, print and the
+// overflow menu. Items are fixed-size; applyChromeForKind shows the items of
+// the active tab's kind and syncChrome enables them from canPerform().
 void ShellController::buildToolbar() {
-    const auto addPdf = [this](std::unique_ptr<ui::Widget> item, double spacing = ui::Toolbar::kDefaultItemSpacing) {
+    using Group = ui::Toolbar::Group;
+    const auto addPdf = [this](std::unique_ptr<ui::Widget> item, double spacing, Group group) {
         pdfToolbarItems_.push_back(item.get());
-        toolbar_->addItem(std::move(item), spacing);
+        toolbar_->addItem(std::move(item), spacing, group);
+    };
+    const auto iconButton = [this](ui::Icon icon, const char* title, std::optional<AppCommand> command,
+                                   std::function<void()> onClick) {
+        auto button = std::make_unique<ui::IconButton>(
+            icon, command.has_value() ? tooltipFor(title, *command) : std::string(title));
+        button->setFrame(core::Rect{0.0, 0.0, ui::IconButton::kSize, ui::IconButton::kSize});
+        button->setOnClick(std::move(onClick));
+        if (command.has_value()) commandControls_.emplace_back(button.get(), *command);
+        return button;
     };
 
-    auto openButton = std::make_unique<ui::Button>("Open");
-    openButton->setOnClick([this] { handleOpenRequest(); });
-    openButton->setFrame(core::Rect{0.0, 0.0, 64.0, 28.0});
-    toolbar_->addItem(std::move(openButton), 12.0);
+    // Leading.
+    auto sidebar = iconButton(ui::Icon::Sidebar, "Show or Hide the Sidebar", std::nullopt,
+                              [this] { setSidebarVisible(!sidebarVisible_); });
+    sidebarButton_ = sidebar.get();
+    addPdf(std::move(sidebar), 4.0, Group::Leading);
+    toolbar_->addItem(iconButton(ui::Icon::Open, "Open\xE2\x80\xA6", AppCommand::open(), [this] { handleOpenRequest(); }),
+                      4.0, Group::Leading);
+    auto save = iconButton(ui::Icon::Save, "Save", AppCommand::of(FileCommand::Save),
+                           [this] { performFile(FileCommand::Save); });
+    saveButton_ = save.get();
+    toolbar_->addItem(std::move(save), 8.0, Group::Leading);
 
-    auto zoomOut = std::make_unique<ui::Button>("−");
-    zoomOut->setOnClick([this] { viewport_->zoomOutStep(); });
-    zoomOut->setFrame(core::Rect{0.0, 0.0, 36.0, 28.0});
-    addPdf(std::move(zoomOut));
+    // Center (PDF): zoom, then page navigation.
+    auto zoom = std::make_unique<ui::ZoomControl>();
+    zoomControl_ = zoom.get();
+    zoom->setFrame(core::Rect{0.0, 0.0, ui::ZoomControl::kWidth, ui::metrics::kControlHeight});
+    zoom->setOnZoomOut([this] { viewport_->zoomOutStep(); });
+    zoom->setOnZoomIn([this] { viewport_->zoomInStep(); });
+    zoom->setOnPercent([this](const core::Rect& part) { openZoomMenu(part); });
+    addPdf(std::move(zoom), 20.0, Group::Center);
+    const auto stepPage = [this](int delta) {
+        DocumentTab* tab = readyActiveTab();
+        if (tab == nullptr) return;
+        const std::size_t count = tab->session()->pageCount();
+        const long long next = static_cast<long long>(tab->currentPage()) + delta;
+        if (next < 0 || next >= static_cast<long long>(count)) return;
+        viewport_->goToPage(static_cast<std::size_t>(next));
+    };
+    auto previous = iconButton(ui::Icon::Previous, "Previous Page", std::nullopt, [stepPage] { stepPage(-1); });
+    prevPageButton_ = previous.get();
+    addPdf(std::move(previous), 2.0, Group::Center);
+    auto navigator = std::make_unique<ui::Container>();
+    pageNavigator_ = navigator.get();
+    navigator->setFrame(core::Rect{0.0, 0.0, StatusBarController::kPageIndicatorWidth, ui::metrics::kControlHeight});
+    addPdf(std::move(navigator), 0.0, Group::Center);
+    auto next = iconButton(ui::Icon::Next, "Next Page", std::nullopt, [stepPage] { stepPage(+1); });
+    nextPageButton_ = next.get();
+    addPdf(std::move(next), 8.0, Group::Center);
 
-    auto zoomLabel = std::make_unique<TextLabel>("100%", ui::Font{13.0}, &ui::Palette::textPrimary,
-                                                 ui::TextAlign::Center);
-    zoomLabel->setFrame(core::Rect{0.0, 0.0, 58.0, 28.0});
-    zoomLabel_ = zoomLabel.get();
-    addPdf(std::move(zoomLabel));
+    // Center (Markdown): Rendered | Source | Split.
+    auto modes = std::make_unique<ui::SegmentedControl>(std::vector<ui::SegmentedControl::Segment>{
+        {"Rendered", ui::Icon::MarkdownRendered,
+         tooltipFor("Rendered", AppCommand::of(MarkdownDisplayMode::Rendered)), 40.0, true},
+        {"Source", ui::Icon::MarkdownSource, tooltipFor("Source", AppCommand::of(MarkdownDisplayMode::Source)), 40.0,
+         true},
+        {"Split", ui::Icon::MarkdownSplit, tooltipFor("Split", AppCommand::of(MarkdownDisplayMode::Split)), 40.0,
+         true}});
+    markdownModes_ = modes.get();
+    modes->setFrame(core::Rect{core::Point{}, modes->naturalSize()});
+    modes->setOnSelect([this](std::size_t index) { performMarkdownMode(static_cast<MarkdownDisplayMode>(index)); });
+    markdownToolbarItems_.push_back(modes.get());
+    toolbar_->addItem(std::move(modes), 8.0, Group::Center);
 
-    auto zoomIn = std::make_unique<ui::Button>("+");
-    zoomIn->setOnClick([this] { viewport_->zoomInStep(); });
-    zoomIn->setFrame(core::Rect{0.0, 0.0, 36.0, 28.0});
-    addPdf(std::move(zoomIn));
+    // Trailing: tool modes (PDF), then search, print, overflow.
+    auto tools = std::make_unique<ui::SegmentedControl>(std::vector<ui::SegmentedControl::Segment>{
+        {"View", {}, "Read and select text", 0.0, true},
+        {"Annotate", {}, "Highlight, comment and draw", 0.0, true},
+        {"Edit", {}, "Edit text and images", 0.0, true},
+        {"Forms", {}, "Fill in form fields", 0.0, true},
+        {"Redact", {}, "Mark content for redaction", 0.0, true}});
+    toolModes_ = tools.get();
+    tools->setFrame(core::Rect{core::Point{}, tools->naturalSize()});
+    tools->setOnSelect([this](std::size_t index) { setToolMode(static_cast<ToolMode>(index)); });
+    addPdf(std::move(tools), 12.0, Group::Trailing);
 
-    auto actualSize = std::make_unique<ui::Button>("1:1");
-    actualSize->setOnClick([this] { viewport_->zoomActualSize(); });
-    actualSize->setFrame(core::Rect{0.0, 0.0, 52.0, 28.0});
-    addPdf(std::move(actualSize), 0.0);
-
-    auto fitWidth = std::make_unique<ui::Button>("Fit W");
-    fitWidth->setOnClick([this] { viewport_->setFitMode(render::ZoomState::FitMode::Width); });
-    fitWidth->setFrame(core::Rect{0.0, 0.0, 56.0, 28.0});
-    addPdf(std::move(fitWidth), 0.0);
-
-    auto fitPage = std::make_unique<ui::Button>("Fit P");
-    fitPage->setOnClick([this] { viewport_->setFitMode(render::ZoomState::FitMode::Page); });
-    fitPage->setFrame(core::Rect{0.0, 0.0, 56.0, 28.0});
-    addPdf(std::move(fitPage));
-
-    auto annotateButton = std::make_unique<ui::Button>("Annotate");
-    annotateButton_ = annotateButton.get();
-    annotateButton->setOnClick([this] {
-        if (annotationBar_ != nullptr) annotationBar_->toggle();
+    auto search = iconButton(ui::Icon::Search, "Find", std::nullopt, [this] {
+        if (chromeComparison_) return;
+        if (!chromeMarkdown_ || markdownView_->searchTarget() != nullptr) searchBar_->toggle();
     });
-    annotateButton->setFrame(core::Rect{0.0, 0.0, 84.0, 28.0});
-    addPdf(std::move(annotateButton));
+    search->setTooltip(std::format("Find  {}", shortcutText(Shortcut{"f"})));
+    searchButton_ = search.get();
+    toolbar_->addItem(std::move(search), 4.0, Group::Trailing);
+    auto print = iconButton(ui::Icon::Print, "Print\xE2\x80\xA6", std::nullopt, [this] { handlePrintRequest(); });
+    print->setTooltip(std::format("Print\xE2\x80\xA6  {}", shortcutText(Shortcut{"p"})));
+    printButton_ = print.get();
+    toolbar_->addItem(std::move(print), 4.0, Group::Trailing);
+    auto more = iconButton(ui::Icon::More, "More Commands", std::nullopt, [this] { openOverflowMenu(); });
+    toolbar_->addItem(std::move(more), 0.0, Group::Trailing);
 
-    auto editButton = std::make_unique<ui::Button>("Edit");
-    editButton_ = editButton.get();
-    editButton->setOnClick([this] { performContent(ContentCommand::ToolEdit); });
-    editButton->setFrame(core::Rect{0.0, 0.0, 52.0, 28.0});
-    addPdf(std::move(editButton));
-
-    auto addTextButton = std::make_unique<ui::Button>("Add Text");
-    addTextButton_ = addTextButton.get();
-    addTextButton->setOnClick([this] { performContent(ContentCommand::ToolAddText); });
-    addTextButton->setFrame(core::Rect{0.0, 0.0, 76.0, 28.0});
-    addPdf(std::move(addTextButton));
-
-    auto printButton = std::make_unique<ui::Button>("Print");
-    printButton->setOnClick([this] { handlePrintRequest(); });
-    printButton->setFrame(core::Rect{0.0, 0.0, 60.0, 28.0});
-    addPdf(std::move(printButton));
-
-    // Markdown display modes (segmented-style buttons; hidden for PDF tabs).
-    struct ModeButton {
-        const char* label;
-        MarkdownDisplayMode mode;
-        double width;
-    };
-    const ModeButton modes[] = {{"Rendered", MarkdownDisplayMode::Rendered, 84.0},
-                                {"Source", MarkdownDisplayMode::Source, 70.0},
-                                {"Split", MarkdownDisplayMode::Split, 60.0}};
-    for (std::size_t i = 0; i < 3; ++i) {
-        auto button = std::make_unique<ui::Button>(modes[i].label);
-        modeButtons_[i] = button.get();
-        const MarkdownDisplayMode mode = modes[i].mode;
-        button->setOnClick([this, mode] { performMarkdownMode(mode); });
-        button->setFrame(core::Rect{0.0, 0.0, modes[i].width, 28.0});
-        markdownToolbarItems_.push_back(button.get());
-        toolbar_->addItem(std::move(button), i == 2 ? ui::Toolbar::kDefaultItemSpacing : 0.0);
-    }
     for (ui::Widget* item : markdownToolbarItems_) toolbar_->setItemVisible(item, false);
+}
+
+// Context bars of the Forms and Redact modes and of Markdown tabs (the
+// annotation and content bars have their own controllers).
+void ShellController::buildContextBars() {
+    constexpr double kButtonHeight = ui::metrics::kSmallControlHeight + 2.0;
+    const auto addTextButton = [this](ui::ChromeBar& bar, double& x, const char* label, double width,
+                                      std::optional<AppCommand> command, std::function<void()> onClick) {
+        auto button = std::make_unique<ui::Button>(label);
+        ui::Button* raw = button.get();
+        button->setFrame(core::Rect{x, (ui::metrics::kContextBarHeight - kButtonHeight) / 2.0, width, kButtonHeight});
+        button->setOnClick(std::move(onClick));
+        if (command.has_value()) commandControls_.emplace_back(raw, *command);
+        bar.addChild(std::move(button));
+        x += width + 6.0;
+        return raw;
+    };
+
+    auto forms = std::make_unique<ui::ChromeBar>(false, true);
+    formsBar_ = forms.get();
+    double x = 10.0;
+    highlightFieldsButton_ =
+        addTextButton(*forms, x, "Highlight Fields", 124.0, AppCommand::of(FormCommand::HighlightFields),
+                      [this] { perform(AppCommand::of(FormCommand::HighlightFields)); });
+    addTextButton(*forms, x, "Reset Form", 92.0, AppCommand::of(FormCommand::ResetForm),
+                  [this] { perform(AppCommand::of(FormCommand::ResetForm)); });
+    forms->setFrame(kHiddenFrame);
+    root_->addChild(std::move(forms));
+
+    auto redact = std::make_unique<ui::ChromeBar>(false, true);
+    redactBar_ = redact.get();
+    x = 10.0;
+    addTextButton(*redact, x, "Mark Selection", 116.0, AppCommand::of(RedactCommand::MarkSelection),
+                  [this] { perform(AppCommand::of(RedactCommand::MarkSelection)); });
+    addTextButton(*redact, x, "Apply Redactions\xE2\x80\xA6", 136.0, AppCommand::of(RedactCommand::ApplyRedactions),
+                  [this] { perform(AppCommand::of(RedactCommand::ApplyRedactions)); });
+    addTextButton(*redact, x, "Clear Marks", 96.0, AppCommand::of(RedactCommand::ClearMarks),
+                  [this] { perform(AppCommand::of(RedactCommand::ClearMarks)); });
+    redact->setFrame(kHiddenFrame);
+    root_->addChild(std::move(redact));
+
+    // Markdown Format commands as icon buttons.
+    auto format = std::make_unique<ui::ChromeBar>(false, true);
+    formatBar_ = format.get();
+    struct FormatItem {
+        ui::Icon icon;
+        const char* title;
+        MarkdownFormatCommand command;
+        double gapAfter;
+    };
+    const FormatItem items[] = {
+        {ui::Icon::Bold, "Bold", MarkdownFormatCommand::Bold, 2.0},
+        {ui::Icon::Italic, "Italic", MarkdownFormatCommand::Italic, 2.0},
+        {ui::Icon::StrikeOut, "Strikethrough", MarkdownFormatCommand::Strikethrough, 2.0},
+        {ui::Icon::Code, "Inline Code", MarkdownFormatCommand::Code, 2.0},
+        {ui::Icon::Link, "Link", MarkdownFormatCommand::Link, 14.0},
+        {ui::Icon::Heading, "Heading", MarkdownFormatCommand::Heading1, 14.0},
+        {ui::Icon::BulletList, "Bulleted List", MarkdownFormatCommand::BulletList, 2.0},
+        {ui::Icon::NumberedList, "Numbered List", MarkdownFormatCommand::NumberedList, 2.0},
+        {ui::Icon::TaskList, "Task List", MarkdownFormatCommand::TaskList, 2.0},
+        {ui::Icon::Quote, "Quote", MarkdownFormatCommand::Quote, 2.0},
+    };
+    x = 10.0;
+    for (const FormatItem& item : items) {
+        const AppCommand command = AppCommand::of(item.command);
+        auto button = std::make_unique<ui::IconButton>(item.icon, tooltipFor(item.title, command));
+        ui::IconButton* raw = button.get();
+        button->setFrame(core::Rect{x, (ui::metrics::kContextBarHeight - 26.0) / 2.0, 26.0, 26.0});
+        if (item.icon == ui::Icon::Heading) {
+            // Paragraph / Heading 1-6 in a small menu.
+            button->setTooltip("Paragraph and Headings");
+            button->setOnClick([this, raw] {
+                std::vector<ui::PopupMenu::Item> levels;
+                const char* titles[] = {"Paragraph", "Heading 1", "Heading 2", "Heading 3",
+                                        "Heading 4", "Heading 5", "Heading 6"};
+                for (std::size_t i = 0; i < 7; ++i) {
+                    const AppCommand level =
+                        AppCommand::of(static_cast<MarkdownFormatCommand>(static_cast<std::size_t>(MarkdownFormatCommand::Paragraph) + i));
+                    ui::PopupMenu::Item entry;
+                    entry.title = titles[i];
+                    entry.shortcut = shortcutText(Shortcut{std::to_string(i), true, false, true});
+                    entry.enabled = canPerform(level);
+                    entry.action = [this, level] { perform(level); };
+                    levels.push_back(std::move(entry));
+                }
+                showPopup(std::move(levels), *raw, raw->bounds());
+            });
+            commandControls_.emplace_back(raw, command);
+        } else {
+            button->setOnClick([this, command] { perform(command); });
+            commandControls_.emplace_back(raw, command);
+        }
+        format->addChild(std::move(button));
+        x += 26.0 + item.gapAfter;
+    }
+    format->setFrame(kHiddenFrame);
+    root_->addChild(std::move(format));
 }
 
 void ShellController::applyAppearance() {
@@ -339,10 +533,20 @@ void ShellController::layoutShell() {
     const core::Rect bounds = root_->bounds();
     const double width = bounds.size.width;
     const double height = bounds.size.height;
-    // Markdown tabs have no sidebar, annotation or content bars and no PDF
-    // viewport: their view fills the whole content area.
+    // Markdown and comparison tabs have no sidebar, annotation or content
+    // bars and no PDF viewport: their view fills the whole content area.
     const bool markdown = chromeMarkdown_ || chromeComparison_; // content-only chrome
+    const bool empty = workspace_.tabCount() == 0;
+    const bool pdfChrome = !markdown && !empty;
     core::Rect contentRect{0.0, 0.0, width, height};
+
+    const auto hideContextBars = [this] {
+        if (annotationBar_ != nullptr) annotationBar_->layout(kHiddenFrame);
+        if (contentBar_ != nullptr) contentBar_->layout(kHiddenFrame);
+        if (formsBar_ != nullptr) formsBar_->setFrame(kHiddenFrame);
+        if (redactBar_ != nullptr) redactBar_->setFrame(kHiddenFrame);
+        if (formatBar_ != nullptr) formatBar_->setFrame(kHiddenFrame);
+    };
 
     if (presentationMode_) {
         // Chrome collapses to hidden frames; the viewport fills the window.
@@ -350,34 +554,55 @@ void ShellController::layoutShell() {
         toolbar_->setFrame(kHiddenFrame);
         sidebar_->layout(kHiddenFrame);
         statusBar_->layout(kHiddenFrame);
-        if (annotationBar_ != nullptr) annotationBar_->layout(kHiddenFrame);
-        if (contentBar_ != nullptr) contentBar_->layout(kHiddenFrame);
+        hideContextBars();
+        if (sidebarSplitter_ != nullptr) sidebarSplitter_->setFrame(kHiddenFrame);
     } else {
-        const double top = kTabStripHeight;
+        const double tabHeight = ui::metrics::kTabStripHeight;
+        const double toolbarHeight = ui::metrics::kToolbarHeight;
         const double statusHeight = StatusBarController::kHeight;
-        const double barHeight = (!markdown && annotationBar_ != nullptr) ? annotationBar_->height() : 0.0;
-        const double contentBarHeight = (!markdown && contentBar_ != nullptr) ? contentBar_->height() : 0.0;
-        const double middleTop = top + kToolbarHeight + barHeight + contentBarHeight;
+        tabStrip_->setFrame(core::Rect{0.0, 0.0, width, tabHeight});
+        toolbar_->setFrame(core::Rect{0.0, tabHeight, width, toolbarHeight});
+
+        // One context bar under the toolbar for the active tool (or the
+        // Markdown Format commands).
+        double y = tabHeight + toolbarHeight;
+        hideContextBars();
+        const ToolMode mode = toolMode();
+        const double barHeight = ui::metrics::kContextBarHeight;
+        if (pdfChrome && annotationBar_ != nullptr && annotationBar_->visible()) {
+            annotationBar_->layout(core::Rect{0.0, y, width, annotationBar_->height()});
+            y += annotationBar_->height();
+        } else if (pdfChrome && contentBar_ != nullptr && contentBar_->visible()) {
+            contentBar_->layout(core::Rect{0.0, y, width, contentBar_->height()});
+            y += contentBar_->height();
+        } else if (pdfChrome && mode == ToolMode::Forms && formsBar_ != nullptr) {
+            formsBar_->setFrame(core::Rect{0.0, y, width, barHeight});
+            y += barHeight;
+        } else if (pdfChrome && mode == ToolMode::Redact && redactBar_ != nullptr) {
+            redactBar_->setFrame(core::Rect{0.0, y, width, barHeight});
+            y += barHeight;
+        } else if (chromeMarkdown_ && formatBar_ != nullptr) {
+            formatBar_->setFrame(core::Rect{0.0, y, width, barHeight});
+            y += barHeight;
+        }
+        toolbar_->setBottomHairline(y == tabHeight + toolbarHeight);
+
+        const double middleTop = y;
         const double middleHeight = std::max(0.0, height - middleTop - statusHeight);
-        const double sidebarWidth = markdown ? 0.0 : SidebarController::kWidth;
-        tabStrip_->setFrame(core::Rect{0.0, 0.0, width, kTabStripHeight});
-        toolbar_->setFrame(core::Rect{0.0, top, width, kToolbarHeight});
-        if (annotationBar_ != nullptr) {
-            annotationBar_->layout(markdown ? kHiddenFrame
-                                            : core::Rect{0.0, top + kToolbarHeight, width, barHeight});
+        const double sidebarWidth =
+            (pdfChrome && sidebarVisible_) ? std::min(sidebarWidth_, std::max(0.0, width - 240.0)) : 0.0;
+        sidebar_->layout(sidebarWidth > 0.0 ? core::Rect{0.0, middleTop, sidebarWidth, middleHeight} : kHiddenFrame);
+        if (sidebarSplitter_ != nullptr) {
+            sidebarSplitter_->setFrame(sidebarWidth > 0.0 ? core::Rect{sidebarWidth - 3.0, middleTop, 6.0, middleHeight}
+                                                          : kHiddenFrame);
         }
-        if (contentBar_ != nullptr) {
-            contentBar_->layout(markdown ? kHiddenFrame
-                                         : core::Rect{0.0, top + kToolbarHeight + barHeight, width,
-                                                      contentBarHeight});
-        }
-        sidebar_->layout(markdown ? kHiddenFrame : core::Rect{0.0, middleTop, sidebarWidth, middleHeight});
         statusBar_->layout(core::Rect{0.0, height - statusHeight, width, statusHeight});
         contentRect = core::Rect{sidebarWidth, middleTop, std::max(0.0, width - sidebarWidth), middleHeight};
     }
-    viewport_->setFrame(markdown ? kHiddenFrame : contentRect);
+    viewport_->setFrame(markdown || (empty && !presentationMode_) ? kHiddenFrame : contentRect);
     markdownView_->setFrame(chromeMarkdown_ ? contentRect : kHiddenFrame);
     comparisonView_->setFrame(chromeComparison_ ? contentRect : kHiddenFrame);
+    if (welcome_ != nullptr) welcome_->setFrame(empty && !presentationMode_ ? contentRect : kHiddenFrame);
     // Everything over the content follows its frame.
     overlayLabel_->setFrame(contentRect);
     searchBar_->layout(markdown ? contentRect : viewport_->frame());
@@ -386,6 +611,7 @@ void ShellController::layoutShell() {
     if (content_ != nullptr) content_->layout(viewport_->frame());
     if (forms_ != nullptr) forms_->layout(viewport_->frame());
     if (signatureSheet_ != nullptr) signatureSheet_->layout(markdown ? contentRect : viewport_->frame());
+    if (tooltip_ != nullptr) tooltip_->dismiss();
 }
 
 void ShellController::refreshTabStrip() {
@@ -401,6 +627,14 @@ void ShellController::refreshTabStrip() {
     tabStrip_->setTabs(std::move(tabs), active);
     viewport_->invalidate();
     updateDocumentEdited();
+    // The welcome view appears / disappears with the last / first tab.
+    const bool showWelcome = workspace_.tabCount() == 0;
+    if (welcome_ != nullptr && showWelcome != !welcome_->frame().isEmpty()) {
+        refreshWelcome();
+        layoutShell();
+        applyChromeForKind(chromeMarkdown_, chromeComparison_);
+    }
+    syncChrome();
 }
 
 void ShellController::updateDocumentEdited() {
@@ -410,8 +644,11 @@ void ShellController::updateDocumentEdited() {
 }
 
 void ShellController::applyChromeForKind(bool markdown, bool comparison) {
-    for (ui::Widget* item : pdfToolbarItems_) toolbar_->setItemVisible(item, !markdown && !comparison);
+    // The empty window shows only the leading file commands (welcome view).
+    const bool empty = workspace_.tabCount() == 0;
+    for (ui::Widget* item : pdfToolbarItems_) toolbar_->setItemVisible(item, !markdown && !comparison && !empty);
     for (ui::Widget* item : markdownToolbarItems_) toolbar_->setItemVisible(item, markdown);
+    syncChrome();
     if (chromeMarkdown_ == markdown && chromeComparison_ == comparison) return;
     chromeMarkdown_ = markdown;
     chromeComparison_ = comparison;
@@ -420,11 +657,270 @@ void ShellController::applyChromeForKind(bool markdown, bool comparison) {
 
 void ShellController::syncModeButtons() {
     const std::optional<MarkdownDisplayMode> mode = activeMarkdownMode();
-    for (std::size_t i = 0; i < 3; ++i) {
-        if (modeButtons_[i] != nullptr) {
-            modeButtons_[i]->setActive(mode.has_value() && static_cast<std::size_t>(*mode) == i);
+    if (markdownModes_ != nullptr) {
+        markdownModes_->setSelected(mode.has_value() ? std::optional<std::size_t>(static_cast<std::size_t>(*mode))
+                                                     : std::nullopt);
+    }
+    syncChrome();
+}
+
+// Enables every command-bound control from canPerform() (disabled controls
+// stay visible, ADR-0033 §4) and refreshes the checked/active states.
+void ShellController::syncChrome() {
+    if (context_ == nullptr) return; // still building
+    for (const auto& [widget, command] : commandControls_) {
+        const bool enabled = canPerform(command);
+        if (auto* icon = dynamic_cast<ui::IconButton*>(widget); icon != nullptr) icon->setEnabled(enabled);
+        if (auto* button = dynamic_cast<ui::Button*>(widget); button != nullptr) button->setEnabled(enabled);
+    }
+    const bool pdfReady = readyActiveTab() != nullptr;
+    if (zoomControl_ != nullptr) zoomControl_->setEnabled(pdfReady);
+    if (prevPageButton_ != nullptr) prevPageButton_->setEnabled(pdfReady);
+    if (nextPageButton_ != nullptr) nextPageButton_->setEnabled(pdfReady);
+    if (sidebarButton_ != nullptr) {
+        sidebarButton_->setEnabled(pdfReady);
+        sidebarButton_->setActive(pdfReady && sidebarVisible_);
+    }
+    const bool markdownReady = context_->readyMarkdownTab() != nullptr;
+    if (searchButton_ != nullptr) {
+        searchButton_->setEnabled(pdfReady || (markdownReady && markdownView_->searchTarget() != nullptr));
+    }
+    if (printButton_ != nullptr) printButton_->setEnabled(pdfReady || markdownReady);
+    if (toolModes_ != nullptr) {
+        for (std::size_t i = 0; i < toolModes_->segmentCount(); ++i) toolModes_->setSegmentEnabled(i, pdfReady);
+    }
+    if (highlightFieldsButton_ != nullptr && forms_ != nullptr) {
+        highlightFieldsButton_->setActive(forms_->highlightFields());
+    }
+    syncToolMode();
+}
+
+ToolMode ShellController::toolMode() const {
+    if (redaction_ != nullptr && redaction_->isChecked(RedactCommand::ToolRedact).value_or(false)) {
+        return ToolMode::Redact;
+    }
+    if (content_ != nullptr &&
+        (content_->tool() == ContentTool::SelectObject || content_->tool() == ContentTool::AddText)) {
+        return ToolMode::Edit;
+    }
+    if (annotationBar_ != nullptr && annotationBar_->visible()) return ToolMode::Annotate;
+    return formsMode_ ? ToolMode::Forms : ToolMode::View;
+}
+
+void ShellController::syncToolMode() {
+    // A controller-driven tool (menu, shortcut) ends the Forms mode.
+    if (formsMode_) {
+        formsMode_ = false;
+        formsMode_ = toolMode() == ToolMode::View; // still Forms unless another tool took over
+    }
+    const ToolMode mode = toolMode();
+    if (toolModes_ == nullptr) return;
+    const std::optional<std::size_t> selected =
+        readyActiveTab() != nullptr ? std::optional<std::size_t>(static_cast<std::size_t>(mode)) : std::nullopt;
+    if (toolModes_->selected() != selected) {
+        toolModes_->setSelected(selected);
+        layoutShell(); // the context bar follows the mode
+    }
+}
+
+void ShellController::setToolMode(ToolMode mode) {
+    if (readyActiveTab() == nullptr) return;
+    // Leave the current tool (hiding the annotation strip returns to the
+    // Select tool and ContentTool::None), then enter the new one.
+    if (mode != ToolMode::Annotate && annotationBar_->visible()) annotationBar_->setVisible(false);
+    if (mode != ToolMode::Edit && mode != ToolMode::Redact && content_->tool() != ContentTool::None) {
+        content_->setTool(ContentTool::None);
+    }
+    formsMode_ = mode == ToolMode::Forms;
+    switch (mode) {
+    case ToolMode::View: break;
+    case ToolMode::Annotate: annotationBar_->setVisible(true); break;
+    case ToolMode::Edit:
+        if (content_->tool() != ContentTool::SelectObject && content_->tool() != ContentTool::AddText) {
+            content_->setTool(ContentTool::SelectObject);
+        }
+        break;
+    case ToolMode::Forms:
+        if (!forms_->highlightFields() && forms_->canPerform(FormCommand::HighlightFields)) {
+            forms_->perform(FormCommand::HighlightFields);
+        }
+        break;
+    case ToolMode::Redact:
+        if (!redaction_->isChecked(RedactCommand::ToolRedact).value_or(false)) {
+            redaction_->perform(RedactCommand::ToolRedact);
+        }
+        break;
+    }
+    syncChrome();
+    layoutShell();
+}
+
+void ShellController::setSidebarVisible(bool visible) {
+    if (sidebarVisible_ == visible) return;
+    sidebarVisible_ = visible;
+    syncChrome();
+    layoutShell();
+}
+
+void ShellController::setSidebarWidth(double width) {
+    const double clamped = std::clamp(width, ui::metrics::kSidebarMinWidth, ui::metrics::kSidebarMaxWidth);
+    if (clamped == sidebarWidth_) return;
+    sidebarWidth_ = clamped;
+    layoutShell();
+}
+
+std::string ShellController::tooltipFor(const char* title, const AppCommand& command) const {
+    for (const Menu& menu : buildMenuBar()) {
+        for (const MenuItem& item : menu.items) {
+            if (item.command == command && item.shortcut.has_value()) {
+                return std::format("{}  {}", title, shortcutText(*item.shortcut));
+            }
         }
     }
+    return title;
+}
+
+// Every menu-bar command (the overflow "more" menu, ADR-0033 §5): one
+// submenu per menu, items enabled/checked from the shell.
+std::vector<ui::PopupMenu::Item> ShellController::overflowItems() const {
+    std::vector<ui::PopupMenu::Item> menus;
+    for (const Menu& menu : buildMenuBar()) {
+        ui::PopupMenu::Item top;
+        top.title = menu.title;
+        for (const MenuItem& item : menu.items) {
+            if (item.role == MenuRole::Quit && !canPerform(item.command)) continue;
+            ui::PopupMenu::Item entry;
+            entry.title = item.title;
+            if (item.shortcut.has_value()) entry.shortcut = shortcutText(*item.shortcut);
+            entry.enabled = canPerform(item.command);
+            entry.checked = isChecked(item.command).value_or(false);
+            entry.separatorBefore = item.separatorBefore;
+            const AppCommand command = item.command;
+            ShellController* self = const_cast<ShellController*>(this);
+            entry.action = [self, command] { self->perform(command); };
+            top.submenu.push_back(std::move(entry));
+        }
+        if (!top.submenu.empty()) menus.push_back(std::move(top));
+    }
+    return menus;
+}
+
+void ShellController::showPopup(std::vector<ui::PopupMenu::Item> items, ui::Widget& anchorWidget,
+                                const core::Rect& localAnchor) {
+    if (popup_ == nullptr) return;
+    if (tooltip_ != nullptr) tooltip_->dismiss();
+    const core::Point origin = anchorWidget.originInRoot();
+    popup_->open(std::move(items), core::Rect{origin + localAnchor.origin, localAnchor.size}, root_->bounds());
+}
+
+void ShellController::openOverflowMenu() {
+    // Anchored under the last toolbar item (the "more" button).
+    const auto& items = toolbar_->children();
+    if (items.empty()) return;
+    ui::Widget& more = *items.back();
+    std::vector<ui::PopupMenu::Item> menu = overflowItems();
+    showPopup(std::move(menu), more, more.bounds());
+}
+
+void ShellController::openZoomMenu(const core::Rect& anchor) {
+    if (zoomControl_ == nullptr || readyActiveTab() == nullptr) return;
+    std::vector<ui::PopupMenu::Item> items;
+    const auto add = [&items](std::string title, std::function<void()> action, bool separator = false) {
+        ui::PopupMenu::Item item;
+        item.title = std::move(title);
+        item.action = std::move(action);
+        item.separatorBefore = separator;
+        items.push_back(std::move(item));
+    };
+    add("Actual Size", [this] { viewport_->zoomActualSize(); });
+    items.back().shortcut = shortcutText(Shortcut{"0"});
+    add("Fit Width", [this] { viewport_->setFitMode(render::ZoomState::FitMode::Width); });
+    add("Fit Page", [this] { viewport_->setFitMode(render::ZoomState::FitMode::Page); });
+    const double current = viewport_->zoom().zoom();
+    bool first = true;
+    for (const int percent : {50, 75, 100, 125, 150, 200, 300, 400}) {
+        const double value = percent / 100.0;
+        add(std::format("{}%", percent), [this, value] { viewport_->setManualZoom(value); }, first);
+        items.back().checked = std::fabs(current - value) < 0.005;
+        first = false;
+    }
+    showPopup(std::move(items), *zoomControl_, anchor);
+}
+
+void ShellController::refreshWelcome() {
+    if (welcome_ == nullptr) return;
+    welcome_->setRecentFiles(recentFiles_.entries());
+}
+
+void ShellController::trackPointer(const ui::PointerEvent& event, bool handled) {
+    (void)handled;
+    if (tooltip_ == nullptr) return;
+    switch (event.type) {
+    case ui::PointerEventType::Down:
+    case ui::PointerEventType::Scroll: tooltip_->dismiss(); return;
+    case ui::PointerEventType::Up: return;
+    case ui::PointerEventType::Move:
+    case ui::PointerEventType::Entered:
+    case ui::PointerEventType::Exited: break;
+    }
+    if (event.button != 0) return; // a drag: no hover changes
+    const ui::Widget* target =
+        event.type == ui::PointerEventType::Exited ? nullptr : root_->hitTest(event.position);
+    if (target == tooltip_ || target == root_.get()) target = target == tooltip_ ? hoveredWidget_ : nullptr;
+    if (target != hoveredWidget_) {
+        // Tell the widget the pointer left: widgets only see moves inside
+        // their own frame, so without this a hover state would stick.
+        if (hoveredWidget_ != nullptr) {
+            std::vector<const ui::Widget*> stack{root_.get()};
+            bool alive = false;
+            while (!stack.empty() && !alive) {
+                const ui::Widget* w = stack.back();
+                stack.pop_back();
+                if (w == hoveredWidget_) {
+                    alive = true;
+                    break;
+                }
+                for (const auto& child : w->children()) stack.push_back(child.get());
+            }
+            if (alive) {
+                auto* previous = const_cast<ui::Widget*>(hoveredWidget_);
+                ui::PointerEvent exited = event;
+                exited.type = ui::PointerEventType::Exited;
+                exited.position = event.position - previous->originInRoot();
+                previous->onMouse(exited);
+            }
+        }
+        hoveredWidget_ = target;
+    }
+    // The tooltip of the hovered widget (or of the nearest ancestor with one).
+    const ui::Widget* tipOwner = target;
+    while (tipOwner != nullptr && tipOwner->tooltip().empty()) tipOwner = tipOwner->parent();
+    if (tipOwner == root_.get()) tipOwner = nullptr;
+    if (tipOwner == nullptr) {
+        tooltip_->dismiss();
+        return;
+    }
+    const core::Rect anchor{tipOwner->originInRoot(), tipOwner->frame().size};
+    tooltip_->hoverTarget(tipOwner, tipOwner->tooltip(), anchor, root_->bounds());
+}
+
+void ShellController::DelayedRunner::runAfter(std::chrono::milliseconds delay, std::function<void()> task) {
+    core::IMainThreadDispatcher* dispatcher = shell_.services_.mainDispatcher;
+    if (dispatcher == nullptr) return; // tests without a dispatcher: no tooltips
+    std::optional<core::AsyncScope::Token> token = shell_.delayScope_.enter();
+    if (!token) return;
+    const auto shared = std::make_shared<core::AsyncScope::Token>(std::move(*token));
+    const std::weak_ptr<int> alive = shell_.alive_;
+    shell_.scheduler_.post([shared, alive, dispatcher, delay, task = std::move(task)]() mutable {
+        const auto until = std::chrono::steady_clock::now() + delay;
+        while (std::chrono::steady_clock::now() < until && !shared->cancelled()) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        if (shared->cancelled()) return;
+        dispatcher->post([alive, task = std::move(task)] {
+            if (alive.lock()) task();
+        });
+    });
 }
 
 std::optional<MarkdownDisplayMode> ShellController::activeMarkdownMode() const {
@@ -661,6 +1157,11 @@ void ShellController::openDocument(const std::filesystem::path& path) {
         setStatus("PDF support is not built into this binary (RIVET_WITH_PDFIUM=OFF)");
         return;
     }
+    // Recent files (welcome view): paths only, existing files only.
+    if (std::error_code error; std::filesystem::is_regular_file(path, error)) {
+        recentFiles_.add(path);
+        refreshWelcome();
+    }
     // Asynchronous: the loading tab appears immediately; bindActiveTab shows
     // its state. Completing fires onTabsChanged / onActiveTabChanged.
     workspace_.openDocument(path);
@@ -857,6 +1358,14 @@ bool ShellController::handleKeyEvent(const ui::KeyEvent& event) {
         return true;
     }
 
+    // An open popover menu is modal; the toolbar's keyboard navigation next.
+    if (popup_ != nullptr && popup_->isOpen()) return popup_->onKey(event);
+    if (tooltip_ != nullptr) tooltip_->dismiss();
+    if (toolbar_->keyboardNavigating()) {
+        if (toolbar_->handleKey(event)) return true;
+        toolbar_->endKeyboardNavigation();
+    }
+
     // 1. The focused widget (a text field) consumes its keys first.
     if (focusedWidget_ != nullptr && focusedWidget_->onKey(event)) return true;
 
@@ -891,9 +1400,21 @@ bool ShellController::handleKeyEvent(const ui::KeyEvent& event) {
     if (handleShortcut(event)) return true;
 
     // 3. Default: the active content (Markdown host or the PDF viewport).
-    if (chromeMarkdown_) return markdownView_->onKey(event);
-    if (chromeComparison_) return comparisonView_->onKey(event);
-    return viewport_->onKey(event);
+    bool consumed = false;
+    if (chromeMarkdown_) {
+        consumed = markdownView_->onKey(event);
+    } else if (chromeComparison_) {
+        consumed = comparisonView_->onKey(event);
+    } else {
+        consumed = viewport_->onKey(event);
+    }
+    // 4. An unused Tab moves keyboard focus into the toolbar (ADR-0033 §5).
+    if (!consumed && event.key == ui::Key::Tab && !event.modifiers.command && !event.modifiers.control &&
+        !event.modifiers.option && focusedWidget_ == nullptr && !presentationMode_) {
+        toolbar_->beginKeyboardNavigation(event.modifiers.shift);
+        return toolbar_->keyboardNavigating();
+    }
+    return consumed;
 }
 
 bool ShellController::handleShortcut(const ui::KeyEvent& event) {
@@ -1013,7 +1534,7 @@ void ShellController::setStatus(std::string text) {
 }
 
 void ShellController::setZoomDisplay(double zoom) {
-    if (zoomLabel_ != nullptr) zoomLabel_->setText(zoomPercentText(zoom));
+    if (zoomControl_ != nullptr) zoomControl_->setPercentText(zoomPercentText(zoom));
 }
 
 void ShellController::updateWindowTitle() {

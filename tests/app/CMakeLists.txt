@@ -1,6 +1,8 @@
 add_executable(rivet_app_tests
     TestDocumentWorkspace.cpp
     TestShellWiring.cpp
+    # ADR-0033 shell chrome (welcome, tool modes, sidebar, overflow menu).
+    TestShellChrome.cpp
     TestWorkspaceLifecycle.cpp
     TestUrlPolicy.cpp
     # Saved signatures (ADR-0025).

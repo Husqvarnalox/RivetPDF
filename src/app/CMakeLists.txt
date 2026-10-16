@@ -39,8 +39,10 @@ add_library(rivet_app STATIC
     PasswordPromptController.cpp
     PrintCoordinator.cpp
     SearchBarController.cpp
+    RecentFiles.cpp
     ShellController.cpp
     SidebarController.cpp
+    WelcomeView.cpp
     SignaturePad.cpp
     SignatureSheetController.cpp
     SignatureStore.cpp

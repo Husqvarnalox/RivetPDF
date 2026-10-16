@@ -31,12 +31,12 @@ std::string zoomPercentText(double zoom) { return std::format("{:.0f}%", zoom * 
 StatusBarController::StatusBarController(ShellContext& context, ui::Widget& parent,
                                          std::string initialStatus)
     : context_(context) {
-    auto bar = std::make_unique<ui::Container>();
+    auto bar = std::make_unique<ui::ChromeBar>(true, false);
     bar_ = bar.get();
     bar_->setBackground(&ui::Palette::chromeBackground);
     parent.addChild(std::move(bar));
 
-    auto statusLabel = std::make_unique<TextLabel>(std::move(initialStatus), ui::Font{12.0},
+    auto statusLabel = std::make_unique<TextLabel>(std::move(initialStatus), ui::fonts::kStatus,
                                                    &ui::Palette::textSecondary, ui::TextAlign::Left);
     statusLabel->setFrame(core::Rect{0.0, 0.0, 100.0, kHeight});
     statusLabel_ = statusLabel.get();
@@ -44,7 +44,7 @@ StatusBarController::StatusBarController(ShellContext& context, ui::Widget& pare
 
     // Page indicator on the right side of the status bar:
     //   Page [ field ] / 348
-    auto pageCaption = std::make_unique<TextLabel>("Page", ui::Font{12.0}, &ui::Palette::textSecondary,
+    auto pageCaption = std::make_unique<TextLabel>("Page", ui::fonts::kStatus, &ui::Palette::textSecondary,
                                                    ui::TextAlign::Right);
     pageCaption->setFrame(core::Rect{0.0, 3.0, 36.0, 20.0});
     pageCaptionLabel_ = pageCaption.get();
@@ -58,22 +58,42 @@ StatusBarController::StatusBarController(ShellContext& context, ui::Widget& pare
     pageField_->setOnEscape([this] { context_.setFocus(nullptr); });
     bar_->addChild(std::move(pageField));
 
-    auto pageCount = std::make_unique<TextLabel>("/ 0", ui::Font{12.0}, &ui::Palette::textSecondary,
+    auto pageCount = std::make_unique<TextLabel>("/ 0", ui::fonts::kStatus, &ui::Palette::textSecondary,
                                                  ui::TextAlign::Left);
     pageCount->setFrame(core::Rect{0.0, 3.0, 60.0, 20.0});
     pageCountLabel_ = pageCount.get();
     bar_->addChild(std::move(pageCount));
 
     // Page-selection summary, left of the page indicator.
-    auto selection = std::make_unique<TextLabel>("", ui::Font{12.0}, &ui::Palette::textSecondary,
+    auto selection = std::make_unique<TextLabel>("", ui::fonts::kStatus, &ui::Palette::textSecondary,
                                                  ui::TextAlign::Right);
     selectionLabel_ = selection.get();
     bar_->addChild(std::move(selection));
 }
 
+void StatusBarController::attachPageIndicator(ui::Widget& host) {
+    if (pageIndicatorAttached_) return;
+    pageIndicatorAttached_ = true;
+    std::unique_ptr<ui::Widget> field = bar_->detachChild(pageField_);
+    std::unique_ptr<ui::Widget> count = bar_->detachChild(pageCountLabel_);
+    pageCaptionLabel_->setFrame(kHiddenFrame);
+    host.addChild(std::move(field));
+    host.addChild(std::move(count));
+    pageField_->setFrame(core::Rect{0.0, 3.0, kPageFieldWidth, 22.0});
+    pageCountLabel_->setFont(ui::fonts::kBody);
+    pageCountLabel_->setFrame(core::Rect{kPageFieldWidth + 6.0, 0.0, kPageIndicatorWidth - kPageFieldWidth - 6.0, 28.0});
+}
+
 void StatusBarController::layout(const core::Rect& frame) {
     bar_->setFrame(frame);
     const double width = frame.size.width;
+    if (pageIndicatorAttached_) {
+        // Slim bar: the status text left, the selection summary right.
+        statusLabel_->setFrame(core::Rect{6.0, 0.0, std::max(0.0, width - 18.0 - kSelectionWidth), frame.size.height});
+        selectionLabel_->setFrame(
+            core::Rect{std::max(0.0, width - kSelectionWidth - 12.0), 0.0, kSelectionWidth, frame.size.height});
+        return;
+    }
     statusLabel_->setFrame(
         core::Rect{12.0, 0.0, std::max(0.0, width - 220.0 - kSelectionWidth), kHeight});
 

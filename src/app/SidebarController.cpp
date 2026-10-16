@@ -2,7 +2,7 @@
 #include "app/SidebarController.hpp"
 #include "ui/Theme.hpp"
 
-#include "ui/Button.hpp"
+#include "ui/SegmentedControl.hpp"
 #include "ui/Container.hpp"
 #include "ui/PageThumbnailList.hpp"
 #include "ui/PdfViewport.hpp"
@@ -121,23 +121,15 @@ SidebarController::SidebarController(ShellContext& context, ui::Widget& parent) 
     container_->setBackground(&ui::Palette::chromeBackground);
     parent.addChild(std::move(container));
 
-    auto pagesButton = std::make_unique<ui::Button>("Pages");
-    pagesButton_ = pagesButton.get();
-    pagesButton_->setFrame(core::Rect{6.0, 6.0, 56.0, 24.0});
-    pagesButton_->setOnClick([this] { setMode(Mode::Pages); });
-    container_->addChild(std::move(pagesButton));
-
-    auto outlineButton = std::make_unique<ui::Button>("Outline");
-    outlineButton_ = outlineButton.get();
-    outlineButton_->setFrame(core::Rect{64.0, 6.0, 66.0, 24.0});
-    outlineButton_->setOnClick([this] { setMode(Mode::Outline); });
-    container_->addChild(std::move(outlineButton));
-
-    auto signaturesButton = std::make_unique<ui::Button>("Signatures");
-    signaturesButton_ = signaturesButton.get();
-    signaturesButton_->setFrame(core::Rect{132.0, 6.0, 82.0, 24.0});
-    signaturesButton_->setOnClick([this] { setMode(Mode::Signatures); });
-    container_->addChild(std::move(signaturesButton));
+    // Segmented header (ADR-0033 §5): Pages | Outline | Signatures.
+    auto header = std::make_unique<ui::SegmentedControl>(
+        std::vector<ui::SegmentedControl::Segment>{{"Pages", {}, "Page thumbnails", 0.0, true},
+                                                   {"Outline", {}, "Document outline", 0.0, true},
+                                                   {"Signatures", {}, "Digital signatures", 0.0, true}},
+        true);
+    header_ = header.get();
+    header_->setOnSelect([this](std::size_t index) { setMode(static_cast<Mode>(index)); });
+    container_->addChild(std::move(header));
 
     auto thumbnails = std::make_unique<ui::PageThumbnailList>();
     thumbnails_ = thumbnails.get();
@@ -211,6 +203,9 @@ void SidebarController::setCurrentPage(std::size_t page) {
 
 void SidebarController::layout(const core::Rect& frame) {
     container_->setFrame(frame);
+    const double headerWidth = std::max(0.0, frame.size.width - 2.0 * ui::metrics::kSpace8 - 1.0);
+    header_->setFrame(core::Rect{ui::metrics::kSpace8, (kHeaderHeight - ui::metrics::kSmallControlHeight) / 2.0, headerWidth,
+                                 ui::metrics::kSmallControlHeight});
     panelFrame_ = core::Rect{0.0, kHeaderHeight, frame.size.width,
                              std::max(0.0, frame.size.height - kHeaderHeight)};
     setMode(mode_);
@@ -222,9 +217,7 @@ void SidebarController::setMode(Mode mode) {
     thumbnails_->setFrame(mode == Mode::Pages ? panelFrame_ : kHiddenFrame);
     outlinePanel_->setFrame(mode == Mode::Outline ? panelFrame_ : kHiddenFrame);
     signaturesPanel_->setFrame(mode == Mode::Signatures ? panelFrame_ : kHiddenFrame);
-    pagesButton_->setLabel(mode == Mode::Pages ? "Pages \xE2\x80\xA2" : "Pages");
-    outlineButton_->setLabel(mode == Mode::Outline ? "Outline \xE2\x80\xA2" : "Outline");
-    signaturesButton_->setLabel(mode == Mode::Signatures ? "Signatures \xE2\x80\xA2" : "Signatures");
+    header_->setSelected(static_cast<std::size_t>(mode));
     container_->invalidate();
 }
 

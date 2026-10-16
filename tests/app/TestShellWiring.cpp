@@ -14,6 +14,7 @@
 #include "app/ShellContext.hpp"
 #include "app/SidebarController.hpp"
 #include "app/StatusBarController.hpp"
+#include "ui/SegmentedControl.hpp"
 #include "app/TextInteractionController.hpp"
 #include "core/Error.hpp"
 #include "core/async/IMainThreadDispatcher.hpp"
@@ -517,19 +518,15 @@ RIVET_TEST(wiringTextInteractionSelectsHighlightsAndCopiesAsync) {
 RIVET_TEST(wiringSidebarSwitchesModesAndLoadsOutlineAsync) {
     Shell s;
     CHECK(s.sidebar->mode() == SidebarController::Mode::Pages);
-    // The sidebar container is root's first child: [Pages, Outline, ...].
-    auto* container = dynamic_cast<rivet::ui::Container*>(s.root->children().front().get());
-    CHECK(container != nullptr);
-    auto* pagesButton = dynamic_cast<rivet::ui::Button*>(container->children()[0].get());
-    auto* outlineButton = dynamic_cast<rivet::ui::Button*>(container->children()[1].get());
-    CHECK(pagesButton != nullptr && outlineButton != nullptr);
-    CHECK_EQ(pagesButton->label(), std::string("Pages •"));
-    CHECK_EQ(outlineButton->label(), std::string("Outline"));
+    // The header is a segmented control (ADR-0033): Pages | Outline | Signatures.
+    const rivet::ui::SegmentedControl& header = s.sidebar->header();
+    CHECK_EQ(header.segmentCount(), std::size_t{3});
+    CHECK_EQ(header.segment(0).label, std::string("Pages"));
+    CHECK(header.selected() == std::optional<std::size_t>(0));
 
     s.sidebar->setMode(SidebarController::Mode::Outline);
     CHECK(s.sidebar->mode() == SidebarController::Mode::Outline);
-    CHECK_EQ(pagesButton->label(), std::string("Pages"));
-    CHECK_EQ(outlineButton->label(), std::string("Outline •"));
+    CHECK(header.selected() == std::optional<std::size_t>(1));
     CHECK(s.sidebar->outlineRows().empty());
 
     // The outline arrives asynchronously; the top level starts expanded.
