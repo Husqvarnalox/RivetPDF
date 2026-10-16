@@ -411,8 +411,13 @@ bool MarkdownPreviewView::onEditKey(const ui::KeyEvent& event) {
     if (primary) {
         // The clipboard / select-all set is ours; every other shortcut
         // (undo, save, formatting, modes...) belongs to the shell.
-        const bool ours = event.key == ui::Key::Character && !event.modifiers.option &&
-                          (event.text == "a" || event.text == "c" || event.text == "x" || event.text == "v");
+        const bool clipboard = event.key == ui::Key::Character && !event.modifiers.option &&
+                               (event.text == "a" || event.text == "c" || event.text == "x" || event.text == "v");
+        // Cmd+arrows/Home/End move to line and document edges (as in the Source editor).
+        const bool navigation = event.key == ui::Key::Left || event.key == ui::Key::Right ||
+                                event.key == ui::Key::Up || event.key == ui::Key::Down ||
+                                event.key == ui::Key::Home || event.key == ui::Key::End;
+        const bool ours = clipboard || navigation;
         if (!ours) return false;
     } else if (event.key == ui::Key::Character && typedText(event).empty()) {
         return false;
@@ -516,14 +521,33 @@ bool MarkdownPreviewView::processEditKey(const ui::KeyEvent& event) {
         }
         const auto p = here();
         if (!p) break;
-        const double x = preferredX_ ? *preferredX_ : layout_->xForPosition(*p, measurer_);
+        // A caret on a blank line between blocks (a gap) is drawn at the
+        // left edge of that line; its neighbours are the stops around it.
+        const std::size_t at = map->sourceOf(*p);
+        const bool gap = at != caret_;
+        double x = 0.0;
+        if (preferredX_) x = *preferredX_;
+        else if (const std::optional<core::Rect> r = gap ? caretDocRect() : std::nullopt) x = r->minX();
+        else x = layout_->xForPosition(*p, measurer_);
         long lines = 1;
         if (event.key == ui::Key::PageUp || event.key == ui::Key::PageDown) {
             const double lineH = typography_.bodySize * typography_.lineHeightFactor;
             lines = std::max(1L, static_cast<long>(bounds().size.height * 0.9 / lineH));
             scrollBy(up ? -bounds().size.height * 0.9 : bounds().size.height * 0.9);
         }
-        const markdown::TextPosition target = map->vertical(*p, x, up ? -lines : lines, measurer_);
+        markdown::TextPosition from = *p;
+        if (gap && (at < caret_) != up) {
+            // The snapped stop lies on the far side: the first line in the
+            // direction of travel is the one right next to the gap.
+            const std::optional<markdown::TextPosition> beyond = up ? map->previous(*p) : map->next(*p);
+            if (beyond) from = *beyond;
+        }
+        markdown::TextPosition target = map->onLineAtX(map->lineOf(from), x, measurer_);
+        if (gap) {
+            if (lines > 1) target = map->vertical(target, x, up ? -(lines - 1) : lines - 1, measurer_);
+        } else {
+            target = map->vertical(*p, x, up ? -lines : lines, measurer_);
+        }
         moveCaret(map->sourceOf(target), shift);
         preferredX_ = x;
         break;

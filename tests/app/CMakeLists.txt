@@ -28,6 +28,7 @@ add_executable(rivet_app_tests
     TestMarkdownPreview.cpp
     TestMarkdownSourcePane.cpp
     TestMarkdownLive.cpp
+    TestMarkdownWysiwyg.cpp
     TestSearchRestart.cpp
     TestPrintCoordinator.cpp
     # Phase 6A Markdown -> PDF export: the portable exporter and the
