@@ -13,6 +13,7 @@
 #include "editor/DocumentSession.hpp"
 #include "editor/PageCommands.hpp"
 #include "editor/PageRangeParser.hpp"
+#include "pdf/ImageReduce.hpp"
 #include "platform/AppLifecycle.hpp"
 
 #include <algorithm>
@@ -41,6 +42,10 @@ enum class FileCommand : std::uint8_t {
     Extract = 5,      // write the selected pages to a new PDF
     Split = 6,        // write page ranges to one new PDF each
     ExportPdf = 7,    // Markdown tabs: export as PDF (MarkdownExportController)
+    SaveAsRemovePassword = 8, // Save As without the document's password (ADR-0030)
+    SaveReducedHigh = 9,      // Save Reduced Copy, 200 dpi / JPEG q85 (ADR-0028)
+    SaveReducedMedium = 10,   // ... 150 dpi / q75
+    SaveReducedSmall = 11,    // ... 100 dpi / q60
 };
 
 class MarkdownExportController;
@@ -144,6 +149,14 @@ public:
     void save(DocumentTab& tab);
     // Save As: shows the save panel first; cancellation changes nothing.
     void saveAs(DocumentTab& tab);
+    // Save As of a document that was opened with a password, written without
+    // its encryption (ADR-0030). The tab then follows the new, unprotected
+    // file like after any Save As.
+    void saveAsRemovingPassword(DocumentTab& tab);
+    // Save Reduced Copy (ADR-0028): writes a copy of the document with its
+    // oversized images downsampled and JPEG re-encoded, chosen in the save
+    // panel. An export: the tab, its path and its dirty state do not change.
+    void saveReducedCopy(DocumentTab& tab, pdf::ReduceQuality quality);
     // Writes `pages` (model order) to a new PDF chosen in the save panel.
     void extract(DocumentTab& tab, std::span<const core::PageId> pages);
     // Split: prompts for page ranges (IAlertService::promptForText), then
@@ -195,12 +208,15 @@ private:
         std::uint64_t generation = 0;
         std::filesystem::path destination;
         bool closeTabWhenDone = false;
+        bool removePassword = false; // ADR-0030
     };
 
     // Interactive = reports "already saving" when busy; queued = chains
     // behind the running save (the quit lifecycle).
     void requestSave(DocumentTab& tab, std::filesystem::path destination, bool closeTabWhenDone,
-                     bool interactive);
+                     bool interactive, bool removePassword = false);
+    // Shared by saveAs / saveAsRemovingPassword.
+    void runSaveAs(DocumentTab& tab, bool removePassword);
     void startNextSave();
     // Markdown saves share activeSave_/queue/saveSettled with PDF saves; only
     // the job and its completion differ.

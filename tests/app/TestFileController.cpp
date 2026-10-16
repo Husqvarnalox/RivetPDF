@@ -356,6 +356,19 @@ RIVET_TEST(saveAsRefusesDestinationOpenInAnotherTab) {
     CHECK(shell.statusLog.size() == 1u); // nothing was saved through the refused path
 }
 
+RIVET_TEST(passwordAndReducedCopyCommandsAreDisabledWithoutTheirPrerequisites) {
+    Shell shell;
+    DocumentTab* tab = shell.open("plain.pdf");
+    CHECK(tab != nullptr);
+    // The test shell has no image encoder and an unencrypted document.
+    CHECK(!shell.files->canPerform(FileCommand::SaveReducedHigh));
+    CHECK(!shell.files->canPerform(FileCommand::SaveReducedMedium));
+    CHECK(!shell.files->canPerform(FileCommand::SaveReducedSmall));
+    CHECK(!shell.files->canPerform(FileCommand::SaveAsRemovePassword));
+    shell.files->saveAsRemovingPassword(*tab);
+    CHECK(shell.hasStatus("The document is not password protected"));
+}
+
 // --- Import / merge / extract ---------------------------------------------------
 
 RIVET_TEST(importInsertsBeforeCurrentAndUndoRestores) {
