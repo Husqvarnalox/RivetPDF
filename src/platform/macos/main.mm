@@ -9,12 +9,14 @@
 #import "MacosMainThreadDispatcher.h"
 #import "RivetContentView.h"
 
+#include "app/MenuModel.hpp"
 #include "app/ShellController.hpp"
 #include "platform/PlatformKit.hpp"
 #include "ui/UiTypes.hpp"
 
 #import <AppKit/AppKit.h>
 
+#include <cstddef>
 #include <filesystem>
 #include <functional>
 #include <memory>
@@ -23,78 +25,38 @@
 
 // Note: ObjC classes must live at global scope (no C++ namespaces).
 
-// Bridges menu actions to the shell. The Open… menu item goes through the
-// same ShellController::handleOpenRequest() path as the toolbar button; page
-// editing items carry their PageEditCommand as the item tag, route through
-// performPageEdit() and validate against canPerformPageEdit() (NSMenu
-// auto-enables items through item validation).
+// Bridges menu actions to the shell. The menu bar is built generically from
+// the portable model (app/MenuModel.hpp): each NSMenuItem's tag is the item's
+// index into `commands`, and every item shares the single -command: action,
+// which routes through ShellController::perform() and validates through
+// canPerform()/isChecked() (NSMenu auto-enables items through validation).
 @interface RivetAppBridge : NSObject {
 @public
     rivet::app::ShellController* shell; // non-owning; main() owns the shell
+    std::vector<rivet::app::AppCommand> commands; // flat menu index -> command
 }
-- (IBAction)openDocument:(id)sender;
-- (IBAction)pageEdit:(id)sender;
-- (IBAction)annotationCommand:(id)sender;
-- (IBAction)contentCommand:(id)sender;
-- (IBAction)markdownMode:(id)sender;
+- (IBAction)command:(id)sender;
 @end
 
 @implementation RivetAppBridge
-- (IBAction)openDocument:(id)sender {
-    if (shell != nullptr) shell->handleOpenRequest();
+- (const rivet::app::AppCommand*)commandForItem:(NSMenuItem*)item {
+    if (item == nil || item.tag < 0 || static_cast<std::size_t>(item.tag) >= commands.size()) return nullptr;
+    return &commands[static_cast<std::size_t>(item.tag)];
 }
-- (IBAction)pageEdit:(id)sender {
+- (IBAction)command:(id)sender {
     if (shell == nullptr) return;
-    NSMenuItem* item = sender;
-    if (item == nullptr) return;
-    shell->performPageEdit(static_cast<rivet::app::PageEditCommand>(item.tag));
+    const rivet::app::AppCommand* command = [self commandForItem:sender];
+    if (command != nullptr) shell->perform(*command);
 }
-- (IBAction)annotationCommand:(id)sender {
-    if (shell == nullptr) return;
-    NSMenuItem* item = sender;
-    if (item == nullptr) return;
-    shell->performAnnotation(static_cast<rivet::app::AnnotationCommand>(item.tag));
-}
-- (IBAction)contentCommand:(id)sender {
-    if (shell == nullptr) return;
-    NSMenuItem* item = sender;
-    if (item == nullptr) return;
-    shell->performContent(static_cast<rivet::app::ContentCommand>(item.tag));
-}
-- (IBAction)markdownMode:(id)sender {
-    if (shell == nullptr) return;
-    NSMenuItem* item = sender;
-    if (item == nullptr) return;
-    shell->performMarkdownMode(static_cast<rivet::app::MarkdownDisplayMode>(item.tag));
-}
-- (IBAction)fileCommand:(id)sender {
-    if (shell == nullptr) return;
-    NSMenuItem* item = sender;
-    if (item == nullptr) return;
-    shell->performFile(static_cast<rivet::app::FileCommand>(item.tag));
-}
-// NSMenuItemValidation: gray out commands that cannot run.
+// NSMenuItemValidation: gray out commands that cannot run; sync check marks.
 - (BOOL)validateMenuItem:(NSMenuItem*)item {
     if (shell == nullptr) return NO;
-    if (item.action == @selector(pageEdit:)) {
-        return shell->canPerformPageEdit(static_cast<rivet::app::PageEditCommand>(item.tag)) ? YES : NO;
+    const rivet::app::AppCommand* command = [self commandForItem:item];
+    if (command == nullptr) return YES;
+    if (const auto checked = shell->isChecked(*command); checked.has_value()) {
+        item.state = *checked ? NSControlStateValueOn : NSControlStateValueOff;
     }
-    if (item.action == @selector(annotationCommand:)) {
-        return shell->canPerformAnnotation(static_cast<rivet::app::AnnotationCommand>(item.tag)) ? YES : NO;
-    }
-    if (item.action == @selector(contentCommand:)) {
-        return shell->canPerformContent(static_cast<rivet::app::ContentCommand>(item.tag)) ? YES : NO;
-    }
-    if (item.action == @selector(markdownMode:)) {
-        const auto mode = shell->activeMarkdownMode();
-        item.state = (mode.has_value() && static_cast<NSInteger>(*mode) == item.tag) ? NSControlStateValueOn
-                                                                                     : NSControlStateValueOff;
-        return shell->canPerformMarkdownMode() ? YES : NO;
-    }
-    if (item.action == @selector(fileCommand:)) {
-        return shell->canPerformFile(static_cast<rivet::app::FileCommand>(item.tag)) ? YES : NO;
-    }
-    return YES;
+    return shell->canPerform(*command) ? YES : NO;
 }
 @end
 
@@ -153,7 +115,8 @@ int main(int argc, char** argv) {
         RivetAppDelegate* appDelegate = [[RivetAppDelegate alloc] init];
         [NSApp setDelegate:appDelegate];
 
-        // Menu bar: app menu (Quit, cmd+Q) and File > Open… (cmd+O).
+        // Menu bar: the app menu (Quit, cmd+Q) is macOS-specific; every other
+        // menu is rendered from the portable model.
         RivetAppBridge* bridge = [[RivetAppBridge alloc] init];
 
         NSMenu* menuBar = [[NSMenu alloc] init];
@@ -164,167 +127,37 @@ int main(int argc, char** argv) {
         [appMenu addItemWithTitle:@"Quit Rivet" action:@selector(terminate:) keyEquivalent:@"q"];
         [appMenuItem setSubmenu:appMenu];
 
-        NSMenuItem* fileMenuItem = [[NSMenuItem alloc] init];
-        [menuBar addItem:fileMenuItem];
-        NSMenu* fileMenu = [[NSMenu alloc] initWithTitle:@"File"];
-        NSMenuItem* openItem =
-            [fileMenu addItemWithTitle:@"Open…" action:@selector(openDocument:) keyEquivalent:@"o"];
-        [openItem setTarget:bridge];
-        [fileMenu addItem:[NSMenuItem separatorItem]];
-        NSMenuItem* saveItem =
-            [fileMenu addItemWithTitle:@"Save" action:@selector(fileCommand:) keyEquivalent:@"s"];
-        saveItem.tag = static_cast<NSInteger>(rivet::app::FileCommand::Save);
-        [saveItem setTarget:bridge];
-        NSMenuItem* saveAsItem =
-            [fileMenu addItemWithTitle:@"Save As…" action:@selector(fileCommand:) keyEquivalent:@"S"];
-        saveAsItem.tag = static_cast<NSInteger>(rivet::app::FileCommand::SaveAs);
-        [saveAsItem setTarget:bridge];
-        saveAsItem.keyEquivalentModifierMask = NSEventModifierFlagCommand | NSEventModifierFlagShift;
-        NSMenuItem* exportPdfItem =
-            [fileMenu addItemWithTitle:@"Export as PDF…" action:@selector(fileCommand:) keyEquivalent:@""];
-        exportPdfItem.tag = static_cast<NSInteger>(rivet::app::FileCommand::ExportPdf);
-        [exportPdfItem setTarget:bridge];
-        [fileMenu addItem:[NSMenuItem separatorItem]];
-        const std::pair<NSString*, rivet::app::FileCommand> fileItems[] = {
-            {@"Insert Pages Before Current…", rivet::app::FileCommand::ImportBefore},
-            {@"Insert Pages After Current…", rivet::app::FileCommand::ImportAfter},
-            {@"Merge with PDF…", rivet::app::FileCommand::Merge},
-            {@"Export Selected Pages…", rivet::app::FileCommand::Extract},
-            {@"Split PDF by Ranges…", rivet::app::FileCommand::Split},
-        };
-        for (const auto& [title, command] : fileItems) {
-            NSMenuItem* item =
-                [fileMenu addItemWithTitle:title action:@selector(fileCommand:) keyEquivalent:@""];
-            item.tag = static_cast<NSInteger>(command);
-            [item setTarget:bridge];
-        }
-        [fileMenuItem setSubmenu:fileMenu];
-
-        // Edit > Undo/Redo (the shell's page command history is the single
-        // source of truth; Rivet has no other undo).
-        NSMenuItem* editMenuItem = [[NSMenuItem alloc] init];
-        [menuBar addItem:editMenuItem];
-        NSMenu* editMenu = [[NSMenu alloc] initWithTitle:@"Edit"];
-        [editMenu addItemWithTitle:@"Undo"
-                            action:@selector(pageEdit:)
-                     keyEquivalent:@"z"].tag = static_cast<NSInteger>(rivet::app::PageEditCommand::Undo);
-        NSMenuItem* redoItem =
-            [editMenu addItemWithTitle:@"Redo" action:@selector(pageEdit:) keyEquivalent:@"Z"];
-        redoItem.tag = static_cast<NSInteger>(rivet::app::PageEditCommand::Redo);
-        redoItem.keyEquivalentModifierMask = NSEventModifierFlagCommand | NSEventModifierFlagShift;
-        for (NSMenuItem* item in editMenu.itemArray) [item setTarget:bridge];
-        [editMenuItem setSubmenu:editMenu];
-
-        // View > Markdown display mode (Rendered / Source / Split). Enabled
-        // only while a Markdown tab is active.
-        NSMenuItem* viewMenuItem = [[NSMenuItem alloc] init];
-        [menuBar addItem:viewMenuItem];
-        NSMenu* viewMenu = [[NSMenu alloc] initWithTitle:@"View"];
-        const struct {
-            NSString* title;
-            NSString* key;
-            rivet::app::MarkdownDisplayMode mode;
-        } modeItems[] = {{@"Rendered", @"1", rivet::app::MarkdownDisplayMode::Rendered},
-                         {@"Source", @"2", rivet::app::MarkdownDisplayMode::Source},
-                         {@"Split", @"3", rivet::app::MarkdownDisplayMode::Split}};
-        for (const auto& entry : modeItems) {
-            NSMenuItem* item = [viewMenu addItemWithTitle:entry.title
-                                                   action:@selector(markdownMode:)
-                                            keyEquivalent:entry.key];
-            item.tag = static_cast<NSInteger>(entry.mode);
-            [item setTarget:bridge];
-        }
-        [viewMenuItem setSubmenu:viewMenu];
-
-        // Page > structure editing over the selection (or the current page).
-        NSMenuItem* pageMenuItem = [[NSMenuItem alloc] init];
-        [menuBar addItem:pageMenuItem];
-        NSMenu* pageMenu = [[NSMenu alloc] initWithTitle:@"Page"];
-        const std::pair<NSString*, rivet::app::PageEditCommand> pageItems[] = {
-            {@"Rotate Left", rivet::app::PageEditCommand::RotateLeft},
-            {@"Rotate Right", rivet::app::PageEditCommand::RotateRight},
-            {@"Duplicate", rivet::app::PageEditCommand::DuplicatePages},
-            {@"Delete", rivet::app::PageEditCommand::DeletePages},
-            {@"Crop…", rivet::app::PageEditCommand::Crop},
-            {@"Reset Crop", rivet::app::PageEditCommand::ResetCrop},
-        };
-        for (const auto& [title, command] : pageItems) {
-            NSMenuItem* item = [pageMenu addItemWithTitle:title action:@selector(pageEdit:) keyEquivalent:@""];
-            item.tag = static_cast<NSInteger>(command);
-            [item setTarget:bridge];
-        }
-        [pageMenuItem setSubmenu:pageMenu];
-
-        // Content > the content-editing tools and selection commands (ADR-0014/
-        // 0015); tags are ContentCommand values. Cmd+Shift+E / Cmd+Shift+T are
-        // free (Cmd+E / Cmd+T are not used).
-        NSMenuItem* contentMenuItem = [[NSMenuItem alloc] init];
-        [menuBar addItem:contentMenuItem];
-        NSMenu* contentMenu = [[NSMenu alloc] initWithTitle:@"Content"];
-        const struct {
-            NSString* title;
-            NSString* key;
-            rivet::app::ContentCommand command;
-            bool separatorBefore;
-        } contentItems[] = {
-            {@"Edit Objects", @"E", rivet::app::ContentCommand::ToolEdit, false},
-            {@"Add Text", @"T", rivet::app::ContentCommand::ToolAddText, false},
-            {@"Edit Text", @"", rivet::app::ContentCommand::EditText, true},
-            {@"Replace Image…", @"", rivet::app::ContentCommand::ReplaceImage, false},
-            {@"Bring to Front", @"", rivet::app::ContentCommand::BringToFront, false},
-            {@"Delete Object", @"", rivet::app::ContentCommand::DeleteObject, false},
-        };
-        for (const auto& entry : contentItems) {
-            if (entry.separatorBefore) [contentMenu addItem:[NSMenuItem separatorItem]];
-            NSMenuItem* item = [contentMenu addItemWithTitle:entry.title
-                                                      action:@selector(contentCommand:)
-                                               keyEquivalent:entry.key];
-            if (entry.key.length > 0) {
-                item.keyEquivalentModifierMask = NSEventModifierFlagCommand | NSEventModifierFlagShift;
+        const std::vector<rivet::app::Menu> modelBar = rivet::app::buildMenuBar();
+        NSInteger flatIndex = 0;
+        for (const rivet::app::Menu& model : modelBar) {
+            NSMenuItem* menuItem = [[NSMenuItem alloc] init];
+            [menuBar addItem:menuItem];
+            NSMenu* menu = [[NSMenu alloc] initWithTitle:[NSString stringWithUTF8String:model.title.c_str()]];
+            for (const rivet::app::MenuItem& entry : model.items) {
+                bridge->commands.push_back(entry.command);
+                const NSInteger tag = flatIndex++;
+                // macOS shows Quit in the application menu only.
+                if (entry.role == rivet::app::MenuRole::Quit) continue;
+                if (entry.separatorBefore) [menu addItem:[NSMenuItem separatorItem]];
+                NSString* key = @"";
+                NSEventModifierFlags mask = 0;
+                if (entry.shortcut.has_value()) {
+                    const rivet::app::Shortcut& sc = *entry.shortcut;
+                    NSString* lower = [NSString stringWithUTF8String:sc.key.c_str()];
+                    key = sc.shift ? lower.uppercaseString : lower;
+                    if (sc.primary) mask |= NSEventModifierFlagCommand;
+                    if (sc.shift) mask |= NSEventModifierFlagShift;
+                    if (sc.alt) mask |= NSEventModifierFlagOption;
+                }
+                NSMenuItem* item = [menu addItemWithTitle:[NSString stringWithUTF8String:entry.title.c_str()]
+                                                   action:@selector(command:)
+                                            keyEquivalent:key];
+                if (entry.shortcut.has_value()) item.keyEquivalentModifierMask = mask;
+                item.tag = tag;
+                [item setTarget:bridge];
             }
-            item.tag = static_cast<NSInteger>(entry.command);
-            [item setTarget:bridge];
+            [menuItem setSubmenu:menu];
         }
-        [contentMenuItem setSubmenu:contentMenu];
-
-        // Annotate > tools (no single-letter shortcuts: they would clash with
-        // typing) and annotation commands; tags are AnnotationCommand values.
-        NSMenuItem* annotateMenuItem = [[NSMenuItem alloc] init];
-        [menuBar addItem:annotateMenuItem];
-        NSMenu* annotateMenu = [[NSMenu alloc] initWithTitle:@"Annotate"];
-        const std::pair<NSString*, rivet::app::AnnotationCommand> toolItems[] = {
-            {@"Select Tool", rivet::app::AnnotationCommand::ToolSelect},
-            {@"Highlight", rivet::app::AnnotationCommand::ToolHighlight},
-            {@"Underline", rivet::app::AnnotationCommand::ToolUnderline},
-            {@"Strike Out", rivet::app::AnnotationCommand::ToolStrikeOut},
-            {@"Note", rivet::app::AnnotationCommand::ToolNote},
-            {@"Ink", rivet::app::AnnotationCommand::ToolInk},
-            {@"Rectangle", rivet::app::AnnotationCommand::ToolRectangle},
-            {@"Ellipse", rivet::app::AnnotationCommand::ToolEllipse},
-            {@"Line", rivet::app::AnnotationCommand::ToolLine},
-            {@"Arrow", rivet::app::AnnotationCommand::ToolArrow},
-            {@"Stamp", rivet::app::AnnotationCommand::ToolStamp},
-        };
-        for (const auto& [title, command] : toolItems) {
-            NSMenuItem* item = [annotateMenu addItemWithTitle:title
-                                                       action:@selector(annotationCommand:)
-                                                keyEquivalent:@""];
-            item.tag = static_cast<NSInteger>(command);
-            [item setTarget:bridge];
-        }
-        [annotateMenu addItem:[NSMenuItem separatorItem]];
-        const std::pair<NSString*, rivet::app::AnnotationCommand> actionItems[] = {
-            {@"Edit Note", rivet::app::AnnotationCommand::EditNote},
-            {@"Delete Annotation", rivet::app::AnnotationCommand::DeleteAnnotation},
-        };
-        for (const auto& [title, command] : actionItems) {
-            NSMenuItem* item = [annotateMenu addItemWithTitle:title
-                                                       action:@selector(annotationCommand:)
-                                                keyEquivalent:@""];
-            item.tag = static_cast<NSInteger>(command);
-            [item setTarget:bridge];
-        }
-        [annotateMenuItem setSubmenu:annotateMenu];
 
         [NSApp setMainMenu:menuBar];
 

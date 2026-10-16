@@ -594,6 +594,39 @@ bool ShellController::canPerformFile(FileCommand command) const {
     return fileLifecycle_ != nullptr && fileLifecycle_->canPerform(command);
 }
 
+void ShellController::perform(const AppCommand& command) {
+    switch (command.kind) {
+    case AppCommand::Kind::Open: handleOpenRequest(); break;
+    case AppCommand::Kind::Quit:
+        if (quitHandler_) quitHandler_();
+        break;
+    case AppCommand::Kind::File: performFile(command.file()); break;
+    case AppCommand::Kind::PageEdit: performPageEdit(command.pageEdit()); break;
+    case AppCommand::Kind::Annotation: performAnnotation(command.annotation()); break;
+    case AppCommand::Kind::Content: performContent(command.content()); break;
+    case AppCommand::Kind::MarkdownMode: performMarkdownMode(command.markdownMode()); break;
+    }
+}
+
+bool ShellController::canPerform(const AppCommand& command) const {
+    switch (command.kind) {
+    case AppCommand::Kind::Open: return true;
+    case AppCommand::Kind::Quit: return static_cast<bool>(quitHandler_);
+    case AppCommand::Kind::File: return canPerformFile(command.file());
+    case AppCommand::Kind::PageEdit: return canPerformPageEdit(command.pageEdit());
+    case AppCommand::Kind::Annotation: return canPerformAnnotation(command.annotation());
+    case AppCommand::Kind::Content: return canPerformContent(command.content());
+    case AppCommand::Kind::MarkdownMode: return canPerformMarkdownMode();
+    }
+    return false;
+}
+
+std::optional<bool> ShellController::isChecked(const AppCommand& command) const {
+    if (command.kind != AppCommand::Kind::MarkdownMode) return std::nullopt;
+    const auto mode = activeMarkdownMode();
+    return mode.has_value() && *mode == command.markdownMode();
+}
+
 void ShellController::requestCloseTab(std::size_t index) {
     cancelPrintForTab(index);
     DocumentTab* tab = workspace_.tab(index);

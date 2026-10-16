@@ -23,6 +23,7 @@ add_library(rivet_app STATIC
     ContentLayer.cpp
     CropTool.cpp
     FileController.cpp
+    MenuModel.cpp
     PageEditingController.cpp
     PasswordPromptController.cpp
     PrintCoordinator.cpp

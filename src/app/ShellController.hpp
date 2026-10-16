@@ -9,6 +9,7 @@
 #include "app/FileController.hpp"
 #include "app/MarkdownExportController.hpp"
 #include "app/MarkdownHostView.hpp"
+#include "app/MenuModel.hpp"
 #include "app/PageEditingController.hpp"
 #include "app/PasswordPromptController.hpp"
 #include "app/PrintCoordinator.hpp"
@@ -31,6 +32,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace rivet::app {
@@ -113,6 +115,16 @@ public:
     // The mode of the active Ready Markdown tab, if any (menu check marks).
     std::optional<MarkdownDisplayMode> activeMarkdownMode() const;
 
+    // Portable menu dispatch (see MenuModel.hpp): routes any AppCommand to the
+    // perform*/canPerform* methods above. isChecked is the check/radio state
+    // (Markdown display mode); nullopt for commands without one. Quit calls
+    // the handler set by setQuitHandler (macOS quits via its app menu and
+    // never sets one; canPerform(Quit) is false without a handler).
+    void perform(const AppCommand& command);
+    bool canPerform(const AppCommand& command) const;
+    std::optional<bool> isChecked(const AppCommand& command) const;
+    void setQuitHandler(std::function<void()> handler) { quitHandler_ = std::move(handler); }
+
     // Read access for the platform host and tests.
     DocumentWorkspace& workspace() { return workspace_; }
     ui::PdfViewport& pdfViewport() { return *viewport_; }
@@ -171,6 +183,7 @@ private:
     void cancelPrintForTab(std::size_t index);
 
     platform::ShellServices services_;
+    std::function<void()> quitHandler_;
     // Declaration order = reverse destruction order: the feature controllers
     // die first (they only hold pointers into the tree and the workspace;
     // nothing calls into them during teardown), then the context, then the
