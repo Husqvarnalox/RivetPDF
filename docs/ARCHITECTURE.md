@@ -508,6 +508,15 @@ Full rationale: [ADR-0024](adr/ADR-0024-acroform-filling.md).
 - **Save**: assembly applies the values with PDFium's form filler after content edits and before annotation edits, verifies every field and fails the save on any field it could not apply.
 - **UI**: `FormLayer` sits below the annotation layer and is live in the Select tool; `FormController` owns the inline TextField/TextArea editor, the choice popup, Tab/Shift+Tab traversal, Space/Enter/Esc, the Edit > Reset Form and View > Highlight Form Fields commands and status-bar reasons for read-only, XFA or over-limit forms. Field names and values are never logged.
 
+### Redaction
+
+Full rationale: [ADR-0026](adr/ADR-0026-redaction.md).
+
+- **Model**: marks are a per-page immutable `RedactionMarks` list on `PageEntry` (user space of the source page), swapped by `RedactionMarksCommand` and kept across a save; they only draw an outline. `ApplyRedactionsCommand` is one undo step and one model publish (`PageModel::updateRedaction`): marks become `PdfPageContentEdits::redactions`, intersecting annotations (links, widgets, popups, overlay items) are suppressed through the page's annotation state, base-document fields whose last presented widget goes have their value cleared in the form values, and the snapshot's `removeMetadata` flag can be set. Pages refused by the regeneration probe, anything still loading and fields whose value cannot be cleared (read-only, button, signature) refuse the whole apply with the reason; never a partial redaction.
+- **Backend**: `applyContentEdits` applies the redactions after object edits and text blocks, so display and save share it: intersecting glyphs (tight or loose box) are dropped and the surviving runs re-created as new text objects with the same font, size, matrix and colors at their original origins, verified by reading them back; objects that cannot be rewritten (Type 3, clipped, unmappable, failed read-back) are removed whole. Image pixels whose footprint intersects are filled in the decoded bitmap and re-embedded in place; undecodable images, paths, shadings and form XObjects are removed whole; one opaque box per area goes on top. Redaction-produced objects carry `PdfContentOrigin::Kind::Redaction` and are read-only until saved. PDFium's content regeneration prunes the page resources and a non-incremental save drops unreachable original streams, so removed content is not in the written file.
+- **Metadata**: `PdfAssemblyRequest::removeMetadata` makes the PreserveBase assembly import its finished pages into a fresh document (PDFium has no API to edit `/Info` or XMP), which drops document-level structure like Extract; refused for encrypted documents.
+- **UI**: the Redact tool is `ContentTool::Redact` in the shared tool state; `RedactionLayer` paints marks and turns drags into marks through the pure `RedactionInteraction`; `RedactionController` handles Mark Selection for Redaction, Apply Redactions (built first so refusals show their reason, then confirmed through `IAlertService::confirm`, with a second prompt for metadata) and Clear Redaction Marks.
+
 ---
 
 ## 15. Directory layout

@@ -46,3 +46,55 @@ extractable. Rivet already rewrites page content through
 
 - Over-redaction of partially overlapping glyph runs in unusual fonts.
 - Redaction lands only on save; until then undo restores everything.
+
+### Implementation notes (2026-10-16)
+
+Where PDFium's public API cannot do what the decision describes, the
+implementation removes more, never less:
+
+- **Char codes are not readable.** PDFium has no API returning a text
+  object's character codes, so a surviving run is re-set from its extracted
+  Unicode with `FPDFText_SetText` in the same font handle, then read back
+  through a fresh text page; a run that does not read back identically, a
+  surviving glyph without a Unicode mapping, a Type 3 font, a clipped text
+  object or render modes 4-7 remove the whole object. Glyphs PDFium's text
+  page drops (e.g. duplicated "fake bold" glyphs) are not rewritten.
+  Character spacing, word spacing, horizontal scaling and rise are not
+  readable either: a rewritten run starts at its original first-glyph
+  origin but its later glyphs may drift slightly.
+- **Glyph hit test.** A glyph is removed when its tight or its loose box
+  intersects an area. Any text object whose bounds intersect is rebuilt from
+  its runs, even if no glyph hits.
+- **Images.** Pixels are tested by the axis-aligned box of their page-space
+  footprint (rotated images lose a little more at the edges). The decoded
+  bitmap ignores the image's soft mask and decode details, so a redacted
+  image is re-embedded opaque and in DeviceGray/DeviceRGB. The image is
+  replaced in place: another placement of the same XObject on that page is
+  redacted at the same image coordinates. Images over the size limits or
+  that cannot be decoded are removed.
+- **Removed objects leave no bytes behind.** Verified against the pinned
+  PDFium: content regeneration rewrites `/Resources` with only the objects
+  still drawn and a non-incremental save writes only reachable original
+  objects, so removed images, form XObjects and the old content streams
+  are not in the saved file (they stay when another page still uses them,
+  which then shows them anyway).
+- **Form fields.** A removed widget stays reachable from `/AcroForm`, so
+  Apply clears the value of every base-document field none of whose
+  widgets is still presented (the cleared value is written by the form
+  filler, regenerating the appearance). Fields that cannot be cleared that
+  way - read-only fields holding a value, push buttons and signatures,
+  whose appearance would stay in the file - refuse the apply. Field names
+  remain in the file.
+- **Annotations.** Annotations whose `/Rect` intersects are removed (popups
+  with their parent). A page with more than `kMaxAnnotationsPerPage`
+  entries (some unlisted) refuses the apply.
+- **Metadata.** PDFium cannot edit `/Info` or the catalog's `/Metadata`.
+  "Also remove document metadata" therefore rebuilds the saved file by
+  importing the finished pages into a fresh document: like Extract, the
+  outline, AcroForm, page labels, structure tree, named destinations and
+  attachments are not carried over (the prompt says so). It is not offered
+  for encrypted documents, whose encryption the rebuild would drop, and
+  the backend refuses it for them. Page-level `/Metadata` streams stay.
+- **Whole objects.** Paths are removed when their bounds (which ignore any
+  clip) intersect: a page-sized background rectangle or a table grid is
+  removed entirely.

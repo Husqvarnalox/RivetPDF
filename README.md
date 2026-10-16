@@ -24,7 +24,8 @@ Documents never leave the machine: Rivet has no network code of its own, no acco
 | Annotations: highlight, underline, strikeout, notes, ink, shapes, stamps | Implemented (macOS) |
 | Content editing: select/move/resize/delete page objects, retype text, add text, replace images | Implemented (macOS), with the limits below |
 | Forms (AcroForm): fill text, check box, radio, combo and list fields with undo/redo, Reset Form, field highlighting; saved with the document. XFA and form scripts are not supported | Implemented (macOS) |
-| Signatures, OCR, redaction, compression, encryption, document comparison | Not implemented |
+| Redaction: mark areas or selected text, review, apply as one undo step; on save the content under the marks (glyphs, image pixels, drawings, links, form widgets and their values) is removed, not covered; optional metadata removal | Implemented (macOS) |
+| Signatures, OCR, compression, encryption, document comparison | Not implemented |
 | Windows / Linux shells | Not implemented. Portable layers are built and tested on Ubuntu/GCC in CI |
 | Markdown: Rendered (read-only), Source (with live preview) and Split views; text editing with undo/redo and background save | Implemented (macOS) |
 | Markdown export to PDF (vector, bundled fonts, links) and printing | Implemented (macOS) |
@@ -38,6 +39,7 @@ macOS is currently the primary supported desktop shell; the portable core layers
 - Existing objects cannot be reordered in z.
 - Bundled fallback fonts (Arimo, Tinos, Cousine) cover Latin, Greek and Cyrillic only.
 - Extract and split do not carry document-level structure (outline, metadata, forms, page labels).
+- Redaction is refused on pages PDFium cannot regenerate faithfully and over read-only, button or signature form fields; partly covered vector drawings and form XObjects are removed whole. Removing metadata rebuilds the file without its outline, form fields and page labels and is not offered for encrypted documents.
 - Undo history does not survive a save, and editing is paused while a save runs.
 - Closing a window with several unsaved tabs saves only one per review pass.
 
@@ -99,8 +101,8 @@ CI (GitHub Actions) builds with `-Werror` and runs CTest on macOS (AppleClang) a
 
 ## Roadmap
 
-Done: PDF viewer, page editing, annotations, content editing, Markdown viewing and source editing (see Status).
-Next: form filling and signatures, then OCR, redaction, compression, encryption and document comparison. Windows and Linux shells have no schedule.
+Done: PDF viewer, page editing, annotations, content editing, form filling, redaction, Markdown viewing and source editing (see Status).
+Next: signatures, then OCR, compression, encryption and document comparison. Windows and Linux shells have no schedule.
 
 ## Contributing
 
