@@ -46,6 +46,10 @@ add_executable(rivet_pdf_tests
     # remove-metadata save, probe refusal. PDFium-ON bodies only (the
     # validation limits run everywhere).
     TestPdfiumRedaction.cpp
+    # Save Reduced Copy (ADR-0028): portable planning/downsampling (all
+    # builds) and the PDFium reduction + remove-password round trips.
+    TestImageReduce.cpp
+    TestPdfiumImageReduce.cpp
     # Document builder round trips (text, links, pixels, metrics consistency,
     # sink failures): PDFium-ON bodies only.
     TestPdfiumBuilder.cpp

@@ -23,6 +23,7 @@
 #include "PdfiumEngine.h"
 #include "PdfiumFileSource.h"
 #include "PdfiumForms.h"
+#include "PdfiumImageReduce.h"
 #include "PdfiumWriting.h"
 #include "fpdf_edit.h"          // FPDF_CreateNewDocument, FPDF_MovePages, FPDFPage_Delete, FPDFPage_SetRotation
 #include "fpdf_ppo.h"           // FPDF_ImportPagesByIndex
@@ -555,8 +556,50 @@ core::Status applyContent(FPDF_DOCUMENT working,
 
 // Serializes `working` into `sink` (see PdfiumWriting.h). Caller holds the
 // gate.
-core::Status saveTo(FPDF_DOCUMENT working, IPdfByteSink& sink) {
-    return internal::saveDocumentToSink(working, sink);
+core::Status saveTo(FPDF_DOCUMENT working, IPdfByteSink& sink, bool removeSecurity = false) {
+    return internal::saveDocumentToSink(working, sink, removeSecurity);
+}
+
+// ADR-0028: downsamples and JPEG-re-encodes the oversized top-level images
+// of every final page (pages already in final order, content edits applied).
+// A page whose content streams would not survive regeneration (the ADR-0017
+// probe, run against the page's source document at most once per page and
+// only when an image would actually be replaced) is left as it is. Pages
+// that already went through content editing are regenerated anyway and need
+// no probe. Caller holds the gate.
+core::Status applyImageReduction(FPDF_DOCUMENT working,
+                                 const std::vector<ResolvedPage>& pages,
+                                 ImportSources& sources,
+                                 const PdfImageReduction& reduction) {
+    std::map<const PdfiumDocument*, std::unique_ptr<PrivateCopy>> references;
+    std::size_t total = 0;
+    for (std::size_t i = 0; i < pages.size(); ++i) {
+        internal::ScopedPage page(FPDF_LoadPage(working, static_cast<int>(i)));
+        if (page.get() == nullptr) {
+            return std::unexpected(core::makeError(core::ErrorCode::InvalidDocument,
+                                                   "PDFium failed to load assembled page " +
+                                                       std::to_string(i),
+                                                   "pdf"));
+        }
+        const bool edited = pages[i].contentEdits != nullptr && !pages[i].contentEdits->empty();
+        const auto safe = [&]() -> bool {
+            if (edited) return true;
+            const auto source = sources.documentFor(*pages[i].source);
+            if (!source.has_value()) return false;
+            auto it = references.find(pages[i].source);
+            if (it == references.end()) {
+                auto copy = openPrivateCopy(*pages[i].source, "probe reference");
+                if (!copy.has_value()) return false;
+                it = references.emplace(pages[i].source, std::move(*copy)).first;
+            }
+            return internal::probeRegeneration(*source, it->second->get(), pages[i].sourceIndex).safe;
+        };
+        auto reduced = internal::reduceImagesOnPage(working, page.get(), reduction, safe);
+        if (!reduced.has_value()) return std::unexpected(reduced.error());
+        total += *reduced;
+    }
+    if (reduction.imagesReduced != nullptr) *reduction.imagesReduced = total;
+    return core::ok();
 }
 
 // Remove-metadata save (ADR-0026): PDFium has no API to edit /Info or the
@@ -715,6 +758,12 @@ core::Status assemblePreserveBase(const PdfiumDocument& base,
     if (auto edited = applyContent(working.get(), pages, contentReport); !edited.has_value()) {
         return edited;
     }
+    if (request.reduceImages.has_value()) {
+        if (auto reduced = applyImageReduction(working.get(), pages, sources, *request.reduceImages);
+            !reduced.has_value()) {
+            return reduced;
+        }
+    }
     // Forms before annotation edits: widget /Annots indices are still the
     // source page's (content edits never touch /Annots).
     std::vector<int> reusedFinal(baseCount, -1);
@@ -732,7 +781,7 @@ core::Status assemblePreserveBase(const PdfiumDocument& base,
     if (request.removeMetadata) {
         return saveWithoutMetadata(working.get(), finalCount, sink);
     }
-    return saveTo(working.get(), sink);
+    return saveTo(working.get(), sink, request.removeSecurity);
 }
 
 core::Status assembleFresh(const std::vector<ResolvedPage>& pages, ImportSources& sources,
@@ -828,6 +877,10 @@ core::Status assembleWithPdfium(const PdfiumEngine& engine,
                     const auto base = ownedDocument(engine, request.base, "base");
                     if (!base.has_value()) {
                         return std::unexpected(base.error());
+                    }
+                    if (request.removeSecurity && request.removeMetadata) {
+                        return std::unexpected(
+                            invalidArgument("the password and the metadata cannot be removed in one save"));
                     }
                     if (request.removeMetadata && (*base)->info().isEncrypted) {
                         // A rebuild would silently drop the encryption.
