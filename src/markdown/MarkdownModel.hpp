@@ -40,8 +40,11 @@ struct TextSpan {
     std::uint32_t text = 0;
     std::uint32_t textLength = 0;
     std::uint32_t sourceLength = 0;
+    // Atomic even when both lengths agree (a soft break " " for "\n", a tab
+    // drawn as one space).
+    bool opaque = false;
 
-    constexpr bool exact() const { return textLength == sourceLength; }
+    constexpr bool exact() const { return textLength == sourceLength && !opaque; }
     constexpr std::size_t sourceEnd() const { return source + sourceLength; }
     constexpr std::uint32_t textEnd() const { return text + textLength; }
     constexpr bool operator==(const TextSpan&) const = default;

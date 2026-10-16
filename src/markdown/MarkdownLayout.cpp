@@ -88,6 +88,7 @@ struct Token {
     const std::vector<TextSpan>* spans = nullptr;
     std::uint32_t at = 0;
     std::uint32_t len = 0;
+    std::string_view raw; // Space tokens: the whitespace as decoded (" ", "\t", "  ")
 };
 
 // Source offset of inline-text position x. A position that starts a piece
@@ -175,6 +176,7 @@ private:
             tok.link = link;
             tok.exact = exact;
             tok.src = exact ? SourceRange{in.range.start + a, in.range.start + i} : in.range;
+            tok.raw = t.substr(a, i - a);
             if (!in.spans.empty()) {
                 tok.spans = &in.spans;
                 tok.at = static_cast<std::uint32_t>(a);
@@ -297,10 +299,12 @@ private:
                 const std::size_t e = mapTextPos(*tok.spans, static_cast<std::size_t>(tok.at) + tok.len, s);
                 sp.source = s;
                 sp.sourceLength = static_cast<std::uint32_t>(e >= s ? e - s : 0);
+                sp.opaque = tok.raw != " ";
             } else {
                 if (tok.src.empty() && tok.type == Token::Type::Word) return; // unmapped
                 sp.source = tok.src.start;
                 sp.sourceLength = static_cast<std::uint32_t>(tok.src.size());
+                sp.opaque = tok.type != Token::Type::Word; // soft breaks, images
             }
             pushSpan(sp);
             return;
@@ -323,6 +327,7 @@ private:
             } else {
                 sp.source = it->source;
                 sp.sourceLength = it->sourceLength;
+                sp.opaque = true;
             }
             pushSpan(sp);
         }
@@ -723,6 +728,7 @@ private:
                 sp.textLength = static_cast<std::uint32_t>(n);
                 sp.source = mapTextPos(spans, abs, 0);
                 sp.sourceLength = (it != spans.end() && it->text <= abs && it->exact()) ? 1u : 0u;
+                sp.opaque = true;
                 out_.runSpans.push_back(sp);
                 col += n;
                 shown += n;

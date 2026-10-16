@@ -416,10 +416,18 @@ public:
             noteExtent(f.ext, p, size);
             const std::size_t before = f.block->text.size();
             appendLimited(f.block->text, type, p, size);
-            SourceRange raw{std::min(cursor_, n_), std::min(cursor_, n_)};
+            // Text MD4C synthesizes (line breaks, indentation) is not in the
+            // source: a line break maps to the source's next '\n', anything else
+            // to an empty point after the previous piece.
+            const std::vector<TextSpan>& done = f.block->textSpans;
+            const std::size_t prevEnd = done.empty() ? std::min(cursor_, n_) : done.back().sourceEnd();
+            SourceRange raw{prevEnd, prevEnd};
             if (inSource(p, size)) {
                 raw.start = static_cast<std::size_t>(p - src_.data());
                 raw.end = raw.start + size;
+            } else if (size == 1 && p[0] == '\n') {
+                const std::size_t nl = src_.find('\n', prevEnd);
+                if (nl != std::string_view::npos) raw = {nl, nl + 1};
             }
             recordSpan(f.block->textSpans, before, f.block->text.size() - before, raw);
             return 0;
