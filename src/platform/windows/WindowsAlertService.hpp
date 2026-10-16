@@ -35,8 +35,9 @@ public:
     std::optional<std::string> promptForText(std::string_view title, std::string_view message,
                                              std::string_view defaultText) override;
 
-    // Two-button confirmation (`confirmLabel` default | Cancel).
-    bool confirm(std::string_view title, std::string_view message, std::string_view confirmLabel);
+    // Two-button confirmation via TaskDialogIndirect: `okLabel` (default)
+    // and Cancel (Esc). Also used by the save dialog's replace prompt.
+    bool confirm(std::string_view title, std::string_view message, std::string_view okLabel) override;
 
 private:
     HWND__* owner_ = nullptr;

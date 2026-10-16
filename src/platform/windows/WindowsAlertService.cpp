@@ -220,11 +220,11 @@ void WindowsAlertService::showError(std::string_view title, std::string_view mes
     (void)runDialog(owner_, dispatcher_, spec);
 }
 
-bool WindowsAlertService::confirm(std::string_view title, std::string_view message, std::string_view confirmLabel) {
+bool WindowsAlertService::confirm(std::string_view title, std::string_view message, std::string_view okLabel) {
     DialogSpec spec;
     spec.instruction = win::widen(title);
     spec.content = win::widen(message);
-    spec.buttons = {{kFirst, win::widen(confirmLabel)}};
+    spec.buttons = {{kFirst, win::widen(okLabel)}};
     spec.cancelButton = true;
     spec.defaultId = kFirst;
     return runDialog(owner_, dispatcher_, spec) == kFirst;
