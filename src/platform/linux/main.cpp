@@ -6,6 +6,7 @@
 // runs the event loop and tears everything down in the same order as macOS.
 
 #include "LinuxAlertService.hpp"
+#include "LinuxAppDataLocation.hpp"
 #include "LinuxClipboard.hpp"
 #include "LinuxExternalUrlOpener.hpp"
 #include "LinuxFileDialog.hpp"
@@ -87,6 +88,7 @@ int main(int argc, char** argv) {
     const auto fileDialog = std::make_unique<platform::LinuxFileDialog>(*connection, alertService.get());
     fileDialog->setOwner(window.get());
     const auto imageDecoder = std::make_unique<platform::LinuxImageDecoder>();
+    const auto appData = std::make_unique<platform::LinuxAppDataLocation>();
     const auto clipboard = std::make_unique<platform::LinuxClipboard>(*connection);
     const auto urlOpener = std::make_unique<platform::LinuxExternalUrlOpener>();
 #if RIVET_HAVE_CUPS
@@ -99,6 +101,7 @@ int main(int argc, char** argv) {
     services.mainDispatcher = dispatcher.get();
     services.fileDialog = fileDialog.get();
     services.imageDecoder = imageDecoder.get();
+    services.appData = appData.get();
     services.clipboard = clipboard.get();
     services.urlOpener = urlOpener.get();
 #if RIVET_HAVE_CUPS

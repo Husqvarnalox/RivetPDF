@@ -19,11 +19,20 @@ target_link_libraries(rivet_platform_portable_tests PRIVATE
 rivet_set_target_warnings(rivet_platform_portable_tests)
 rivet_set_target_sanitizers(rivet_platform_portable_tests)
 
+# UNIX: the Linux application-data rule (POSIX-only source, compiled in).
+if(UNIX)
+    target_sources(rivet_platform_portable_tests PRIVATE
+        TestAppDataLocation.cpp
+        "${CMAKE_SOURCE_DIR}/src/platform/linux/LinuxAppDataLocation.cpp")
+    target_include_directories(rivet_platform_portable_tests PRIVATE "${CMAKE_SOURCE_DIR}/src/platform/linux")
+endif()
+
 # macOS-only: the clipboard and print tests drive the AppKit-backed implementations.
 if(APPLE)
     add_executable(rivet_platform_tests
         TestClipboard.cpp
         TestImageDecoder.mm
+        TestMacosAppDataLocation.mm
         TestPrintService.mm
     )
 

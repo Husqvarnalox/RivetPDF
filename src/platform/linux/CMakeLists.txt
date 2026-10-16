@@ -34,6 +34,7 @@ endif()
 
 add_library(rivet_platform_linux STATIC
     LinuxAlertService.cpp
+    LinuxAppDataLocation.cpp
     LinuxClipboard.cpp
     LinuxExternalUrlOpener.cpp
     LinuxFileDialog.cpp
