@@ -189,12 +189,34 @@ bool FileController::allowUnappliedRedactions(DocumentTab& tab) {
     return allowed && liveTab(id) != nullptr; // the modal may have closed the tab
 }
 
+bool FileController::allowSignedSave(DocumentTab& tab) {
+    if (!tab.isPdf() || tab.session() == nullptr) return true;
+    editor::DocumentSession& session = *tab.session();
+    if (!session.isDirty() || !session.signatures().hasSignatures()) return true;
+    const TabId id = tab.id();
+    if (std::find(signatureWarned_.begin(), signatureWarned_.end(), id) != signatureWarned_.end()) return true;
+    if (context_.services.alerts == nullptr) return true; // nobody to ask (headless)
+    const bool confirmed = context_.services.alerts->confirm(
+        "Save Signed Document",
+        "This document contains digital signatures. Saving your changes will invalidate them: the "
+        "signatures will no longer match the document.",
+        "Save Anyway");
+    if (!confirmed) return false;
+    signatureWarned_.push_back(id);
+    return liveTab(id) != nullptr; // the modal may have closed the tab
+}
+
 void FileController::requestSave(DocumentTab& tab, std::filesystem::path destination,
                                  bool closeTabWhenDone, bool interactive) {
     if (!tab.hasContent()) return;
     commitPendingEdits();
     if (!allowUnappliedRedactions(tab)) {
         setStatus_("Save cancelled: redaction marks are not applied");
+        saveSettled(tab.id(), false);
+        return;
+    }
+    if (!allowSignedSave(tab)) {
+        setStatus_("Save cancelled: the document is digitally signed");
         saveSettled(tab.id(), false);
         return;
     }

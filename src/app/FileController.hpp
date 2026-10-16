@@ -204,6 +204,10 @@ private:
     void startNextSave();
     // False when the user declines to write a document with unapplied redaction marks.
     bool allowUnappliedRedactions(DocumentTab& tab);
+    // False when the user declines to save edits over digital signatures
+    // (ADR-0025): asked once per tab, only when the loaded base document has
+    // signatures and the session has unsaved edits.
+    bool allowSignedSave(DocumentTab& tab);
     // Markdown saves share activeSave_/queue/saveSettled with PDF saves; only
     // the job and its completion differ.
     void launchMarkdownSave(DocumentTab& tab, SaveRequest request, WorkerToken token);
@@ -266,6 +270,8 @@ private:
     std::optional<PendingQuit> pendingQuit_;
     // Tabs the user chose to close behind their in-flight save.
     std::vector<TabId> closeAfterSave_;
+    // Tabs already warned about invalidating their digital signatures.
+    std::vector<TabId> signatureWarned_;
 
     // Fences the worker tasks (save, extract, split, import). Declared last:
     // destroyed first, after ~FileController() closed it explicitly.

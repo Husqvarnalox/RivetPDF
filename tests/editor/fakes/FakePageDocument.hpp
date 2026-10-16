@@ -379,6 +379,15 @@ protected:
         return it->second;
     }
 
+public:
+    // Digital signatures (ADR-0025): the configured list, NotAvailable when
+    // none was set (like a backend without signature support).
+    pdf::PdfSignatureListPtr signatureList;
+    core::Result<pdf::PdfSignatureListPtr> signatures() const override {
+        if (signatureList == nullptr) return pdf::PdfDocument::signatures();
+        return signatureList;
+    }
+
 private:
     pdf::PdfDocumentInfo info_;
     std::string prefix_;
