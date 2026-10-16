@@ -51,6 +51,7 @@ ShellController::~ShellController() {
     // the sessions and the widget tree die.
     viewport_->clearDocument();
     markdownView_->bind(nullptr);
+    comparisonView_->bind(nullptr);
     // The controllers die before the widget tree: the viewport must not keep
     // a pointer to the text bridge past its owner.
     viewport_->setTextBridge(nullptr);
@@ -112,6 +113,13 @@ void ShellController::buildWidgets() {
     markdownView_ = markdownView.get();
     markdownView_->setFrame(kHiddenFrame);
     root_->addChild(std::move(markdownView));
+
+    // Content slot of comparison tabs (ADR-0029), hidden unless one is active.
+    auto comparisonView = std::make_unique<ComparisonHostView>(
+        ComparisonHostView::Environment{[this](ui::Widget* widget) { setFocus(widget); }});
+    comparisonView_ = comparisonView.get();
+    comparisonView_->setFrame(kHiddenFrame);
+    root_->addChild(std::move(comparisonView));
 
     // Loading / error overlay, drawn above the viewport area.
     auto overlay = std::make_unique<TextLabel>("", ui::Font{14.0, ui::Font::Weight::Semibold},
@@ -299,7 +307,7 @@ void ShellController::layoutShell() {
     const double height = bounds.size.height;
     // Markdown tabs have no sidebar, annotation or content bars and no PDF
     // viewport: their view fills the whole content area.
-    const bool markdown = chromeMarkdown_;
+    const bool markdown = chromeMarkdown_ || chromeComparison_; // content-only chrome
     core::Rect contentRect{0.0, 0.0, width, height};
 
     if (presentationMode_) {
@@ -334,7 +342,8 @@ void ShellController::layoutShell() {
         contentRect = core::Rect{sidebarWidth, middleTop, std::max(0.0, width - sidebarWidth), middleHeight};
     }
     viewport_->setFrame(markdown ? kHiddenFrame : contentRect);
-    markdownView_->setFrame(markdown ? contentRect : kHiddenFrame);
+    markdownView_->setFrame(chromeMarkdown_ ? contentRect : kHiddenFrame);
+    comparisonView_->setFrame(chromeComparison_ ? contentRect : kHiddenFrame);
     // Everything over the content follows its frame.
     overlayLabel_->setFrame(contentRect);
     searchBar_->layout(markdown ? contentRect : viewport_->frame());
@@ -365,11 +374,12 @@ void ShellController::updateDocumentEdited() {
     services_.setDocumentEdited(tab != nullptr && tab->isDirty());
 }
 
-void ShellController::applyChromeForKind(bool markdown) {
-    for (ui::Widget* item : pdfToolbarItems_) toolbar_->setItemVisible(item, !markdown);
+void ShellController::applyChromeForKind(bool markdown, bool comparison) {
+    for (ui::Widget* item : pdfToolbarItems_) toolbar_->setItemVisible(item, !markdown && !comparison);
     for (ui::Widget* item : markdownToolbarItems_) toolbar_->setItemVisible(item, markdown);
-    if (chromeMarkdown_ == markdown) return;
+    if (chromeMarkdown_ == markdown && chromeComparison_ == comparison) return;
     chromeMarkdown_ = markdown;
+    chromeComparison_ = comparison;
     layoutShell();
 }
 
@@ -415,10 +425,17 @@ void ShellController::bindActiveTab() {
 
     // Chrome follows the tab's kind (also while it loads or failed to open).
     const bool markdown = tab != nullptr && tab->isMarkdown();
+    const bool comparison = tab != nullptr && tab->isComparison();
     // Detach the PDF viewport from the previous tab's view state BEFORE the
     // relayout hides it: a zero-size layout must not rewrite that tab's zoom.
-    if (markdown) viewport_->clearDocument();
-    applyChromeForKind(markdown);
+    if (markdown || comparison) viewport_->clearDocument();
+    applyChromeForKind(markdown, comparison);
+    if (comparison) {
+        markdownView_->bind(nullptr);
+        bindComparisonTab(tab);
+        return;
+    }
+    comparisonView_->bind(nullptr);
     if (markdown) {
         bindMarkdownTab(tab);
         return;
@@ -523,6 +540,70 @@ void ShellController::bindMarkdownTab(DocumentTab* tab) {
     markdownView_->invalidate();
 }
 
+// A comparison tab owns the content area like a Markdown tab: every PDF
+// binding is dropped and the comparison view shows the tab's state (opening,
+// comparing, failed or the two documents with their differences).
+void ShellController::bindComparisonTab(DocumentTab* tab) {
+    viewport_->clearDocument();
+    sidebar_->bindTab(nullptr);
+    pageEditing_->bindTab(nullptr);
+    annotations_->bindTab(nullptr);
+    content_->bindTab(nullptr);
+    forms_->bindTab(nullptr);
+    redaction_->bindTab(nullptr);
+    searchBar_->bindMarkdownTab();
+    setPresentationMode(false);
+
+    ComparisonTabState* state = tab->comparison();
+    const TabId id = tab->id();
+    state->setOnChanged([this, id] {
+        const DocumentTab* active = workspace_.activeTab();
+        if (active == nullptr || active->id() != id) return;
+        comparisonView_->refresh();
+        if (const ComparisonTabState* current = active->comparison(); current != nullptr) {
+            if (current->phase() == ComparisonTabState::Phase::Failed) {
+                setStatus(std::format("Comparison failed: {}", current->errorText()));
+            } else if (current->phase() == ComparisonTabState::Phase::Ready && current->result() != nullptr) {
+                const std::size_t count = current->result()->changes.size();
+                setStatus(count == 0 ? std::string("No differences found")
+                                     : std::format("{} difference{}", count, count == 1 ? "" : "s"));
+            }
+        }
+    });
+    comparisonView_->bind(state);
+    setStatus(std::format("{} \u2014 comparison", tab->title()));
+    statusBar_->updatePageIndicator();
+    updateWindowTitle();
+    updateDocumentEdited();
+}
+
+bool ShellController::canPerformCompare() const {
+    const DocumentTab* tab = context_ != nullptr ? context_->readyPdfTab() : nullptr;
+    return tab != nullptr && engine_->isAvailable() && services_.fileDialog != nullptr &&
+           services_.mainDispatcher != nullptr;
+}
+
+void ShellController::performCompare() {
+    if (!canPerformCompare()) return;
+    const DocumentTab* tab = context_->readyPdfTab();
+    // Both sides are read from disk: the left one is the active document as
+    // last saved (ADR-0029), the right one is picked here.
+    const std::filesystem::path leftPath = tab->session()->path();
+    const bool unsaved = tab->isDirty();
+    const core::Result<std::filesystem::path> chosen = services_.fileDialog->openPdf();
+    if (!chosen.has_value()) {
+        if (chosen.error().code != core::ErrorCode::Cancelled) {
+            setStatus("Could not choose a file: " + core::describe(chosen.error()));
+        }
+        return;
+    }
+    ComparisonTabState::Environment environment{engine_.get(), &scheduler_, services_.mainDispatcher};
+    std::unique_ptr<ComparisonTabState> state = ComparisonTabState::start(environment, leftPath, *chosen);
+    workspace_.openComparisonTab(std::format("{} vs {}", leftPath.filename().string(), chosen->filename().string()),
+                                 std::move(state));
+    if (unsaved) setStatus("Comparing the saved version of the active document (unsaved edits are not included)");
+}
+
 void ShellController::handleOpenRequest() {
     if (services_.fileDialog == nullptr) {
         setStatus("No file dialog available on this platform backend");
@@ -601,10 +682,15 @@ bool ShellController::canPerformContent(ContentCommand command) const {
 }
 
 void ShellController::performFile(FileCommand command) {
+    if (command == FileCommand::Compare) {
+        performCompare();
+        return;
+    }
     if (fileLifecycle_ != nullptr) fileLifecycle_->perform(command);
 }
 
 bool ShellController::canPerformFile(FileCommand command) const {
+    if (command == FileCommand::Compare) return canPerformCompare();
     return fileLifecycle_ != nullptr && fileLifecycle_->canPerform(command);
 }
 
@@ -728,6 +814,7 @@ bool ShellController::handleKeyEvent(const ui::KeyEvent& event) {
 
     // 3. Default: the active content (Markdown host or the PDF viewport).
     if (chromeMarkdown_) return markdownView_->onKey(event);
+    if (chromeComparison_) return comparisonView_->onKey(event);
     return viewport_->onKey(event);
 }
 
@@ -784,10 +871,12 @@ bool ShellController::handleShortcut(const ui::KeyEvent& event) {
             if (event.text == "f") {
                 // Markdown: the bar drives the rendered text (Rendered mode) or the
                 // source text (Source/Split).
+                if (chromeComparison_) return true; // no find in comparison tabs
                 if (!chromeMarkdown_ || markdownView_->searchTarget() != nullptr) searchBar_->toggle();
                 return true;
             }
             if (event.text == "c") {
+                if (chromeComparison_) return true; // no text selection in comparison tabs
                 if (chromeMarkdown_) {
                     markdownView_->copySelection();
                 } else {
@@ -803,7 +892,7 @@ bool ShellController::handleShortcut(const ui::KeyEvent& event) {
                 handlePrintRequest();
                 return true;
             }
-            if (event.text == "p" && control && command && !chromeMarkdown_) {
+            if (event.text == "p" && control && command && !chromeMarkdown_ && !chromeComparison_) {
                 // Ctrl+Cmd+F is taken by macOS fullscreen; presentation uses
                 // Ctrl+Cmd+P (print stays Cmd+P).
                 setPresentationMode(!presentationMode_);

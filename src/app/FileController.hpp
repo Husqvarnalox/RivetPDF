@@ -46,6 +46,7 @@ enum class FileCommand : std::uint8_t {
     SaveReducedHigh = 9,      // Save Reduced Copy, 200 dpi / JPEG q85 (ADR-0028)
     SaveReducedMedium = 10,   // ... 150 dpi / q75
     SaveReducedSmall = 11,    // ... 100 dpi / q60
+    Compare = 12,             // Compare With... (ADR-0029; handled by the shell)
 };
 
 class MarkdownExportController;

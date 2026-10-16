@@ -47,6 +47,7 @@ std::vector<Menu> buildMenuBar() {
     file.items.push_back(item("Merge with PDF\xE2\x80\xA6", AppCommand::of(FileCommand::Merge)));
     file.items.push_back(item("Export Selected Pages\xE2\x80\xA6", AppCommand::of(FileCommand::Extract)));
     file.items.push_back(item("Split PDF by Ranges\xE2\x80\xA6", AppCommand::of(FileCommand::Split)));
+    file.items.push_back(item("Compare With\xE2\x80\xA6", AppCommand::of(FileCommand::Compare), std::nullopt, true));
     // macOS draws Quit in the application menu; other platforms keep it here.
     MenuItem quit = item("Quit", AppCommand::quit(), cmd("q"), true);
     quit.role = MenuRole::Quit;

@@ -1,5 +1,7 @@
 add_library(rivet_app STATIC
     DocumentWorkspace.cpp
+    ComparisonTabState.cpp
+    ComparisonHostView.cpp
     MarkdownTabState.cpp
     MarkdownHostView.cpp
     MarkdownFind.cpp
