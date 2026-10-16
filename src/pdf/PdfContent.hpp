@@ -159,7 +159,14 @@ enum class PdfBundledFont : std::uint8_t {
     SerifBold,
     MonoRegular,
     MonoBold,
+    // Noto Sans Math Regular subset (SIL OFL 1.1; ADR-0032): math symbols,
+    // Greek and the mathematical alphanumeric letters for Markdown math. Not
+    // offered for Add Text; never a fallbackFor() result.
+    MathRegular,
 };
+
+// Number of PdfBundledFont enumerators.
+inline constexpr std::size_t kBundledFontCount = 7;
 
 // Which font a text block edit uses.
 //   FromObject: the font of source object `sourceIndex` of the same page,

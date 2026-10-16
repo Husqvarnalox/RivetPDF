@@ -8,8 +8,8 @@
 #include <string_view>
 
 // The fonts Rivet ships for new and substituted text (ADR-0016): subset
-// Arimo / Tinos / Cousine (Apache-2.0), compiled into rivet_pdf from
-// third_party/fonts at build time.
+// Arimo / Tinos / Cousine (Apache-2.0) and Noto Sans Math (SIL OFL 1.1,
+// ADR-0032), compiled into rivet_pdf from third_party/fonts at build time.
 
 namespace rivet::pdf {
 

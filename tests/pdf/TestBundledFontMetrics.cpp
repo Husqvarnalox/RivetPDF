@@ -111,3 +111,22 @@ RIVET_TEST(fontMetricsRejectMalformedPrograms) {
     CHECK(!m.valid());
     CHECK(!m.hasGlyph(U'A'));
 }
+
+RIVET_TEST(fontMetricsMathFace) {
+    const BundledFontMetrics& m = bundledFontMetrics(PdfBundledFont::MathRegular);
+    CHECK(m.valid());
+    CHECK_EQ(m.unitsPerEm(), 1000.0);
+    CHECK_GT(m.ascent(), 0.0);
+    CHECK_LT(m.descent(), 0.0);
+    // Coverage table and cmap agree, including astral-plane (format 12) code
+    // points; every sampled glyph has an advance.
+    const char32_t sample[] = {U'A',   U'x',   U'+',   U'=',    0x03B1,  0x2211,  0x222B, 0x2264, 0x2192,
+                               0x221E, 0x221A, 0x00D7, 0x1D44E, 0x1D400, 0x1D6FC, 0x1D7CE, 0x211D, 0x2026,
+                               0x4E2D, 0x0416, 0x1F600};
+    for (const char32_t cp : sample) {
+        CHECK_EQ(m.hasGlyph(cp), bundledFontCovers(PdfBundledFont::MathRegular, cp));
+        CHECK_EQ(m.advance(cp) > 0.0, bundledFontCovers(PdfBundledFont::MathRegular, cp));
+    }
+    // A big operator is wider than a thin letter.
+    CHECK_GT(m.advance(0x2211), m.advance(U'l'));
+}

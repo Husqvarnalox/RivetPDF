@@ -62,7 +62,7 @@ core::Status validateRect(const PdfBuildRect& rect, const PdfBuildPage& page, co
 }
 
 core::Status validateText(const PdfBuildText& text, const PdfBuildPage& page, const std::string& at) {
-    if (static_cast<std::size_t>(text.font) > static_cast<std::size_t>(PdfBundledFont::MonoBold)) {
+    if (static_cast<std::size_t>(text.font) >= kBundledFontCount) {
         return invalid(at + "unknown bundled font");
     }
     if (!std::isfinite(text.fontSize) || text.fontSize < kMinFontSize || text.fontSize > kMaxFontSize) {

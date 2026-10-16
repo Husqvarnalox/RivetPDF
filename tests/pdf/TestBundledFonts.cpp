@@ -82,3 +82,30 @@ RIVET_TEST(bundledFontsFallbackFor) {
     italic.italic = true;
     CHECK(fallbackFor(italic) == PdfBundledFont::SansRegular);
 }
+
+// --- Math face (ADR-0032) ------------------------------------------------------
+
+RIVET_TEST(bundledMathFontDataNameAndCoverage) {
+    const auto data = bundledFontData(PdfBundledFont::MathRegular);
+    CHECK_GT(data.size(), std::size_t{10000});
+    CHECK(data[0] == 0x00 && data[1] == 0x01 && data[2] == 0x00 && data[3] == 0x00);
+    CHECK(bundledFontDisplayName(PdfBundledFont::MathRegular) == "Noto Sans Math Regular");
+    CHECK_EQ(kBundledFontCount, static_cast<std::size_t>(PdfBundledFont::MathRegular) + 1);
+    // What the math engine emits: ASCII operators, Greek, big operators,
+    // relations, arrows, radicals, mathematical italic/bold letters (astral
+    // plane), double-struck capitals, accents.
+    const char32_t used[] = {U'+',    U'=',    U'(',    U'[',    U'{',    U'|',    U'1',    0x03B1, 0x03A9,
+                             0x03D5,  0x2211,  0x220F,  0x222B,  0x221A,  0x2264,  0x2265,  0x2260, 0x2248,
+                             0x2192,  0x221E,  0x22C5,  0x00D7,  0x00B1,  0x2208,  0x2282,  0x2202, 0x2207,
+                             0x1D44E, 0x1D467, 0x210E,  0x1D400, 0x1D6FC, 0x1D7CE, 0x211D,  0x2115, U'^',
+                             U'~',    0x2032,  0x27E8,  0x27E9,  0x2016,  0x22EF,  0x2026,  0x2212, 0x1D49C};
+    for (const char32_t c : used) CHECK(bundledFontCovers(PdfBundledFont::MathRegular, c));
+    CHECK(!bundledFontCovers(PdfBundledFont::MathRegular, 0x4E2D));
+    CHECK(!bundledFontCovers(PdfBundledFont::MathRegular, 0x0416)); // no Cyrillic
+    CHECK(!bundledFontCovers(PdfBundledFont::MathRegular, 0x1F600));
+    // Noto Sans Math has no spacing modifier accents (the engine uses ASCII
+    // ^ and ~, rules and small operators instead).
+    CHECK(!bundledFontCovers(PdfBundledFont::MathRegular, 0x02C6));
+    // The text faces do not cover the math alphanumerics.
+    CHECK(!bundledFontCovers(PdfBundledFont::SansRegular, 0x1D44E));
+}

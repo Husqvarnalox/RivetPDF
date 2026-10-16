@@ -28,6 +28,33 @@ compiled into `rivet_pdf` at build time by `cmake/EmbedFonts.cmake`.
 - **Coverage table**: `src/pdf/BundledFontCoverage.inc` is generated together
   with the fonts and is what `bundledFontCovers()` consults.
 
+## Noto Sans Math (math face, ADR-0032)
+
+| File | Family | Source version | Use |
+|---|---|---|---|
+| `NotoSansMath-Regular.ttf` | Noto Sans Math Regular | 3.000 | Math (`PdfBundledFont::MathRegular`) |
+
+- **Origin**: the official Noto release
+  <https://github.com/notofonts/math/releases/tag/NotoSansMath-v3.000>,
+  asset `NotoSansMath-v3.000.zip`
+  (SHA-256 `ac351837b41f8a897f020b97fb0f075ad574c1e9669fb5839ada1f92fd748356`);
+  input file `NotoSansMath/unhinted/ttf/NotoSansMath-Regular.ttf`
+  (SHA-256 `b127e84699212b6b2ef50aff58e0ebebeec04ffe6db1b9eb9e209c8c3d97b4aa`).
+- **License**: SIL Open Font License 1.1 (`LICENSE-OFL.txt` in this
+  directory, copied from the release's `OFL.txt`; copyright 2022 The Noto
+  Project Authors). No Reserved Font Name is declared. OS/2 `fsType` is 0.
+- **Modifications**: subset only (`tools/fonts/subset_fonts.py --set math`),
+  to the `MATH_RANGES` character set in the script (ASCII, Latin-1, Greek,
+  accents, general punctuation, letterlike symbols, arrows, mathematical
+  operators, miscellaneous technical, supplemental arrows/operators,
+  mathematical alphanumeric bold/italic/double-struck letters and digits).
+  The `MATH`, `GSUB`, `GPOS` and `GDEF` tables and hinting are dropped (the
+  Rivet math engine positions glyphs itself); kept tables as above. Same
+  shared-glyph fix-up as the text faces.
+- **Output**: SHA-256 of the committed subset
+  `1d37283e5628d4440586f45bcf4141876c007cde7ac1f20b3cbd003a9edd92a3`
+  (190172 bytes); coverage table `src/pdf/BundledFontCoverageMath.inc`.
+
 ## Regenerating
 
 The build never runs this; the outputs are committed. fontTools is needed
@@ -36,6 +63,7 @@ only by the maintainer script:
 ```
 python3 -m venv /tmp/fontvenv && /tmp/fontvenv/bin/pip install fonttools
 /tmp/fontvenv/bin/python tools/fonts/subset_fonts.py --source <dir with the full Arimo/Tinos/Cousine TTFs>
+/tmp/fontvenv/bin/python tools/fonts/subset_fonts.py --set math --source <dir with the full NotoSansMath-Regular.ttf>
 ```
 
 Then rebuild; the fonts are re-embedded automatically (the embed step depends

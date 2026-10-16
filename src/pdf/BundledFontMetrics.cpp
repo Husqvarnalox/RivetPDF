@@ -276,13 +276,14 @@ double BundledFontMetrics::textWidth(std::string_view utf8, double fontSize) con
 }
 
 const BundledFontMetrics& bundledFontMetrics(PdfBundledFont font) {
-    static const std::array<BundledFontMetrics, 6> all{
+    static const std::array<BundledFontMetrics, kBundledFontCount> all{
         BundledFontMetrics(bundledFontData(PdfBundledFont::SansRegular)),
         BundledFontMetrics(bundledFontData(PdfBundledFont::SansBold)),
         BundledFontMetrics(bundledFontData(PdfBundledFont::SerifRegular)),
         BundledFontMetrics(bundledFontData(PdfBundledFont::SerifBold)),
         BundledFontMetrics(bundledFontData(PdfBundledFont::MonoRegular)),
         BundledFontMetrics(bundledFontData(PdfBundledFont::MonoBold)),
+        BundledFontMetrics(bundledFontData(PdfBundledFont::MathRegular)),
     };
     const auto index = static_cast<std::size_t>(font);
     return all[index < all.size() ? index : 0];

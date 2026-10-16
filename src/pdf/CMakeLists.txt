@@ -23,6 +23,7 @@ set(RIVET_BUNDLED_FONT_FILES
     Tinos-Bold.ttf
     Cousine-Regular.ttf
     Cousine-Bold.ttf
+    NotoSansMath-Regular.ttf
 )
 set(RIVET_FONT_DIR "${PROJECT_SOURCE_DIR}/third_party/fonts")
 set(RIVET_BUNDLED_FONT_DATA_CPP "${CMAKE_CURRENT_BINARY_DIR}/BundledFontData.cpp")

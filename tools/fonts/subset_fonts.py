@@ -1,12 +1,20 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MPL-2.0
-"""Regenerates the fonts Rivet bundles (ADR-0016).
+"""Regenerates the fonts Rivet bundles (ADR-0016, ADR-0032).
 
-Subsets Arimo / Tinos / Cousine (Regular + Bold, Apache-2.0) to the character
-set below and writes:
+Two independent sets, selected with --set:
 
-  third_party/fonts/{Arimo,Tinos,Cousine}-{Regular,Bold}.ttf
-  src/pdf/BundledFontCoverage.inc   (sorted code point ranges per face)
+  text (default): subsets Arimo / Tinos / Cousine (Regular + Bold,
+  Apache-2.0) to RANGES and writes
+    third_party/fonts/{Arimo,Tinos,Cousine}-{Regular,Bold}.ttf
+    src/pdf/BundledFontCoverage.inc      (sorted code point ranges per face)
+
+  math: subsets Noto Sans Math Regular (SIL OFL 1.1) to MATH_RANGES (the
+  glyphs the Markdown math engine, src/markdown/math, emits) and writes
+    third_party/fonts/NotoSansMath-Regular.ttf
+    src/pdf/BundledFontCoverageMath.inc
+  --source is then the directory holding the full NotoSansMath-Regular.ttf
+  (NotoSansMath/unhinted/ttf/ of the notofonts/math release zip).
 
 This is an OFFLINE maintainer tool: the build never runs it. The generated
 files are committed. fontTools is needed only here:
@@ -57,6 +65,36 @@ RANGES = [
     (0xFFFD, 0xFFFD),
 ]
 
+# Math face (ADR-0032): what src/markdown/math emits. ASCII and a few Latin-1
+# operators, Greek (upright capitals, Greek letter variants), combining and
+# spacing accents, general punctuation (primes, ellipsis, norms), letterlike
+# symbols (double-struck capitals, planck h), arrows, mathematical operators,
+# miscellaneous technical (floor/ceil), angle brackets, long arrows and the
+# mathematical alphanumeric bold / italic / bold-italic / double-struck
+# letters and bold digits.
+MATH_FACE = ("NotoSansMath-Regular.ttf", "MathRegular")
+MATH_RANGES = [
+    (0x0020, 0x007E),
+    (0x00A0, 0x00FF),
+    (0x02C6, 0x02DD),
+    (0x0300, 0x036F),
+    (0x0391, 0x03C9),
+    (0x03D0, 0x03F6),
+    (0x2000, 0x206F),
+    (0x20D0, 0x20F0),
+    (0x2100, 0x214F),
+    (0x2190, 0x21FF),
+    (0x2200, 0x22FF),
+    (0x2300, 0x23FF),
+    (0x25A0, 0x25FF),
+    (0x27C0, 0x27FF),
+    (0x2A00, 0x2AFF),
+    (0x1D400, 0x1D4FF),
+    (0x1D538, 0x1D56B),
+    (0x1D6A8, 0x1D7FF),
+    (0xFFFD, 0xFFFD),
+]
+
 KEEP_TABLES = {"cmap", "glyf", "loca", "hmtx", "hhea", "head", "maxp", "name", "OS/2", "post"}
 
 # OS/2 fsType: 0 = installable, bit 3 (0x8) = editable. Restricted (0x2),
@@ -67,9 +105,9 @@ def embedding_allowed(fs_type):
     return fs_type == 0 or bool(fs_type & 0x8)
 
 
-def wanted_codepoints():
+def wanted_codepoints(ranges):
     cps = []
-    for lo, hi in RANGES:
+    for lo, hi in ranges:
         cps.extend(range(lo, hi + 1))
     return cps
 
@@ -114,14 +152,14 @@ def unique_glyph_per_codepoint(font):
     glyf.glyphOrder = order
 
 
-def subset_one(src_path, dst_path):
+def subset_one(src_path, dst_path, ranges):
     font = TTFont(src_path)
     fs_type = font["OS/2"].fsType
     if not embedding_allowed(fs_type):
         raise SystemExit(f"{src_path}: OS/2 fsType {fs_type:#x} does not allow embedding")
 
     cmap = font.getBestCmap()
-    present = [cp for cp in wanted_codepoints() if cp in cmap]
+    present = [cp for cp in wanted_codepoints(ranges) if cp in cmap]
     if not present:
         raise SystemExit(f"{src_path}: none of the wanted code points are present")
 
@@ -133,7 +171,7 @@ def subset_one(src_path, dst_path):
     options.legacy_kern = False
     options.name_IDs = [0, 1, 2, 3, 4, 5, 6, 13, 14]
     options.name_languages = [0x409]
-    options.drop_tables += ["DSIG", "GDEF", "GPOS", "GSUB", "kern", "gasp", "fpgm", "prep", "cvt "]
+    options.drop_tables += ["DSIG", "GDEF", "GPOS", "GSUB", "MATH", "kern", "gasp", "fpgm", "prep", "cvt "]
     subsetter = subset.Subsetter(options)
     subsetter.populate(unicodes=present)
     subsetter.subset(font)
@@ -146,22 +184,33 @@ def subset_one(src_path, dst_path):
 
     # Re-read what was actually written and report its coverage.
     written = TTFont(dst_path)
-    covered = [cp for cp in written.getBestCmap() if any(lo <= cp <= hi for lo, hi in RANGES)]
+    covered = [cp for cp in written.getBestCmap() if any(lo <= cp <= hi for lo, hi in ranges)]
     return ranges_of(covered), os.path.getsize(dst_path)
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--source", required=True, help="directory holding the full Arimo/Tinos/Cousine TTFs")
+    parser.add_argument("--source", required=True,
+                        help="directory holding the full source fonts of the selected set")
+    parser.add_argument("--set", choices=["text", "math"], default="text", dest="face_set")
     root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
     parser.add_argument("--out", default=os.path.join(root, "third_party", "fonts"))
-    parser.add_argument("--coverage", default=os.path.join(root, "src", "pdf", "BundledFontCoverage.inc"))
+    parser.add_argument("--coverage", default=None,
+                        help="coverage .inc to write (default: src/pdf/BundledFontCoverage[Math].inc)")
     args = parser.parse_args()
+    if args.face_set == "math":
+        faces, wanted = [MATH_FACE], MATH_RANGES
+        default_coverage = "BundledFontCoverageMath.inc"
+    else:
+        faces, wanted = FACES, RANGES
+        default_coverage = "BundledFontCoverage.inc"
+    if args.coverage is None:
+        args.coverage = os.path.join(root, "src", "pdf", default_coverage)
 
     os.makedirs(args.out, exist_ok=True)
     tables = []
-    for name, enumerator in FACES:
-        ranges, size = subset_one(os.path.join(args.source, name), os.path.join(args.out, name))
+    for name, enumerator in faces:
+        ranges, size = subset_one(os.path.join(args.source, name), os.path.join(args.out, name), wanted)
         print(f"{name}: {size} bytes, {sum(hi - lo + 1 for lo, hi in ranges)} code points")
         tables.append((enumerator, name, ranges))
 

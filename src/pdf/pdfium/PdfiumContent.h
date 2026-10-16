@@ -50,7 +50,7 @@ public:
 
 private:
     FPDF_DOCUMENT document_;
-    std::array<FPDF_FONT, 6> fonts_{};
+    std::array<FPDF_FONT, kBundledFontCount> fonts_{};
 };
 
 // What applying content edits produced; see PdfAssembledPageContent. The
