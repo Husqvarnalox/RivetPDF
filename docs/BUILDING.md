@@ -3,7 +3,8 @@
 How to configure, build, test, and run Rivet from source.
 
 Rivet is built with CMake (>= 3.28) and the Ninja generator. macOS is the
-first supported development platform; Windows and Linux support is planned.
+first supported development platform; Linux has an X11 desktop shell (see
+section 6); Windows support is planned.
 
 ---
 
@@ -139,7 +140,8 @@ rivet/
 │   ├── editor/           # rivet_editor: Command/CommandStack, DocumentSession, DocumentRenderer
 │   ├── ui/               # rivet_ui: retained-mode widgets, PaintContext
 │   ├── platform/         # rivet_platform: abstraction headers (file dialog, main-thread dispatch)
-│   │   └── macos/        # rivet_platform_macos: AppKit host, CoreGraphics paint, rivet executable
+│   │   ├── macos/        # rivet_platform_macos: AppKit host, CoreGraphics paint, rivet executable
+│   │   └── linux/        # rivet_platform_linux: X11 host, cairo paint, rivet executable
 │   └── app/              # rivet_app: shell wiring, DocumentSession management
 ├── tests/                # per-module test executables + tests/harness (RivetTest.h)
 ├── docs/                 # this documentation and docs/adr/
@@ -155,3 +157,58 @@ Notes:
   direction is enforced by what each target links against.
 - `compile_commands.json` is exported (`CMAKE_EXPORT_COMPILE_COMMANDS=ON`) for
   clangd/editor tooling.
+
+---
+
+## 6. Linux (X11 desktop shell)
+
+`src/platform/linux` implements every platform abstraction on X11 (Xlib) +
+cairo, with fontconfig + HarfBuzz + cairo-ft for text, libpng/libjpeg for
+Replace Image and optional CUPS printing. It runs natively on X11 and on
+Wayland desktops through XWayland. Only this directory uses these libraries.
+
+Packages (Debian/Ubuntu):
+
+```sh
+sudo apt-get install cmake ninja-build g++ pkg-config \
+    libx11-dev libcairo2-dev libfreetype-dev libharfbuzz-dev \
+    libfontconfig-dev libpng-dev libjpeg-dev libcups2-dev
+# runtime helpers (optional): zenity or kdialog (file dialogs), xdg-utils (links)
+```
+
+Build and run exactly as on macOS (`cmake -S . -B build/debug -G Ninja`,
+`cmake --build build/debug`, `build/debug/src/platform/linux/rivet file.md`).
+GCC 13+ or Clang 17+ is required for C++23.
+
+When the X11/cairo/font/image development packages are missing, CMake prints
+a STATUS message and skips only the `rivet` executable; the portable
+libraries and tests still build. Without libcups the build has no printing
+(`printService` is null).
+
+Behaviour and current limits of the Linux shell:
+
+- **Window**: one top-level window (min 940x600), UTF-8 title
+  (`_NET_WM_NAME`), `*` title prefix for unsaved changes, close button and
+  Ctrl+Q go through the same unsaved-changes prompts as macOS (an accepted
+  window close ends the app: Rivet has one window). SIGINT/SIGTERM request a
+  quit the same way.
+- **Menus**: X11 has no global menu, so `app::buildMenuBar()` is drawn as an
+  in-window menu strip (mouse, F10 + arrow keys, Ctrl shortcuts).
+- **Keys**: Ctrl is the primary shortcut modifier (macOS Cmd), Alt = Option,
+  Super = the macOS Control key; Ctrl+Tab cycles tabs. Text input goes
+  through the X input method (dead keys/compose); on-the-spot IME
+  pre-editing is not supported.
+- **HiDPI**: scale from `RIVET_SCALE`, else `GDK_SCALE`, else `Xft.dpi`/96.
+  Changing it requires a restart.
+- **File dialogs**: `zenity`, else `kdialog`, run as a subprocess (no shell).
+  Without either tool, Open reports "install zenity or kdialog" and Save As
+  is unavailable. xdg-desktop-portal is not used yet.
+- **Alerts**: drawn with Rivet's own widgets in a modal transient window;
+  like `NSAlert`, main-thread tasks wait until the alert is answered.
+- **Clipboard**: CLIPBOARD selection, UTF-8 text; no INCR transfers (very
+  large texts) and no clipboard-manager hand-off on exit.
+- **Printing** (CUPS): no print panel; the default CUPS destination and all
+  pages after a Print/Cancel confirmation. No default printer = an error.
+- **Scrolling**: wheel notches (core X11 buttons 4-7); no XInput2 smooth
+  scrolling yet.
+- **Links** open through `xdg-open`.
