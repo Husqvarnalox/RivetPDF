@@ -286,3 +286,47 @@ RIVET_TEST(Redaction_apply_refuses_pages_with_unlisted_annotations) {
     CHECK(f.mark(0, userRect(60, 680, 140, 720)));
     CHECK(hasCode(applyRedactions(*f.session, {}), ErrorCode::Unsupported));
 }
+
+RIVET_TEST(Redaction_apply_refuses_pages_with_an_embedded_thumbnail) {
+    RedactionFixture f;
+    pdf::PdfPageContent content = samplePage();
+    content.hasEmbeddedThumbnail = true;
+    f.setContent(1, content);
+    CHECK(f.ready(0));
+    CHECK(f.ready(1));
+    CHECK(f.mark(0, userRect(60, 680, 140, 720)));
+    CHECK(f.mark(1, userRect(60, 680, 140, 720)));
+    const auto blocker = redactionBlocker(*f.session, f.id(1));
+    CHECK(blocker.has_value());
+    if (blocker.has_value()) {
+        CHECK(blocker->message.find("embedded thumbnail Rivet cannot remove") != std::string::npos);
+    }
+    CHECK(!redactionBlocker(*f.session, f.id(0)).has_value());
+    CHECK(hasCode(applyRedactions(*f.session, {}), ErrorCode::Unsupported));
+    CHECK(f.entry(0).contentEdits == nullptr);
+}
+
+RIVET_TEST(Redaction_apply_refuses_documents_with_xfa) {
+    auto info = std::make_shared<pdf::PdfFormInfo>();
+    info->hasXfa = true;
+    RedactionFixture f(info);
+    CHECK(f.ready());
+    CHECK(f.mark(0, userRect(60, 680, 140, 720)));
+    CHECK(redactionBlocker(*f.session, f.id(0)).has_value());
+    auto command = applyRedactions(*f.session, {});
+    CHECK(hasCode(command, ErrorCode::Unsupported));
+    if (!command.has_value()) CHECK(command.error().message.find("XFA") != std::string::npos);
+    CHECK(f.entry(0).contentEdits == nullptr);
+}
+
+RIVET_TEST(Redaction_apply_removes_annotations_with_non_finite_rects) {
+    RedactionFixture f;
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    f.document->setAnnotations(0, {opaqueAt(0, nan, 695, 90, 705), opaqueAt(1, 300, 300, 320, 310)});
+    CHECK(f.ready());
+    CHECK(f.mark(0, userRect(60, 680, 140, 720)));
+    CHECK(f.runCommand(applyRedactions(*f.session, {})));
+    const PageEntry& page = f.entry(0);
+    CHECK(page.annotations != nullptr);
+    if (page.annotations != nullptr) CHECK(page.annotations->suppressed == std::vector<std::uint32_t>({0}));
+}

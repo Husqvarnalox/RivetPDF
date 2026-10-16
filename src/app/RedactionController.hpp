@@ -8,6 +8,7 @@
 #include "app/ShellContext.hpp"
 
 #include "core/Error.hpp"
+#include "platform/Alerts.hpp"
 #include "editor/Command.hpp"
 
 #include <cstddef>
@@ -78,5 +79,12 @@ private:
     RedactionInteraction interaction_;
     RedactionLayer layer_;
 };
+
+// Save / Save As / Export / Print guard: redaction marks that were never
+// applied are not part of the written file. With such marks in `session`,
+// asks "N redaction marks are not applied. Continue without redacting?" and
+// returns the answer (false aborts; also false when no alert service can ask).
+// True when nothing is pending. Main thread.
+bool confirmUnappliedRedactions(platform::IAlertService* alerts, editor::DocumentSession& session);
 
 } // namespace rivet::app

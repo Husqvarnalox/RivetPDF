@@ -2,6 +2,7 @@
 #include "app/FileController.hpp"
 
 #include "app/MarkdownExportController.hpp"
+#include "app/RedactionController.hpp"
 
 #include <cctype>
 #include <format>
@@ -181,10 +182,22 @@ void FileController::saveAs(DocumentTab& tab) {
     requestSave(*current, *chosen, false, true);
 }
 
+bool FileController::allowUnappliedRedactions(DocumentTab& tab) {
+    if (!tab.isPdf() || tab.session() == nullptr) return true;
+    const TabId id = tab.id();
+    const bool allowed = confirmUnappliedRedactions(context_.services.alerts, *tab.session());
+    return allowed && liveTab(id) != nullptr; // the modal may have closed the tab
+}
+
 void FileController::requestSave(DocumentTab& tab, std::filesystem::path destination,
                                  bool closeTabWhenDone, bool interactive) {
     if (!tab.hasContent()) return;
     commitPendingEdits();
+    if (!allowUnappliedRedactions(tab)) {
+        setStatus_("Save cancelled: redaction marks are not applied");
+        saveSettled(tab.id(), false);
+        return;
+    }
     if (activeSave_.has_value()) {
         if (interactive) {
             setStatus_("A save is already in progress");
@@ -409,6 +422,7 @@ void FileController::saveSettled(TabId tab, bool saved) {
 void FileController::extract(DocumentTab& tab, std::span<const core::PageId> pages) {
     if (tab.session() == nullptr || tab.state() != DocumentTab::State::Ready) return;
     commitPendingEdits();
+    if (!allowUnappliedRedactions(tab)) return;
     if (context_.services.saveDialog == nullptr) {
         setStatus_(kUnavailable);
         return;
@@ -488,6 +502,7 @@ void FileController::split(DocumentTab& tab) {
 void FileController::splitByRanges(DocumentTab& tab, std::string_view rangeText) {
     if (tab.session() == nullptr || tab.state() != DocumentTab::State::Ready) return;
     commitPendingEdits();
+    if (!allowUnappliedRedactions(tab)) return;
     const auto fail = [&](const std::string& message) {
         setStatus_(message);
         if (context_.services.alerts != nullptr) context_.services.alerts->showError("Split PDF", message);

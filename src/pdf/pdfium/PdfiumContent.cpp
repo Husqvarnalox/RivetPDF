@@ -22,6 +22,7 @@
 #include "fpdf_ppo.h"
 #include "fpdf_save.h"
 #include "fpdf_text.h"
+#include "fpdf_thumbnail.h"
 #include "fpdf_transformpage.h"
 #include "pdf/PdfTextLayout.hpp"
 
@@ -1181,7 +1182,9 @@ bool redactImage(FPDF_PAGE page, FPDF_PAGEOBJECT image, const std::vector<PdfRed
         }
     }
     if (!changed) {
-        return true;
+        // Bounds overlap but no pixel was touched: cannot prove the covered
+        // region was cleared, so the caller removes the whole image.
+        return false;
     }
     FPDF_PAGE pages[1] = {page};
     return FPDFImageObj_SetBitmap(pages, 1, image, bitmap.get()) != 0;
@@ -1777,6 +1780,9 @@ core::Result<PdfPageContentPtr> ContentState::sourcePage(std::size_t pageIndex) 
             return std::unexpected(extracted.error());
         }
         content = std::move(*extracted);
+        // PDFium has no API to drop a page's /Thumb (it survives save and
+        // can show the unredacted page), so redaction refuses such pages.
+        content.hasEmbeddedThumbnail = FPDFPage_GetRawThumbnailData(page.get(), nullptr, 0) > 0;
     }
     if (content.truncated) {
         content.regenerationSafe = false;
@@ -1861,6 +1867,7 @@ core::Result<PdfPageContentPtr> ContentState::editedContent(Entry& entry) {
     if (source.has_value()) {
         content.regenerationSafe = (*source)->regenerationSafe;
         content.regenerationIssue = (*source)->regenerationIssue;
+        content.hasEmbeddedThumbnail = (*source)->hasEmbeddedThumbnail;
     }
     entry.content = std::make_shared<const PdfPageContent>(std::move(content));
     return entry.content;

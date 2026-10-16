@@ -134,6 +134,9 @@ struct PdfPageContent {
     // short human-readable reason (no document content).
     bool regenerationSafe = true;
     std::string regenerationIssue;
+    // The page dictionary carries a /Thumb image. It cannot be removed
+    // through PDFium and would leak unredacted content (ADR-0026).
+    bool hasEmbeddedThumbnail = false;
 };
 using PdfPageContentPtr = std::shared_ptr<const PdfPageContent>;
 

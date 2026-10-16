@@ -350,6 +350,7 @@ struct ContentService::Impl {
         view->truncated = content.truncated;
         view->regenerationSafe = content.regenerationSafe;
         view->regenerationIssue = content.regenerationIssue;
+        view->hasEmbeddedThumbnail = content.hasEmbeddedThumbnail;
         view->sourceObjectCount = loaded.sourceObjectCount;
 
         const std::vector<ObjectCapabilityInfo> capabilities = classifyObjects(content);

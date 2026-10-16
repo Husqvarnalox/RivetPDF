@@ -235,7 +235,10 @@ void RedactionController::applyMarks() {
     if (!alerts->confirm("Apply Redactions?",
                          "Everything in " + areas +
                              " is removed from the page content: text, image pixels, drawings, links and form "
-                             "fields. Until you save, Undo restores it; once saved, it cannot be recovered.",
+                             "fields. Until you save, Undo restores it; once saved, it cannot be recovered.\n\n"
+                             "NOT scanned or removed: bookmark and outline titles, structure-tree alternate and "
+                             "actual text, annotation comments located elsewhere on the page, and document "
+                             "metadata (unless you choose to remove it next). Check these yourself.",
                          "Apply Redactions")) {
         return;
     }
@@ -251,6 +254,18 @@ void RedactionController::applyMarks() {
     if (run(editor::applyRedactions(session, options))) {
         context_.setStatus("Redact: applied; the content is removed from the file when you save");
     }
+}
+
+bool confirmUnappliedRedactions(platform::IAlertService* alerts, editor::DocumentSession& session) {
+    const std::size_t pending = editor::redactionMarkCount(*session.pageSnapshot());
+    if (pending == 0) return true;
+    if (alerts == nullptr) return false;
+    const std::string what = pending == 1 ? std::string("1 redaction mark is")
+                                          : std::to_string(pending) + " redaction marks are";
+    return alerts->confirm(what + " not applied. Continue without redacting?",
+                           "Marked content is still in the file you are about to write. Choose Cancel, then "
+                           "Apply Redactions to remove it.",
+                           "Continue");
 }
 
 } // namespace rivet::app
