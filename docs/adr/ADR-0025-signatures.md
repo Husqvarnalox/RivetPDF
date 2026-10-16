@@ -45,3 +45,35 @@ read existing signatures (`fpdf_signature.h`) but cannot create them.
 - Visual signatures are annotations: flattening/locking them is out of
   scope; a recipient can delete them.
 - Cryptographic signing is a later ADR once a crypto dependency exists.
+
+Implementation notes and deviations (Phase 6C):
+
+- `/Name` is written as the PDF **string** `(RivetSignature)`, not the name
+  `/RivetSignature`: PDFium's public API (`FPDFAnnot_SetStringValue`) only
+  writes strings and Rivet does not patch objects outside it. The reader
+  accepts the string; Rivet `/Stamp` annotations carrying it come back as
+  `Signature` items.
+- A reopened visual signature is **opaque**: listed and drawn as a
+  Signature (move, resize, delete), not re-editable as strokes/text/image.
+- Typed signatures are drawn as **vector glyph outlines** of the bundled
+  Tinos Regular (parsed from its `glyf`/`loca`, bounded), so no font is
+  embedded and the result does not depend on viewer fonts. Images are
+  scaled to at most 1024 px per side before embedding.
+- `fpdf_signature.h` has no getter for the signer `/Name` or `/Location`:
+  both are **omitted** from `PdfSignatureInfo`. Listed are coverage, reason,
+  signing time, sub-filter and DocMDP permission.
+- PDFium lists only top-level `/Sig` fields; unsigned fields (no
+  `/ByteRange` and no `/SubFilter`) are skipped. The signature's page and
+  widget rectangle are matched by order against the top-level signature
+  widgets, only when the counts agree; otherwise the page is unknown and the
+  sidebar entry does not navigate.
+- The sidebar navigates to the signature's **page** (resolved through the
+  page model), not to the exact widget position.
+- The save warning is an `IAlertService::confirm` ("Save Anyway" / Cancel),
+  asked once per tab for a dirty session whose base document has
+  signatures (Save, Save As and saves during close/quit).
+- Saved signatures: `RVSG` binary format, version 1, FNV-1a checksum,
+  at most 8 entries; written with `AtomicFileWriter`, directory and file
+  owner-only on POSIX. A corrupt file is ignored (status message, never
+  logged) and replaced by the next save. No app-data location (null
+  service) = signatures are used but not remembered.

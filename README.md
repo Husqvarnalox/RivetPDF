@@ -25,7 +25,8 @@ Documents never leave the machine: Rivet has no network code of its own, no acco
 | Content editing: select/move/resize/delete page objects, retype text, add text, replace images | Implemented (macOS), with the limits below |
 | Forms (AcroForm): fill text, check box, radio, combo and list fields with undo/redo, Reset Form, field highlighting; saved with the document. XFA and form scripts are not supported | Implemented (macOS) |
 | Redaction: mark areas or selected text, review, apply as one undo step; on save the content under the marks (glyphs, image pixels, drawings, links, form widgets and their values) is removed, not covered; optional metadata removal | Implemented (macOS) |
-| Signatures, OCR, compression, encryption, document comparison | Not implemented |
+| Signatures: place a drawn, typed or image signature (saved signatures are remembered); existing digital signatures are listed as present but are not verified, and saving edits over them warns first. No cryptographic signing | Implemented (macOS) |
+| OCR, compression, encryption, document comparison | Not implemented |
 | Windows / Linux shells | Not implemented. Portable layers are built and tested on Ubuntu/GCC in CI |
 | Markdown: Rendered (read-only), Source (with live preview) and Split views; text editing with undo/redo and background save | Implemented (macOS) |
 | Markdown export to PDF (vector, bundled fonts, links) and printing | Implemented (macOS) |
@@ -101,8 +102,8 @@ CI (GitHub Actions) builds with `-Werror` and runs CTest on macOS (AppleClang) a
 
 ## Roadmap
 
-Done: PDF viewer, page editing, annotations, content editing, form filling, redaction, Markdown viewing and source editing (see Status).
-Next: signatures, then OCR, compression, encryption and document comparison. Windows and Linux shells have no schedule.
+Done: PDF viewer, page editing, annotations, content editing, form filling, redaction, visual signatures, Markdown viewing and source editing (see Status).
+Next: OCR, compression, encryption and document comparison. Windows and Linux shells have no schedule.
 
 ## Contributing
 
