@@ -259,18 +259,18 @@ std::expected<SequenceLayout, std::string> layoutSequence(const SequenceDiagram&
     // Shift right when notes or frames reach past the left margin.
     const double shift = std::max(0.0, style.margin - minX);
     if (shift > 0.0) {
-        const auto move = [shift](core::Rect& r) { r = core::Rect(r.minX() + shift, r.minY(), r.size.width, r.size.height); };
+        const auto shiftRect = [shift](core::Rect& r) { r = core::Rect(r.minX() + shift, r.minY(), r.size.width, r.size.height); };
         for (SeqParticipantBox& p : layout.participants) {
             p.x += shift;
-            move(p.top);
-            move(p.bottom);
+            shiftRect(p.top);
+            shiftRect(p.bottom);
         }
         for (SeqMessageGeometry& g : layout.messages) {
             for (core::Point& p : g.points) p.x += shift;
-            if (g.labelRect.size.width > 0.0) move(g.labelRect);
+            if (g.labelRect.size.width > 0.0) shiftRect(g.labelRect);
         }
-        for (SeqNoteGeometry& n : layout.notes) move(n.rect);
-        for (SeqFrameGeometry& f : layout.frames) move(f.rect);
+        for (SeqNoteGeometry& n : layout.notes) shiftRect(n.rect);
+        for (SeqFrameGeometry& f : layout.frames) shiftRect(f.rect);
         maxX += shift;
     }
     layout.width = maxX + style.margin;
