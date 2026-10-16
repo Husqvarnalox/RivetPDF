@@ -1,5 +1,6 @@
 add_library(rivet_ui STATIC
     Button.cpp
+    Theme.cpp
     OutlinePanel.cpp
     PageThumbnailList.cpp
     PdfViewport.cpp

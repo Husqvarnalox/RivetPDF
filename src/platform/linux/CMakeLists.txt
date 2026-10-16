@@ -35,6 +35,7 @@ endif()
 add_library(rivet_platform_linux STATIC
     LinuxAlertService.cpp
     LinuxAppDataLocation.cpp
+    LinuxAppearance.cpp
     LinuxClipboard.cpp
     LinuxExternalUrlOpener.cpp
     LinuxFileDialog.cpp
@@ -45,6 +46,7 @@ add_library(rivet_platform_linux STATIC
     LinuxPaintContext.cpp
     LinuxSubprocess.cpp
     LinuxTextShaper.cpp
+    LinuxXSettings.cpp
     X11Window.cpp
 )
 

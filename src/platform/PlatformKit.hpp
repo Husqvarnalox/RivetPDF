@@ -5,6 +5,7 @@
 #include "core/async/IMainThreadDispatcher.hpp"
 #include "platform/Alerts.hpp"
 #include "platform/AppDataLocation.hpp"
+#include "platform/Appearance.hpp"
 #include "platform/AppLifecycle.hpp"
 #include "platform/Clipboard.hpp"
 #include "platform/ExternalUrlOpener.hpp"
@@ -152,6 +153,10 @@ struct ShellServices {
     // The per-user application-data directory (saved signatures, ADR-0025).
     // May be null (signatures are then not remembered between sessions).
     IAppDataLocation* appData = nullptr;
+
+    // System appearance (light/dark, accent; ADR-0033). May be null: the
+    // shell then uses the light theme with the default accent.
+    IAppearance* appearance = nullptr;
 };
 
 } // namespace rivet::platform

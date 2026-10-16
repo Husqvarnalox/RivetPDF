@@ -7,6 +7,7 @@
 
 #include "LinuxAlertService.hpp"
 #include "LinuxAppDataLocation.hpp"
+#include "LinuxAppearance.hpp"
 #include "LinuxClipboard.hpp"
 #include "LinuxExternalUrlOpener.hpp"
 #include "LinuxFileDialog.hpp"
@@ -91,6 +92,7 @@ int main(int argc, char** argv) {
     const auto imageDecoder = std::make_unique<platform::LinuxImageDecoder>();
     const auto imageEncoder = std::make_unique<platform::LinuxImageEncoder>();
     const auto appData = std::make_unique<platform::LinuxAppDataLocation>();
+    const auto appearance = std::make_unique<platform::LinuxAppearance>(connection->display());
     const auto clipboard = std::make_unique<platform::LinuxClipboard>(*connection);
     const auto urlOpener = std::make_unique<platform::LinuxExternalUrlOpener>();
 #if RIVET_HAVE_CUPS
@@ -105,6 +107,7 @@ int main(int argc, char** argv) {
     services.imageDecoder = imageDecoder.get();
     services.imageEncoder = imageEncoder.get();
     services.appData = appData.get();
+    services.appearance = appearance.get();
     services.clipboard = clipboard.get();
     services.urlOpener = urlOpener.get();
 #if RIVET_HAVE_CUPS

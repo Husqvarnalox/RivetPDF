@@ -23,7 +23,9 @@ rivet_set_target_sanitizers(rivet_platform_portable_tests)
 if(UNIX)
     target_sources(rivet_platform_portable_tests PRIVATE
         TestAppDataLocation.cpp
-        "${CMAKE_SOURCE_DIR}/src/platform/linux/LinuxAppDataLocation.cpp")
+        TestXSettings.cpp
+        "${CMAKE_SOURCE_DIR}/src/platform/linux/LinuxAppDataLocation.cpp"
+        "${CMAKE_SOURCE_DIR}/src/platform/linux/LinuxXSettings.cpp")
     target_include_directories(rivet_platform_portable_tests PRIVATE "${CMAKE_SOURCE_DIR}/src/platform/linux")
 endif()
 

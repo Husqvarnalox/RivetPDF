@@ -69,6 +69,9 @@ public:
     void setFileDropHandler(std::function<void(const std::vector<std::filesystem::path>&)> handler);
     // WM_CLOSE (title-bar close button, Alt+F4).
     void setCloseHandler(std::function<void()> handler) { closeHandler_ = std::move(handler); }
+    // WM_SETTINGCHANGE / WM_THEMECHANGED / WM_DWMCOLORIZATIONCOLORCHANGED
+    // (the appearance service re-reads the theme and accent).
+    void setAppearanceChangedHandler(std::function<void()> handler) { appearanceChangedHandler_ = std::move(handler); }
     // Non-owning; null detaches the native menu.
     void setMenuBar(WindowsMenuBar* menuBar);
 
@@ -115,6 +118,7 @@ private:
     std::function<bool(const ui::KeyEvent&)> keyHandler_;
     std::function<void(const std::vector<std::filesystem::path>&)> fileDropHandler_;
     std::function<void()> closeHandler_;
+    std::function<void()> appearanceChangedHandler_;
     std::string title_;
     bool edited_ = false;
     wchar_t highSurrogate_ = 0;

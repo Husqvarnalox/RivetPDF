@@ -6,6 +6,7 @@
 #include "LinuxPaintContext.hpp"
 #include "LinuxTextShaper.hpp"
 #include "core/geometry/Rect.hpp"
+#include "ui/Theme.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -667,7 +668,9 @@ void X11Window::paint() {
     const double scale = connection_.scale();
 
     cairo_t* cr = cairo_create(backBuffer_);
-    cairo_set_source_rgb(cr, 0.93, 0.93, 0.93);
+    // Behind the widget tree: the theme's chrome color (ADR-0033).
+    const ui::Color background = ui::colors().chromeBackground;
+    cairo_set_source_rgb(cr, background.r, background.g, background.b);
     cairo_paint(cr);
     cairo_scale(cr, scale, scale);
     text::applyFontOptions(cr);

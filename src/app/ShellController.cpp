@@ -6,6 +6,7 @@
 
 #include "core/Error.hpp"
 #include "ui/Button.hpp"
+#include "ui/Theme.hpp"
 
 #include <algorithm>
 #include <format>
@@ -40,6 +41,7 @@ ShellController::ShellController(const platform::ShellServices& services, std::u
                         [this](std::string text) { setStatus(std::move(text)); }) {}
 
 ShellController::~ShellController() {
+    if (services_.appearance != nullptr) services_.appearance->onChange(nullptr);
     // The Markdown exporter's workers use the engine and hand documents to
     // the print coordinator: stop them first.
     if (fileLifecycle_ != nullptr) fileLifecycle_->setMarkdownExporter(nullptr);
@@ -62,6 +64,9 @@ ShellController::~ShellController() {
 // sidebar, viewport, loading overlay, then the floating find bar and
 // password prompt above the viewport, then the status bar.
 void ShellController::buildWidgets() {
+    // The theme is in place before any widget paints or caches a color.
+    applyAppearance();
+    if (services_.appearance != nullptr) services_.appearance->onChange([this] { applyAppearance(); });
     root_ = std::make_unique<ShellRoot>();
 
     // The viewport exists before the controllers (they reference it through
@@ -314,6 +319,20 @@ void ShellController::buildToolbar() {
         toolbar_->addItem(std::move(button), i == 2 ? ui::Toolbar::kDefaultItemSpacing : 0.0);
     }
     for (ui::Widget* item : markdownToolbarItems_) toolbar_->setItemVisible(item, false);
+}
+
+void ShellController::applyAppearance() {
+    std::optional<ui::Color> accent;
+    bool dark = false;
+    if (services_.appearance != nullptr) {
+        dark = services_.appearance->isDark();
+        if (const auto platformAccent = services_.appearance->accentColor(); platformAccent.has_value()) {
+            accent = ui::Color{platformAccent->r, platformAccent->g, platformAccent->b, 1.0};
+        }
+    }
+    ui::setCurrentTheme(ui::Theme::make(dark, accent));
+    // Widgets read tokens while painting: a repaint applies the new theme.
+    if (root_ != nullptr) root_->invalidate();
 }
 
 void ShellController::layoutShell() {

@@ -10,6 +10,7 @@ add_executable(rivet_ui_tests
     TestTextArea.cpp
     TestTextBuffer.cpp
     TestTextField.cpp
+    TestTheme.cpp
     TestWidgetTree.cpp
 )
 

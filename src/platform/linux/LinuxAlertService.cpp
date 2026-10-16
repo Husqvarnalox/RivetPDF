@@ -5,6 +5,7 @@
 #include "X11Window.hpp"
 #include "ui/Button.hpp"
 #include "ui/TextField.hpp"
+#include "ui/Theme.hpp"
 #include "ui/Widget.hpp"
 
 #include <algorithm>
@@ -125,17 +126,17 @@ public:
     ui::TextField* field() const { return field_; }
 
     void paintSelf(ui::PaintContext& context) const override {
-        context.fillRect(bounds(), ui::Color::gray(0.97));
+        context.fillRect(bounds(), ui::colors().panelBackground);
         double y = kPadding;
         for (const std::string& line : titleLines_) {
             context.drawText(line, core::Rect{kPadding, y, kWidth - 2.0 * kPadding, kTitleLine}, kTitleFont,
-                             ui::Color::gray(0.1), ui::TextAlign::Left);
+                             ui::colors().textPrimary, ui::TextAlign::Left);
             y += kTitleLine;
         }
         y += kGap / 2.0;
         for (const std::string& line : messageLines_) {
             context.drawText(line, core::Rect{kPadding, y, kWidth - 2.0 * kPadding, kMessageLine}, kMessageFont,
-                             ui::Color::gray(0.3), ui::TextAlign::Left);
+                             ui::colors().textSecondary, ui::TextAlign::Left);
             y += kMessageLine;
         }
     }

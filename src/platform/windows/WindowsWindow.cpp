@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: MPL-2.0
 #include "WindowsWindow.hpp"
 
+#include "WindowsAppearance.hpp"
 #include "WindowsMenuBar.hpp"
 #include "WindowsPaintContext.hpp"
 #include "core/geometry/Rect.hpp"
+#include "ui/Theme.hpp"
 
 #include <d2d1.h>
 #include <dwmapi.h>
@@ -66,15 +68,6 @@ ui::ModifierFlags currentModifiers() {
         flags.option = false;
     }
     return flags;
-}
-
-bool systemUsesDarkAppTheme() {
-    DWORD value = 1;
-    DWORD size = sizeof value;
-    const LSTATUS status =
-        ::RegGetValueW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",
-                       L"AppsUseLightTheme", RRF_RT_REG_DWORD, nullptr, &value, &size);
-    return status == ERROR_SUCCESS && value == 0;
 }
 
 ui::KeyEvent textEvent(std::string text, ui::ModifierFlags modifiers) {
@@ -180,7 +173,7 @@ void WindowsWindow::setDocumentEdited(bool edited) {
 
 void WindowsWindow::applyDarkTitleBar() {
     if (hwnd_ == nullptr) return;
-    const BOOL dark = systemUsesDarkAppTheme() ? TRUE : FALSE;
+    const BOOL dark = WindowsAppearance::systemPrefersDark() ? TRUE : FALSE;
     // Fails harmlessly on systems without the attribute.
     ::DwmSetWindowAttribute(hwnd_, kDwmUseImmersiveDarkMode, &dark, sizeof dark);
 }
@@ -251,7 +244,12 @@ void WindowsWindow::paint() {
     identity._11 = 1.0F;
     identity._22 = 1.0F;
     target_->SetTransform(identity);
-    target_->Clear(D2D1_COLOR_F{0.93F, 0.93F, 0.93F, 1.0F});
+    {
+        // Behind the widget tree: the theme's chrome color (ADR-0033).
+        const ui::Color background = ui::colors().chromeBackground;
+        target_->Clear(D2D1_COLOR_F{static_cast<float>(background.r), static_cast<float>(background.g),
+                                    static_cast<float>(background.b), 1.0F});
+    }
     {
         WindowsPaintContext context(target_, scale_);
         if (root_ != nullptr) {
@@ -447,7 +445,12 @@ LRESULT WindowsWindow::handleMessage(UINT message, WPARAM wParam, LPARAM lParam)
         return 0;
     case WM_SETTINGCHANGE:
     case WM_THEMECHANGED:
+    case WM_DWMCOLORIZATIONCOLORCHANGED:
         applyDarkTitleBar();
+        if (appearanceChangedHandler_) {
+            const auto handler = appearanceChangedHandler_;
+            handler();
+        }
         break;
     case WM_CLOSE:
         // windowShouldClose: the main loop decides (unsaved-changes prompt);

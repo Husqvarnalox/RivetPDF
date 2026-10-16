@@ -157,6 +157,9 @@ private:
     ShellController(const platform::ShellServices& services, std::unique_ptr<pdf::PdfEngine> engine);
 
     void buildWidgets();
+    // Reads the platform appearance (light/dark, accent) into the current
+    // ui theme and repaints the tree (ADR-0033). Light/default without one.
+    void applyAppearance();
     void buildToolbar();
     void layoutShell();
     void refreshTabStrip();

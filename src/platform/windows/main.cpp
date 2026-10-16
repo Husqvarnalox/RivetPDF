@@ -14,6 +14,7 @@
 
 #include "WindowsAlertService.hpp"
 #include "WindowsAppDataLocation.hpp"
+#include "WindowsAppearance.hpp"
 #include "WindowsClipboard.hpp"
 #include "WindowsExternalUrlOpener.hpp"
 #include "WindowsFileDialog.hpp"
@@ -112,6 +113,7 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int showCommand) {
     const auto imageDecoder = std::make_unique<platform::WindowsImageDecoder>();
     const auto imageEncoder = std::make_unique<platform::WindowsImageEncoder>();
     const auto appData = std::make_unique<platform::WindowsAppDataLocation>();
+    const auto appearance = std::make_unique<platform::WindowsAppearance>(*dispatcher);
     const auto clipboard = std::make_unique<platform::WindowsClipboard>(hwnd);
     const auto urlOpener = std::make_unique<platform::WindowsExternalUrlOpener>();
     const auto printService = std::make_unique<platform::WindowsPrintService>(hwnd, dispatcher.get());
@@ -124,6 +126,7 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int showCommand) {
     services.imageDecoder = imageDecoder.get();
     services.imageEncoder = imageEncoder.get();
     services.appData = appData.get();
+    services.appearance = appearance.get();
     services.clipboard = clipboard.get();
     services.urlOpener = urlOpener.get();
     services.printService = printService.get();
@@ -178,6 +181,7 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int showCommand) {
     window->setFileDropHandler([shellPtr = shell.get()](const std::vector<std::filesystem::path>& paths) {
         for (const auto& path : paths) shellPtr->openDocument(path);
     });
+    window->setAppearanceChangedHandler([appearancePtr = appearance.get()] { appearancePtr->notifyChanged(); });
     window->setCloseHandler([&running, hooks = lifecycle.get()] {
         // windowShouldClose: -> the app's unsaved-changes prompt. Rivet has
         // one window, so an accepted close ends the app.
@@ -207,6 +211,7 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int showCommand) {
     window->setMenuBar(nullptr);
     window->setFileDropHandler(nullptr);
     window->setCloseHandler(nullptr);
+    window->setAppearanceChangedHandler(nullptr);
     shell->setQuitHandler(nullptr);
     lifecycle->clearHandlers();
     window->setKeyHandler(nullptr);

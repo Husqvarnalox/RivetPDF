@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 #import "MacosAlertService.h"
 #import "MacosAppDataLocation.h"
+#import "MacosAppearance.h"
 #import "MacosClipboard.h"
 #import "MacosExternalUrlOpener.h"
 #import "MacosPrintService.h"
@@ -185,6 +186,7 @@ int main(int argc, char** argv) {
         const auto imageEncoder = std::make_unique<rivet::platform::MacosImageEncoder>();
         const auto textRecognizer = std::make_unique<rivet::platform::MacosTextRecognizer>();
         const auto appData = std::make_unique<rivet::platform::MacosAppDataLocation>();
+        const auto appearance = std::make_unique<rivet::platform::MacosAppearance>(*dispatcher);
         const auto clipboard = std::make_unique<rivet::platform::MacosClipboard>();
         const auto urlOpener = std::make_unique<rivet::platform::MacosExternalUrlOpener>();
         const auto printService = std::make_unique<rivet::platform::MacosPrintService>();
@@ -205,6 +207,7 @@ int main(int argc, char** argv) {
         services.imageEncoder = imageEncoder.get();
         services.textRecognizer = textRecognizer.get();
         services.appData = appData.get();
+        services.appearance = appearance.get();
         services.clipboard = clipboard.get();
         services.urlOpener = urlOpener.get();
         services.printService = printService.get();
