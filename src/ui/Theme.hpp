@@ -26,6 +26,7 @@ struct Palette {
     Color pageBackground;      // PDF "paper" (pages stay as authored: white)
     Color pageBorder;          // 1 px page outline
     Color pageShadow;          // soft page shadow
+    Color pagePlaceholder;     // a page/thumbnail tile not rendered yet
     Color presentationBackground;
     Color panelBackground;     // floating panels (find bar, prompts, sheets)
     Color popoverBackground;   // menus and popovers
@@ -73,6 +74,7 @@ struct Palette {
     Color selectionHighlight;  // focused text selection
     Color selectionInactive;   // unfocused text selection
     Color linkText;
+    Color linkOutline;         // hovered link on a PDF page
     Color linkHover;
     Color codeBackground;
     Color inlineCodeBackground;

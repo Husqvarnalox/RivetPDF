@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 #include "app/TextInteractionController.hpp"
+#include "ui/Theme.hpp"
 
 #include "app/UrlPolicy.hpp"
 #include "core/Log.hpp"
@@ -13,9 +14,6 @@
 namespace rivet::app {
 namespace {
 
-constexpr ui::Color kSelectionHighlight = ui::Color::rgba(0.30, 0.55, 1.0, 0.35);
-constexpr ui::Color kSearchMatch = ui::Color::rgba(1.0, 0.85, 0.25, 0.45);
-constexpr ui::Color kActiveSearchMatch = ui::Color::rgba(1.0, 0.60, 0.05, 0.65);
 
 } // namespace
 
@@ -134,7 +132,7 @@ std::vector<ui::OverlayRect> TextInteractionController::overlayRects(std::size_t
             if (matches[m].page != pageId) continue;
             for (const core::Rect& rect : page->rectsForRange(matches[m].startIndex, matches[m].count)) {
                 rects.push_back(
-                    ui::OverlayRect{rect, (active && *active == m) ? kActiveSearchMatch : kSearchMatch});
+                    ui::OverlayRect{rect, (active && *active == m) ? ui::colors().searchHighlightCurrent : ui::colors().searchHighlight});
             }
         }
     }
@@ -152,7 +150,7 @@ std::vector<ui::OverlayRect> TextInteractionController::overlayRects(std::size_t
                 std::min<std::size_t>(range.end, page->charCount()));
             if (range.begin >= end) continue;
             for (const core::Rect& rect : page->rectsForRange(range.begin, end - range.begin)) {
-                rects.push_back(ui::OverlayRect{rect, kSelectionHighlight});
+                rects.push_back(ui::OverlayRect{rect, ui::colors().selectionHighlight});
             }
         }
     }

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 #include "app/FormController.hpp"
+#include "ui/Theme.hpp"
 
 #include "app/AnnotationPainter.hpp"
 
@@ -24,10 +25,10 @@ constexpr double kEditorPadding = 2.0;
 constexpr double kFocusWidth = 1.5;
 constexpr char32_t kBullet = 0x2022;
 
-ui::Color highlightColor() { return ui::Color::rgba(0.55, 0.70, 1.0, 0.25); }
-ui::Color hoverColor() { return ui::Color::rgba(0.10, 0.45, 0.95, 0.45); }
-ui::Color editedBorder() { return ui::Color::gray(0.55); }
-ui::Color inkColor() { return ui::Color::rgba(0.0, 0.0, 0.0, 1.0); }
+ui::Color highlightColor() { return ui::colors().formFieldHighlight; }
+ui::Color hoverColor() { return ui::colors().formFieldHover; }
+ui::Color editedBorder() { return ui::colors().formFieldEditedBorder; }
+ui::Color inkColor() { return ui::colors().editorInk; }
 
 core::Rect toViewport(const core::Rect& pageRect, double zoom, const core::Rect& display) {
     return AnnotationPainter::toViewport(pageRect, zoom, display);
@@ -71,7 +72,8 @@ FormController::FormController(ShellContext& context, ui::Widget& parent, Annota
 
     auto area = std::make_unique<ui::TextArea>();
     areaEditor_ = area.get();
-    areaEditor_->setBackground(ui::Color::white());
+    areaEditor_->setBackground(ui::colors().editorPaper);
+    areaEditor_->setTextColor(ui::colors().editorInk);
     areaEditor_->setMaxBytes(pdf::kMaxFormValueBytes);
     areaEditor_->setOnFocusRequested([this] { context_.setFocus(areaEditor_); });
     areaEditor_->setOnCommit([this] { commitEditor(); });
@@ -732,14 +734,14 @@ void FormController::paintAbove(const ui::ViewportToolHost& host, ui::PaintConte
     const std::optional<core::Rect> frame = popupFrame(host);
     const auto state = popup();
     if (!frame.has_value() || !state.has_value()) return;
-    context.fillRect(*frame, ui::Color::white());
-    context.strokeRect(*frame, ui::Color::gray(0.6), 1.0);
+    context.fillRect(*frame, ui::colors().editorPaper);
+    context.strokeRect(*frame, ui::colors().editorPaperBorder, 1.0);
     const std::size_t first = popup_->scroll;
     for (std::size_t row = 0; row < kPopupMaxRows && first + row < state->labels.size(); ++row) {
         const std::size_t option = first + row;
         const core::Rect rowRect{frame->minX(), frame->minY() + kPopupRowHeight * static_cast<double>(row),
                                  frame->size.width, kPopupRowHeight};
-        if (option == state->highlighted) context.fillRect(rowRect, ui::Color::rgba(0.10, 0.45, 0.95, 0.18));
+        if (option == state->highlighted) context.fillRect(rowRect, ui::colors().formOptionHighlight);
         const core::Rect textRect{rowRect.minX() + 22.0, rowRect.minY(), std::max(0.0, rowRect.size.width - 28.0),
                                   rowRect.size.height};
         if (state->selected[option]) {

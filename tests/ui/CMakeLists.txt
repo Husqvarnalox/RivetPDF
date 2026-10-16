@@ -11,8 +11,12 @@ add_executable(rivet_ui_tests
     TestTextBuffer.cpp
     TestTextField.cpp
     TestTheme.cpp
+    TestNoHardcodedColors.cpp
     TestWidgetTree.cpp
 )
+
+# The color-literal scan reads the sources (ADR-0033).
+target_compile_definitions(rivet_ui_tests PRIVATE RIVET_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
 
 add_test(NAME ui COMMAND rivet_ui_tests)
 

@@ -4,6 +4,7 @@
 #include "core/geometry/Point.hpp"
 #include "core/geometry/Rect.hpp"
 
+#include <algorithm>
 #include <cstdint>
 #include <vector>
 
@@ -42,6 +43,28 @@ struct Path {
         lineTo({rect.maxX(), rect.minY()});
         lineTo({rect.maxX(), rect.maxY()});
         lineTo({rect.minX(), rect.maxY()});
+        close();
+    }
+
+    // Closed rounded-rectangle subpath (corner arcs as cubic Beziers); the
+    // radius is clamped to half the shorter side.
+    void addRoundedRect(const core::Rect& rect, double radius) {
+        constexpr double kKappa = 0.5522847498307936;
+        const double r = std::max(0.0, std::min(radius, std::min(rect.size.width, rect.size.height) / 2.0));
+        const double k = r * (1.0 - kKappa);
+        const double x0 = rect.minX();
+        const double y0 = rect.minY();
+        const double x1 = rect.maxX();
+        const double y1 = rect.maxY();
+        moveTo({x0 + r, y0});
+        lineTo({x1 - r, y0});
+        cubicTo({x1 - k, y0}, {x1, y0 + k}, {x1, y0 + r});
+        lineTo({x1, y1 - r});
+        cubicTo({x1, y1 - k}, {x1 - k, y1}, {x1 - r, y1});
+        lineTo({x0 + r, y1});
+        cubicTo({x0 + k, y1}, {x0, y1 - k}, {x0, y1 - r});
+        lineTo({x0, y0 + r});
+        cubicTo({x0, y0 + k}, {x0 + k, y0}, {x0 + r, y0});
         close();
     }
 

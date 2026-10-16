@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 #include "app/SignatureSheetController.hpp"
+#include "ui/Theme.hpp"
 
 #include "app/SignaturePad.hpp"
 #include "app/TextLabel.hpp"
@@ -36,10 +37,10 @@ constexpr double kModeWidths[4] = {64.0, 64.0, 76.0, 84.0};
 SignatureSheetController::SignatureSheetController(ShellContext& context, ui::Widget& parent) : context_(context) {
     auto panel = std::make_unique<SheetPanel>();
     panel_ = panel.get();
-    panel_->setBackgroundColor(ui::Color::rgba(0.97, 0.97, 0.97, 1.0));
+    panel_->setBackground(&ui::Palette::panelBackground);
     parent.addChild(std::move(panel));
 
-    auto title = std::make_unique<TextLabel>("Sign", ui::Font{13.0, ui::Font::Weight::Semibold}, ui::Color::gray(0.2),
+    auto title = std::make_unique<TextLabel>("Sign", ui::Font{13.0, ui::Font::Weight::Semibold}, &ui::Palette::textPrimary,
                                              ui::TextAlign::Left);
     title->setFrame(core::Rect{14.0, 8.0, 452.0, 22.0});
     title_ = title.get();
@@ -91,7 +92,7 @@ SignatureSheetController::SignatureSheetController(ShellContext& context, ui::Wi
     delete_->setOnClick([this] { deleteSaved(); });
     panel_->addChild(std::move(remove));
 
-    auto info = std::make_unique<TextLabel>("", ui::Font{12.0}, ui::Color::gray(0.4), ui::TextAlign::Left);
+    auto info = std::make_unique<TextLabel>("", ui::Font{12.0}, &ui::Palette::textSecondary, ui::TextAlign::Left);
     info_ = info.get();
     panel_->addChild(std::move(info));
 

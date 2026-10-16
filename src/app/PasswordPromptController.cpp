@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 #include "app/PasswordPromptController.hpp"
+#include "ui/Theme.hpp"
 
 #include "app/TextLabel.hpp"
 #include "ui/Button.hpp"
@@ -24,12 +25,12 @@ PasswordPromptController::PasswordPromptController(ShellContext& context, ui::Wi
     : context_(context) {
     auto panel = std::make_unique<ui::Container>();
     panel_ = panel.get();
-    panel_->setBackgroundColor(ui::Color::rgba(0.97, 0.97, 0.97, 1.0));
+    panel_->setBackground(&ui::Palette::panelBackground);
     parent.addChild(std::move(panel));
 
     auto message = std::make_unique<TextLabel>(
         "This document is password protected", ui::Font{13.0, ui::Font::Weight::Semibold},
-        ui::Color::gray(0.2), ui::TextAlign::Left);
+        &ui::Palette::textPrimary, ui::TextAlign::Left);
     message->setFrame(core::Rect{12.0, 10.0, 320.0, 20.0});
     message_ = message.get();
     panel_->addChild(std::move(message));

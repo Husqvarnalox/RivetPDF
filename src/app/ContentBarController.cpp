@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 #include "app/ContentBarController.hpp"
+#include "ui/Theme.hpp"
 
 #include "app/TextLabel.hpp"
 #include "ui/Button.hpp"
@@ -49,7 +50,7 @@ public:
         if (rect.size.height > 0.0) {
             const double y = rect.maxY() - 0.5;
             context.drawLine(core::Point{rect.minX(), y}, core::Point{rect.maxX(), y},
-                             ui::Color::rgba(0.0, 0.0, 0.0, 0.12), 1.0);
+                             ui::colors().chromeSeparator, 1.0);
         }
     }
 };
@@ -60,7 +61,7 @@ ContentBarController::ContentBarController(ShellContext& context, ui::Widget& pa
     : context_(context), content_(content) {
     auto strip = std::make_unique<Strip>();
     strip_ = strip.get();
-    strip_->setBackgroundColor(ui::Color::rgba(0.95, 0.95, 0.95, 1.0));
+    strip_->setBackground(&ui::Palette::chromeBackground);
     parent.addChild(std::move(strip));
 
     const auto textContext = [this] {

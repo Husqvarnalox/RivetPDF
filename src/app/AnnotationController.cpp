@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 #include "app/AnnotationController.hpp"
+#include "ui/Theme.hpp"
 
 #include "app/AnnotationPainter.hpp"
 #include "core/Error.hpp"
@@ -67,7 +68,7 @@ AnnotationController::AnnotationController(ShellContext& context, ui::Widget& pa
     // viewport beside the note while open.
     auto panel = std::make_unique<ui::Container>();
     notePanel_ = panel.get();
-    notePanel_->setBackgroundColor(ui::Color::rgba(0.97, 0.97, 0.97, 1.0));
+    notePanel_->setBackground(&ui::Palette::panelBackground);
     parent.addChild(std::move(panel));
 
     auto area = std::make_unique<ui::TextArea>("Note");

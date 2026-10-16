@@ -128,7 +128,7 @@ void ShellController::buildWidgets() {
 
     // Loading / error overlay, drawn above the viewport area.
     auto overlay = std::make_unique<TextLabel>("", ui::Font{14.0, ui::Font::Weight::Semibold},
-                                               ui::Color::gray(0.35), ui::TextAlign::Center);
+                                               &ui::Palette::textSecondary, ui::TextAlign::Center);
     overlayLabel_ = overlay.get();
     root_->addChild(std::move(overlay));
 
@@ -249,7 +249,7 @@ void ShellController::buildToolbar() {
     zoomOut->setFrame(core::Rect{0.0, 0.0, 36.0, 28.0});
     addPdf(std::move(zoomOut));
 
-    auto zoomLabel = std::make_unique<TextLabel>("100%", ui::Font{13.0}, ui::Color::gray(0.25),
+    auto zoomLabel = std::make_unique<TextLabel>("100%", ui::Font{13.0}, &ui::Palette::textPrimary,
                                                  ui::TextAlign::Center);
     zoomLabel->setFrame(core::Rect{0.0, 0.0, 58.0, 28.0});
     zoomLabel_ = zoomLabel.get();

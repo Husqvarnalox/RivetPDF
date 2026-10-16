@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 #include "ui/TextField.hpp"
+#include "ui/Theme.hpp"
 
 #include "core/geometry/Insets.hpp"
 #include "core/geometry/Point.hpp"
@@ -14,14 +15,6 @@ namespace {
 
 constexpr Font kTextFont{13.0, Font::Weight::Regular};
 
-constexpr Color kUnfocusedBackground = Color::gray(0.96);
-constexpr Color kFocusedBackground = Color::white();
-constexpr Color kUnfocusedBorder = Color::rgba(0.0, 0.0, 0.0, 0.2);
-constexpr Color kFocusedBorder = Color::rgba(0.0, 0.47, 1.0, 1.0); // accent blue
-constexpr Color kTextColor = Color::black();
-constexpr Color kPlaceholderColor = Color::gray(0.55);
-constexpr Color kSelectionFill = Color::rgba(0.0, 0.47, 1.0, 0.25);
-constexpr Color kCaretColor = Color::rgba(0.0, 0.47, 1.0, 1.0);
 constexpr double kCaretWidth = 1.5;
 constexpr double kStrokeWidth = 1.0;
 
@@ -326,9 +319,9 @@ void TextField::paintSelf(PaintContext& context) const {
     }
 
     const bool focused = isFocused();
-    context.fillRoundedRect(rect, focused ? kFocusedBackground : kUnfocusedBackground, kCornerRadius);
+    context.fillRoundedRect(rect, focused ? colors().fieldBackground : colors().fieldBackground, kCornerRadius);
     context.strokeRect(rect.inset(core::Insets::uniform(0.5)),
-                       focused ? kFocusedBorder : kUnfocusedBorder, kStrokeWidth);
+                       focused ? colors().accent : colors().fieldBorder, kStrokeWidth);
 
     context.pushClip(rect);
     const double textOriginX = kHorizontalPadding - horizontalScroll_;
@@ -340,20 +333,20 @@ void TextField::paintSelf(PaintContext& context) const {
             const core::Rect selectionRect{
                 core::Point{selLeft, rect.minY()},
                 core::Size{std::max(0.0, selRight - selLeft), rect.size.height}};
-            context.fillRect(selectionRect, kSelectionFill);
+            context.fillRect(selectionRect, colors().selectionHighlight);
         }
         const core::Rect textRect{core::Point{textOriginX, rect.minY()},
                                   core::Size{rect.size.width, rect.size.height}};
-        context.drawText(displayText, textRect, kTextFont, kTextColor, TextAlign::Left);
+        context.drawText(displayText, textRect, kTextFont, colors().textPrimary, TextAlign::Left);
     } else if (!focused && !placeholder_.empty()) {
         const core::Rect textRect{core::Point{textOriginX, rect.minY()},
                                   core::Size{rect.size.width, rect.size.height}};
-        context.drawText(placeholder_, textRect, kTextFont, kPlaceholderColor, TextAlign::Left);
+        context.drawText(placeholder_, textRect, kTextFont, colors().textSecondary, TextAlign::Left);
     }
     if (focused) {
         const double caretX = textOriginX + prefixWidthUpTo(caret_);
         context.drawLine(core::Point{caretX, rect.minY()}, core::Point{caretX, rect.maxY()},
-                         kCaretColor, kCaretWidth);
+                         colors().textPrimary, kCaretWidth);
     }
     context.popClip();
 }

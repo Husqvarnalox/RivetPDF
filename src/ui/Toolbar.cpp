@@ -1,4 +1,5 @@
 #include "ui/Toolbar.hpp"
+#include "ui/Theme.hpp"
 
 #include <algorithm>
 #include <utility>
@@ -63,12 +64,12 @@ void Toolbar::layout() {
 
 void Toolbar::paintSelf(PaintContext& context) const {
     const core::Rect rect = bounds();
-    context.fillRect(rect, Color::gray(0.93));
+    context.fillRect(rect, colors().chromeBackground);
     // Subtle bottom hairline separating the bar from the content below.
     if (rect.size.height > 0.0) {
         const double y = rect.maxY() - 0.5;
         context.drawLine(core::Point{rect.minX(), y}, core::Point{rect.maxX(), y},
-                         Color::rgba(0.0, 0.0, 0.0, 0.12), 1.0);
+                         colors().chromeSeparator, 1.0);
     }
 }
 

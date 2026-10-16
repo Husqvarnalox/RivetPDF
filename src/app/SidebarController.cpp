@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 #include "app/SidebarController.hpp"
+#include "ui/Theme.hpp"
 
 #include "ui/Button.hpp"
 #include "ui/Container.hpp"
@@ -117,7 +118,7 @@ FlattenedOutline flattenOutline(const pdf::PdfOutlineNode& root, const std::set<
 SidebarController::SidebarController(ShellContext& context, ui::Widget& parent) : context_(context) {
     auto container = std::make_unique<ui::Container>();
     container_ = container.get();
-    container_->setBackgroundColor(ui::Color::rgba(0.93, 0.93, 0.93, 1.0));
+    container_->setBackground(&ui::Palette::chromeBackground);
     parent.addChild(std::move(container));
 
     auto pagesButton = std::make_unique<ui::Button>("Pages");

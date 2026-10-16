@@ -2,6 +2,7 @@
 #pragma once
 
 #include "app/RedactionInteraction.hpp"
+#include "ui/Theme.hpp"
 #include "core/geometry/Rect.hpp"
 #include "core/geometry/Size.hpp"
 #include "ui/ViewportTool.hpp"
@@ -56,7 +57,7 @@ public:
                    ui::PaintContext& context) const override;
     void paintAbove(const ui::ViewportToolHost& host, ui::PaintContext& context) const override;
 
-    static ui::Color markColor() { return ui::Color::rgba(0.86, 0.1, 0.1, 1.0); }
+    static ui::Color markColor() { return ui::colors().redactionMark; }
 
 private:
     RedactionLayerClient& client_;

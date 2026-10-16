@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 #include "ui/TextArea.hpp"
+#include "ui/Theme.hpp"
 
 #include "core/geometry/Insets.hpp"
 #include "core/geometry/Point.hpp"
@@ -13,13 +14,6 @@ namespace rivet::ui {
 namespace {
 
 
-constexpr Color kUnfocusedBackground = Color::gray(0.96);
-constexpr Color kFocusedBackground = Color::white();
-constexpr Color kUnfocusedBorder = Color::rgba(0.0, 0.0, 0.0, 0.2);
-constexpr Color kFocusedBorder = Color::rgba(0.0, 0.47, 1.0, 1.0); // accent blue
-constexpr Color kPlaceholderColor = Color::gray(0.55);
-constexpr Color kSelectionFill = Color::rgba(0.0, 0.47, 1.0, 0.25);
-constexpr Color kCaretColor = Color::rgba(0.0, 0.47, 1.0, 1.0);
 constexpr double kCaretWidth = 1.5;
 constexpr double kStrokeWidth = 1.0;
 // Width assumed for a code point not measured yet (typed since the last
@@ -545,10 +539,10 @@ void TextArea::paintSelf(PaintContext& context) const {
     const auto& all = lines();
 
     const bool focused = isFocused();
-    context.fillRoundedRect(rect, background_.has_value() ? *background_ : (focused ? kFocusedBackground : kUnfocusedBackground),
+    context.fillRoundedRect(rect, background_.has_value() ? *background_ : (focused ? colors().fieldBackground : colors().fieldBackground),
                             kCornerRadius);
     context.strokeRect(rect.inset(core::Insets::uniform(0.5)),
-                       focused ? kFocusedBorder : kUnfocusedBorder, kStrokeWidth);
+                       focused ? colors().accent : colors().fieldBorder, kStrokeWidth);
 
     context.pushClip(rect);
     if (text_.empty()) {
@@ -556,7 +550,7 @@ void TextArea::paintSelf(PaintContext& context) const {
             context.drawText(placeholder_,
                              core::Rect{core::Point{padding_, padding_},
                                         core::Size{rect.size.width, lineHeight_}},
-                             Font{fontSize_, Font::Weight::Regular}, kPlaceholderColor, TextAlign::Left);
+                             Font{fontSize_, Font::Weight::Regular}, colors().textSecondary, TextAlign::Left);
         }
     } else {
         const Selection selected = selection();
@@ -579,7 +573,7 @@ void TextArea::paintSelf(PaintContext& context) const {
                     if (right > left) {
                         context.fillRect(core::Rect{core::Point{left, top},
                                                     core::Size{right - left, lineHeight_}},
-                                         kSelectionFill);
+                                         colors().selectionHighlight);
                     }
                 }
             }
@@ -587,7 +581,8 @@ void TextArea::paintSelf(PaintContext& context) const {
                 const core::Rect lineRect{core::Point{padding_, top},
                                           core::Size{std::max(0.0, rect.size.width - padding_), lineHeight_}};
                 context.drawText(std::string_view{text_}.substr(line.begin, line.end - line.begin),
-                                 lineRect, Font{fontSize_, Font::Weight::Regular}, textColor_, TextAlign::Left);
+                                 lineRect, Font{fontSize_, Font::Weight::Regular}, textColor_.value_or(colors().textPrimary),
+                                 TextAlign::Left);
             }
         }
     }
@@ -596,7 +591,7 @@ void TextArea::paintSelf(PaintContext& context) const {
         const double caretX = padding_ + spanWidth(line.begin, caret_);
         const double top = padding_ + static_cast<double>(caretLine()) * lineHeight_ - scrollY_;
         context.drawLine(core::Point{caretX, top}, core::Point{caretX, top + lineHeight_},
-                         kCaretColor, kCaretWidth);
+                         colors().textPrimary, kCaretWidth);
     }
     context.popClip();
 }

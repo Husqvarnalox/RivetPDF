@@ -31,6 +31,7 @@ Palette lightPalette(const Color& accentIn) {
     p.pageBackground = kWhite;
     p.pageBorder = hex(0x000000, 0.16);
     p.pageShadow = hex(0x000000, 0.10);
+    p.pagePlaceholder = hex(0xEBEBEB);
     p.presentationBackground = kBlack;
     p.panelBackground = hex(0xF7F7F7);
     p.popoverBackground = kWhite;
@@ -41,8 +42,8 @@ Palette lightPalette(const Color& accentIn) {
     p.hudBackground = hex(0x262626, 0.90);
     p.hudText = kWhite;
 
-    p.controlFill = hex(0x000000, 0.06);
-    p.controlFillHover = hex(0x000000, 0.07);
+    p.controlFill = hex(0x000000, 0.05);
+    p.controlFillHover = hex(0x000000, 0.08);
     p.controlFillPressed = hex(0x000000, 0.13);
     p.controlBorder = hex(0x000000, 0.14);
     p.controlSelectedFill = kWhite;
@@ -73,6 +74,7 @@ Palette lightPalette(const Color& accentIn) {
     p.selectionHighlight = withAlpha(accent, 0.30);
     p.selectionInactive = hex(0x808080, 0.24);
     p.linkText = ensureContrast(accent, p.windowBackground, 4.6);
+    p.linkOutline = withAlpha(accent, 0.80);
     p.linkHover = ensureContrast(accent, p.windowBackground, 7.0);
     p.codeBackground = hex(0xF4F4F5);
     p.inlineCodeBackground = hex(0x000000, 0.06);
@@ -112,9 +114,9 @@ Palette darkPalette(const Color& accentIn) {
     p.tooltipText = hex(0xF0F0F0);
     p.scrim = hex(0x000000, 0.50);
 
-    p.controlFill = hex(0xFFFFFF, 0.08);
-    p.controlFillHover = hex(0xFFFFFF, 0.09);
-    p.controlFillPressed = hex(0xFFFFFF, 0.16);
+    p.controlFill = hex(0xFFFFFF, 0.07);
+    p.controlFillHover = hex(0xFFFFFF, 0.11);
+    p.controlFillPressed = hex(0xFFFFFF, 0.18);
     p.controlBorder = hex(0xFFFFFF, 0.14);
     p.controlSelectedFill = hex(0x5A5A5E);
     p.fieldBackground = hex(0x1E1E1E);

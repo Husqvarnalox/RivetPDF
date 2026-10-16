@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 #include "app/SearchBarController.hpp"
+#include "ui/Theme.hpp"
 
 #include "app/TextLabel.hpp"
 #include "ui/Button.hpp"
@@ -26,7 +27,7 @@ SearchBarController::SearchBarController(ShellContext& context, ui::Widget& pare
     : context_(context) {
     auto bar = std::make_unique<ui::Container>();
     bar_ = bar.get();
-    bar_->setBackgroundColor(ui::Color::rgba(0.97, 0.97, 0.97, 1.0));
+    bar_->setBackground(&ui::Palette::panelBackground);
     parent.addChild(std::move(bar));
 
     auto field = std::make_unique<ui::TextField>("Find");
@@ -56,7 +57,7 @@ SearchBarController::SearchBarController(ShellContext& context, ui::Widget& pare
     next->setOnClick([this] { step(+1); });
     bar_->addChild(std::move(next));
 
-    auto count = std::make_unique<TextLabel>("", ui::Font{12.0}, ui::Color::gray(0.35),
+    auto count = std::make_unique<TextLabel>("", ui::Font{12.0}, &ui::Palette::textSecondary,
                                              ui::TextAlign::Right);
     count->setFrame(core::Rect{264.0, 5.0, 90.0, 24.0});
     countLabel_ = count.get();

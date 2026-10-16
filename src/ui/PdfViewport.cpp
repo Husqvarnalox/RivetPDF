@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 #include "ui/PdfViewport.hpp"
+#include "ui/Theme.hpp"
 
 #include "core/Error.hpp"
 #include "render/PageLayout.hpp"
@@ -19,11 +20,6 @@
 namespace rivet::ui {
 namespace {
 
-constexpr Color kCanvasBackground = Color::gray(0.82);
-constexpr Color kEmptyStateColor = Color::gray(0.45);
-constexpr Color kPageBackground = Color::white();
-constexpr Color kPageBorder = Color::gray(0.7);
-constexpr Color kTilePlaceholder = Color::gray(0.92);
 constexpr Font kEmptyStateFont{15.0, Font::Weight::Regular};
 constexpr const char* kEmptyStateText = "Open a PDF to begin";
 
@@ -772,10 +768,10 @@ void PdfViewport::resolveFitMode() {
 //   6. Scrollbar children paint on top via Widget::paint's child pass.
 void PdfViewport::paintSelf(PaintContext& context) const {
     context.pushClip(bounds());
-    context.fillRect(bounds(), presentationMode_ ? Color::black() : kCanvasBackground);
+    context.fillRect(bounds(), presentationMode_ ? colors().presentationBackground : colors().canvasBackground);
 
     if (layout_ == nullptr || source_ == nullptr) {
-        context.drawText(kEmptyStateText, bounds(), kEmptyStateFont, kEmptyStateColor,
+        context.drawText(kEmptyStateText, bounds(), kEmptyStateFont, colors().textSecondary,
                          TextAlign::Center);
         context.popClip();
         return;
@@ -791,8 +787,20 @@ void PdfViewport::paintSelf(PaintContext& context) const {
             const core::Rect pageFrame = layout_->pageFramePoints(i);
             const core::Rect pageInViewport{(pageFrame.origin - state_->scrollOffsetPoints()) * zoomFactor,
                                             pageFrame.size * zoomFactor};
-            context.fillRect(pageInViewport, kPageBackground);
-            context.strokeRect(pageInViewport, kPageBorder, 1.0);
+            if (!presentationMode_) {
+                // Soft shadow (ADR-0033 §5): a few widening translucent
+                // layers, offset downward, under the page.
+                const Color shadow = colors().pageShadow;
+                for (int layer = 3; layer >= 1; --layer) {
+                    const double grow = static_cast<double>(layer);
+                    const core::Rect halo{pageInViewport.minX() - grow, pageInViewport.minY() - grow + 1.0,
+                                          pageInViewport.size.width + 2.0 * grow,
+                                          pageInViewport.size.height + 2.0 * grow};
+                    context.fillRoundedRect(halo, withAlpha(shadow, shadow.a / (1.0 + grow)), grow + 1.0);
+                }
+            }
+            context.fillRect(pageInViewport, colors().pageBackground);
+            if (!presentationMode_) context.strokeRect(pageInViewport, colors().pageBorder, 1.0);
             paintPageTiles(i, pageFrame, pageInViewport, contentRect, revision, context);
             for (ViewportLayer* layer : layers_) layer->paintPage(*this, i, pageInViewport, context);
             paintPageOverlays(i, pageFrame, context);
@@ -896,7 +904,7 @@ void PdfViewport::paintPageOverlays(std::size_t pageIndex, const core::Rect& pag
             const core::Rect dest{
                 (pageFramePoints.origin + rect.origin - state_->scrollOffsetPoints()) * zoomFactor,
                 rect.size * zoomFactor};
-            context.strokeRect(dest, Color::rgba(0.15, 0.4, 0.9, 0.8), 1.0);
+            context.strokeRect(dest, colors().linkOutline, 1.0);
         }
     }
     const std::vector<OverlayRect> overlays = textBridge_->overlayRects(pageIndex);
@@ -980,7 +988,7 @@ void PdfViewport::paintPageTiles(std::size_t pageIndex, const core::Rect& pageFr
             if (const std::shared_ptr<const core::Bitmap> tile = source_->cachedTile(key, revision)) {
                 context.drawBitmap(*tile, dest);
             } else {
-                context.fillRect(dest, kTilePlaceholder);
+                context.fillRect(dest, colors().pagePlaceholder);
                 requestTile(key, render::RasterParams{clipped, devicePixelsPerPoint});
             }
         }

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 #include "ui/ScrollBar.hpp"
+#include "ui/Theme.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -7,9 +8,6 @@
 namespace rivet::ui {
 namespace {
 
-constexpr Color kTrackColor = Color::gray(0.92);
-constexpr Color kThumbColor = Color::gray(0.72);
-constexpr Color kThumbDragColor = Color::gray(0.62);
 constexpr double kCornerRadius = 4.0;
 
 } // namespace
@@ -191,8 +189,8 @@ bool ScrollBar::onMouse(const PointerEvent& event) {
 
 void ScrollBar::paintSelf(PaintContext& context) const {
     if (!isUsable()) return;
-    context.fillRoundedRect(trackRect(), kTrackColor, kCornerRadius);
-    context.fillRoundedRect(thumbRect(), dragging_ ? kThumbDragColor : kThumbColor, kCornerRadius);
+    context.fillRoundedRect(trackRect(), colors().scrollTrack, kCornerRadius);
+    context.fillRoundedRect(thumbRect(), dragging_ ? colors().scrollThumbActive : colors().scrollThumb, kCornerRadius);
 }
 
 } // namespace rivet::ui

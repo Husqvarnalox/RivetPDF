@@ -1,4 +1,5 @@
 #include "ui/Sidebar.hpp"
+#include "ui/Theme.hpp"
 
 #include "core/geometry/Insets.hpp"
 
@@ -9,9 +10,6 @@ namespace rivet::ui {
 namespace {
 
 constexpr Font kRowFont{13.0, Font::Weight::Regular};
-constexpr Color kBackgroundColor = Color::gray(0.949); // ~#F2F2F2
-constexpr Color kRowTextColor = Color::rgba(0.10, 0.10, 0.10, 1.0);
-constexpr Color kSelectionFill = Color::rgba(0.0, 0.0, 0.0, 0.12);
 
 } // namespace
 
@@ -62,16 +60,16 @@ core::Rect Sidebar::rowRect(std::size_t index) const {
 }
 
 void Sidebar::paintSelf(PaintContext& context) const {
-    context.fillRect(bounds(), kBackgroundColor);
+    context.fillRect(bounds(), colors().chromeBackground);
     context.pushClip(bounds());
     for (std::size_t i = 0; i < items_.size(); ++i) {
         const core::Rect row = rowRect(i);
         if (row.minY() > bounds().maxY()) break; // below the visible area
         if (selectedIndex_ && *selectedIndex_ == i) {
-            context.fillRoundedRect(row, kSelectionFill, kRowCornerRadius);
+            context.fillRoundedRect(row, colors().listSelection, kRowCornerRadius);
         }
         context.drawText(items_[i], row.inset(core::Insets::horizontal(kRowTextInset)), kRowFont,
-                         kRowTextColor, TextAlign::Left);
+                         colors().textPrimary, TextAlign::Left);
     }
     context.popClip();
 }

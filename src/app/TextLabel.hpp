@@ -1,5 +1,7 @@
 #pragma once
 
+#include "ui/Container.hpp"
+#include "ui/Theme.hpp"
 #include "ui/UiTypes.hpp"
 #include "ui/Widget.hpp"
 
@@ -8,14 +10,16 @@
 namespace rivet::app {
 
 // Single-line static text label used by the shell (zoom display, status bar).
+// Its color is a theme token, read at paint time.
 class TextLabel final : public ui::Widget {
 public:
-    TextLabel(std::string text, ui::Font font = {}, ui::Color color = ui::Color::gray(0.25),
+    TextLabel(std::string text, ui::Font font = ui::fonts::kBody, ui::ColorToken color = &ui::Palette::textSecondary,
               ui::TextAlign align = ui::TextAlign::Left);
 
     void setText(std::string text);
     const std::string& text() const { return text_; }
-    void setColor(ui::Color color);
+    void setColor(ui::ColorToken color);
+    void setFont(const ui::Font& font);
 
     core::Size preferredSize(const ui::PaintContext& context) const override;
     void paintSelf(ui::PaintContext& context) const override;
@@ -25,7 +29,7 @@ private:
 
     std::string text_;
     ui::Font font_;
-    ui::Color color_;
+    ui::ColorToken color_;
     ui::TextAlign align_;
 };
 

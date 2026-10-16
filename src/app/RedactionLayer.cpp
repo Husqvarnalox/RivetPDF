@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 #include "app/RedactionLayer.hpp"
+#include "ui/Theme.hpp"
 
 #include <utility>
 
@@ -90,7 +91,7 @@ void RedactionLayer::paintPage(const ui::ViewportToolHost& host, std::size_t pag
     const double zoom = host.zoomFactor();
     const std::optional<RedactionInteraction::MarkRef>& selected = client_.interaction().selection();
     const ui::Color color = markColor();
-    const ui::Color tint = ui::Color::rgba(color.r, color.g, color.b, 0.18);
+    const ui::Color tint = ui::withAlpha(color, 0.18);
     for (std::size_t i = 0; i < marks.size(); ++i) {
         const core::Rect rect = toViewport(pageRectInViewport, zoom, marks[i]);
         const bool isSelected = client_.active() && selected.has_value() && selected->page == pageIndex &&
@@ -107,7 +108,7 @@ void RedactionLayer::paintAbove(const ui::ViewportToolHost& host, ui::PaintConte
     if (!pageRect.has_value()) return;
     const core::Rect rect = toViewport(*pageRect, host.zoomFactor(), preview->second);
     const ui::Color color = markColor();
-    context.fillRect(rect, ui::Color::rgba(color.r, color.g, color.b, 0.12));
+    context.fillRect(rect, ui::withAlpha(color, 0.12));
     context.strokeDashedRect(rect, color, kMarkStroke, 4.0);
 }
 

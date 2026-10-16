@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 #include "app/StatusBarController.hpp"
+#include "ui/Theme.hpp"
 
 #include "app/TextLabel.hpp"
 #include "ui/Container.hpp"
@@ -32,18 +33,18 @@ StatusBarController::StatusBarController(ShellContext& context, ui::Widget& pare
     : context_(context) {
     auto bar = std::make_unique<ui::Container>();
     bar_ = bar.get();
-    bar_->setBackgroundColor(ui::Color::rgba(0.93, 0.93, 0.93, 1.0));
+    bar_->setBackground(&ui::Palette::chromeBackground);
     parent.addChild(std::move(bar));
 
     auto statusLabel = std::make_unique<TextLabel>(std::move(initialStatus), ui::Font{12.0},
-                                                   ui::Color::gray(0.35), ui::TextAlign::Left);
+                                                   &ui::Palette::textSecondary, ui::TextAlign::Left);
     statusLabel->setFrame(core::Rect{0.0, 0.0, 100.0, kHeight});
     statusLabel_ = statusLabel.get();
     bar_->addChild(std::move(statusLabel));
 
     // Page indicator on the right side of the status bar:
     //   Page [ field ] / 348
-    auto pageCaption = std::make_unique<TextLabel>("Page", ui::Font{12.0}, ui::Color::gray(0.35),
+    auto pageCaption = std::make_unique<TextLabel>("Page", ui::Font{12.0}, &ui::Palette::textSecondary,
                                                    ui::TextAlign::Right);
     pageCaption->setFrame(core::Rect{0.0, 3.0, 36.0, 20.0});
     pageCaptionLabel_ = pageCaption.get();
@@ -57,14 +58,14 @@ StatusBarController::StatusBarController(ShellContext& context, ui::Widget& pare
     pageField_->setOnEscape([this] { context_.setFocus(nullptr); });
     bar_->addChild(std::move(pageField));
 
-    auto pageCount = std::make_unique<TextLabel>("/ 0", ui::Font{12.0}, ui::Color::gray(0.35),
+    auto pageCount = std::make_unique<TextLabel>("/ 0", ui::Font{12.0}, &ui::Palette::textSecondary,
                                                  ui::TextAlign::Left);
     pageCount->setFrame(core::Rect{0.0, 3.0, 60.0, 20.0});
     pageCountLabel_ = pageCount.get();
     bar_->addChild(std::move(pageCount));
 
     // Page-selection summary, left of the page indicator.
-    auto selection = std::make_unique<TextLabel>("", ui::Font{12.0}, ui::Color::gray(0.35),
+    auto selection = std::make_unique<TextLabel>("", ui::Font{12.0}, &ui::Palette::textSecondary,
                                                  ui::TextAlign::Right);
     selectionLabel_ = selection.get();
     bar_->addChild(std::move(selection));

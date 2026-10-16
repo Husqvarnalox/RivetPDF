@@ -106,8 +106,8 @@ public:
         std::chrono::milliseconds caretBlink{530};
     };
 
-    explicit MarkdownPreviewView(MarkdownPreviewEnvironment environment, markdown::Typography typography = {},
-                                 MarkdownPreviewPalette palette = {});
+    // The colours follow the current ui theme (re-derived after a switch).
+    explicit MarkdownPreviewView(MarkdownPreviewEnvironment environment, markdown::Typography typography = {});
     ~MarkdownPreviewView() override;
 
     // --- content ----------------------------------------------------------
@@ -308,7 +308,10 @@ private:
 
     MarkdownPreviewEnvironment env_;
     markdown::Typography typography_;
-    MarkdownPreviewPalette palette_;
+    // The theme-derived palette, refreshed lazily when the theme changes.
+    const MarkdownPreviewPalette& palette() const;
+    mutable MarkdownPreviewPalette palette_;
+    mutable std::uint64_t paletteGeneration_ = 0;
     Tuning tuning_;
 
     std::shared_ptr<const markdown::MarkdownDocument> document_;

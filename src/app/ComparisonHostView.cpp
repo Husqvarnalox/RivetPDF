@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 #include "app/ComparisonHostView.hpp"
+#include "ui/Theme.hpp"
 
 #include "app/TextLabel.hpp"
 #include "ui/PaintContext.hpp"
@@ -16,12 +17,6 @@ namespace {
 
 // Semi-transparent fills: they tint the page without hiding the text below,
 // on white and on tinted paper alike.
-constexpr ui::Color kDeletedFill = ui::Color::rgba(0.90, 0.15, 0.15, 0.30);
-constexpr ui::Color kInsertedFill = ui::Color::rgba(0.10, 0.65, 0.20, 0.30);
-constexpr ui::Color kDeletedSelected = ui::Color::rgba(0.90, 0.15, 0.15, 0.55);
-constexpr ui::Color kInsertedSelected = ui::Color::rgba(0.10, 0.65, 0.20, 0.55);
-constexpr ui::Color kDeletedPage = ui::Color::rgba(0.90, 0.15, 0.15, 0.12);
-constexpr ui::Color kInsertedPage = ui::Color::rgba(0.10, 0.65, 0.20, 0.12);
 
 constexpr std::size_t kSnippetBytes = 28;
 
@@ -99,7 +94,7 @@ ComparisonHostView::ComparisonHostView(Environment environment) : environment_(s
     addChild(std::move(next));
 
     auto summary = std::make_unique<TextLabel>("", ui::Font{13.0, ui::Font::Weight::Semibold},
-                                               ui::Color::gray(0.25));
+                                               &ui::Palette::textPrimary);
     summary_ = summary.get();
     addChild(std::move(summary));
 
@@ -109,11 +104,11 @@ ComparisonHostView::ComparisonHostView(Environment environment) : environment_(s
     addChild(std::move(list));
 
     auto leftCaption = std::make_unique<TextLabel>("", ui::Font{12.0, ui::Font::Weight::Semibold},
-                                                   ui::Color::gray(0.30), ui::TextAlign::Center);
+                                                   &ui::Palette::textPrimary, ui::TextAlign::Center);
     leftCaption_ = leftCaption.get();
     addChild(std::move(leftCaption));
     auto rightCaption = std::make_unique<TextLabel>("", ui::Font{12.0, ui::Font::Weight::Semibold},
-                                                    ui::Color::gray(0.30), ui::TextAlign::Center);
+                                                    &ui::Palette::textPrimary, ui::TextAlign::Center);
     rightCaption_ = rightCaption.get();
     addChild(std::move(rightCaption));
 
@@ -141,7 +136,7 @@ ComparisonHostView::ComparisonHostView(Environment environment) : environment_(s
     addChild(std::move(right));
 
     auto status = std::make_unique<TextLabel>("", ui::Font{14.0, ui::Font::Weight::Semibold},
-                                              ui::Color::gray(0.35), ui::TextAlign::Center);
+                                              &ui::Palette::textSecondary, ui::TextAlign::Center);
     statusLabel_ = status.get();
     addChild(std::move(status));
 }
@@ -337,12 +332,12 @@ std::vector<ui::OverlayRect> ComparisonHostView::overlaysFor(bool leftSide, std:
     if (pageIndex < extra.size() && extra[pageIndex] && layout != nullptr && pageIndex < layout->pageCount()) {
         const core::Size size = layout->pages()[pageIndex].sizePoints;
         out.push_back(ui::OverlayRect{core::Rect{0.0, 0.0, size.width, size.height},
-                                      leftSide ? kDeletedPage : kInsertedPage});
+                                      leftSide ? ui::colors().comparisonDeletedPage : ui::colors().comparisonInsertedPage});
     }
     if (pageIndex < result->pages.size()) {
         const editor::PageComparison& page = result->pages[pageIndex];
         for (const core::Rect& rect : leftSide ? page.deletedRects : page.insertedRects) {
-            out.push_back(ui::OverlayRect{rect, leftSide ? kDeletedFill : kInsertedFill});
+            out.push_back(ui::OverlayRect{rect, leftSide ? ui::colors().comparisonDeleted : ui::colors().comparisonInserted});
         }
     }
     if (selected_.has_value() && *selected_ < result->changes.size()) {
@@ -356,12 +351,12 @@ std::vector<ui::OverlayRect> ComparisonHostView::overlaysFor(bool leftSide, std:
                 pageIndex < layout->pageCount()) {
                 const core::Size size = layout->pages()[pageIndex].sizePoints;
                 out.push_back(ui::OverlayRect{core::Rect{0.0, 0.0, size.width, size.height},
-                                              leftSide ? kDeletedPage : kInsertedPage});
+                                              leftSide ? ui::colors().comparisonDeletedPage : ui::colors().comparisonInsertedPage});
             }
         } else if (first == pageIndex && !rect.isEmpty()) {
             out.push_back(ui::OverlayRect{core::Rect{rect.minX() - 1.0, rect.minY() - 1.0, rect.size.width + 2.0,
                                                      rect.size.height + 2.0},
-                                          leftSide ? kDeletedSelected : kInsertedSelected});
+                                          leftSide ? ui::colors().comparisonDeletedSelected : ui::colors().comparisonInsertedSelected});
         }
     }
     return out;
@@ -435,17 +430,17 @@ void ComparisonHostView::layout() {
 void ComparisonHostView::paintSelf(ui::PaintContext& context) const {
     const double width = frame().size.width;
     const double height = frame().size.height;
-    context.fillRect(core::Rect{0.0, 0.0, width, height}, ui::Color::gray(0.93));
-    context.fillRect(core::Rect{0.0, 0.0, width, kHeaderHeight}, ui::Color::gray(0.96));
+    context.fillRect(core::Rect{0.0, 0.0, width, height}, ui::colors().chromeBackground);
+    context.fillRect(core::Rect{0.0, 0.0, width, kHeaderHeight}, ui::colors().chromeBackground);
     context.drawLine(core::Point{0.0, kHeaderHeight - 0.5}, core::Point{width, kHeaderHeight - 0.5},
-                     ui::Color::gray(0.80), 1.0);
+                     ui::colors().chromeSeparator, 1.0);
     const core::Rect& list = list_->frame();
-    context.fillRect(list, ui::Color::white());
+    context.fillRect(list, ui::colors().windowBackground);
     context.fillRect(core::Rect{list.maxX(), kHeaderHeight, 1.0, std::max(0.0, height - kHeaderHeight)},
-                     ui::Color::gray(0.80));
+                     ui::colors().chromeSeparator);
     const core::Rect& right = rightViewport_->frame();
     context.fillRect(core::Rect{right.minX() - 1.0, kHeaderHeight, 1.0, std::max(0.0, height - kHeaderHeight)},
-                     ui::Color::gray(0.80));
+                     ui::colors().chromeSeparator);
 }
 
 } // namespace rivet::app

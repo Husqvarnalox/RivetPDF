@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 #include "app/AnnotationBarController.hpp"
+#include "ui/Theme.hpp"
 
 #include "app/AnnotationTools.hpp"
 #include "pdf/PdfAnnotation.hpp"
@@ -59,7 +60,7 @@ public:
         if (rect.size.height > 0.0) {
             const double y = rect.maxY() - 0.5;
             context.drawLine(core::Point{rect.minX(), y}, core::Point{rect.maxX(), y},
-                             ui::Color::rgba(0.0, 0.0, 0.0, 0.12), 1.0);
+                             ui::colors().chromeSeparator, 1.0);
         }
     }
 };
@@ -71,7 +72,7 @@ AnnotationBarController::AnnotationBarController(ShellContext& context, ui::Widg
     : context_(context), annotations_(annotations) {
     auto strip = std::make_unique<Strip>();
     strip_ = strip.get();
-    strip_->setBackgroundColor(ui::Color::rgba(0.95, 0.95, 0.95, 1.0));
+    strip_->setBackground(&ui::Palette::chromeBackground);
     parent.addChild(std::move(strip));
 
     for (std::size_t i = 0; i < kAnnotationToolCount; ++i) {

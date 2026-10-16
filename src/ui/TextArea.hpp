@@ -167,7 +167,7 @@ private:
     double fontSize_ = 13.0;
     double lineHeight_ = kLineHeight;
     double padding_ = kPadding;
-    Color textColor_ = Color::black();
+    std::optional<Color> textColor_; // nullopt = the theme's textPrimary
     std::optional<Color> background_;
 };
 

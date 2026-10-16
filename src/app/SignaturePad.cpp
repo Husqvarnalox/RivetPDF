@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 #include "app/SignaturePad.hpp"
+#include "ui/Theme.hpp"
 
 #include "ui/Path.hpp"
 
@@ -78,11 +79,11 @@ bool SignaturePad::onMouse(const ui::PointerEvent& event) {
 
 void SignaturePad::paintSelf(ui::PaintContext& context) const {
     const core::Rect box = bounds();
-    context.fillRect(box, ui::Color::white());
-    context.strokeRect(box, ui::Color::gray(0.7), 1.0);
+    context.fillRect(box, ui::colors().editorPaper);
+    context.strokeRect(box, ui::colors().editorPaperBorder, 1.0);
     // Signing line.
     const double lineY = box.size.height * 0.78;
-    context.drawLine(core::Point{kInset, lineY}, core::Point{box.size.width - kInset, lineY}, ui::Color::gray(0.85),
+    context.drawLine(core::Point{kInset, lineY}, core::Point{box.size.width - kInset, lineY}, ui::colors().pagePlaceholder,
                      1.0);
 
     if (mode_ == Mode::Preview) {
@@ -99,7 +100,7 @@ void SignaturePad::paintSelf(ui::PaintContext& context) const {
     const bool blank = mode_ == Mode::Capture ? strokes_.empty() : preview_ == nullptr;
     if (blank && !hint_.empty()) {
         context.drawText(hint_, core::Rect{0.0, 0.0, box.size.width, lineY - 6.0}, ui::Font{13.0},
-                         ui::Color::gray(0.6), ui::TextAlign::Center);
+                         ui::colors().formFieldEditedBorder, ui::TextAlign::Center);
     }
 }
 

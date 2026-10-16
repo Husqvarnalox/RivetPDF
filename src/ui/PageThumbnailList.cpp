@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 #include "ui/PageThumbnailList.hpp"
+#include "ui/Theme.hpp"
 
 #include "core/Bitmap.hpp"
 #include "core/geometry/Insets.hpp"
@@ -16,16 +17,7 @@
 namespace rivet::ui {
 namespace {
 
-constexpr Color kBackgroundColor = Color::gray(0.949);
-constexpr Color kRowSelectionFill = Color::rgba(0.0, 0.0, 0.0, 0.10);
-constexpr Color kPageSelectedFill = Color::rgba(0.20, 0.45, 0.95, 0.22);
-constexpr Color kActiveOutline = Color::rgba(0.20, 0.45, 0.95, 0.90);
-constexpr Color kActiveOutlineUnfocused = Color::rgba(0.20, 0.45, 0.95, 0.45);
-constexpr Color kInsertionColor = Color::rgba(0.20, 0.45, 0.95, 1.0);
 constexpr double kInsertionThickness = 3.0;
-constexpr Color kThumbnailPlaceholder = Color::gray(0.88);
-constexpr Color kThumbnailBorder = Color::gray(0.72);
-constexpr Color kLabelColor = Color::rgba(0.10, 0.10, 0.10, 1.0);
 constexpr Font kLabelFont{11.0, Font::Weight::Regular};
 constexpr const char* kEmptyStateText = "No document open";
 constexpr Font kEmptyStateFont{13.0, Font::Weight::Regular};
@@ -449,11 +441,11 @@ void PageThumbnailList::layout() {
 }
 
 void PageThumbnailList::paintSelf(PaintContext& context) const {
-    context.fillRect(bounds(), kBackgroundColor);
+    context.fillRect(bounds(), colors().chromeBackground);
     context.pushClip(bounds());
 
     if (layout_ == nullptr || source_ == nullptr || rowCount() == 0) {
-        context.drawText(kEmptyStateText, bounds(), kEmptyStateFont, Color::gray(0.45),
+        context.drawText(kEmptyStateText, bounds(), kEmptyStateFont, colors().textSecondary,
                          TextAlign::Center);
         context.popClip();
         return;
@@ -468,11 +460,11 @@ void PageThumbnailList::paintSelf(PaintContext& context) const {
         const core::Rect rowHighlight = row.inset(core::Insets::horizontal(4.0));
         // Current page (viewport tracking), then the page selection above it.
         if (selectedIndex_ && *selectedIndex_ == i) {
-            context.fillRoundedRect(rowHighlight, kRowSelectionFill, 5.0);
+            context.fillRoundedRect(rowHighlight, colors().listSelection, 5.0);
         }
-        if (isRowSelected(i)) context.fillRoundedRect(rowHighlight, kPageSelectedFill, 5.0);
+        if (isRowSelected(i)) context.fillRoundedRect(rowHighlight, colors().accentSubtle, 5.0);
         if (activeRow_ && *activeRow_ == i) {
-            context.strokeRect(rowHighlight, isFocused() ? kActiveOutline : kActiveOutlineUnfocused, 2.0);
+            context.strokeRect(rowHighlight, isFocused() ? colors().accent : colors().focusRing, 2.0);
         }
 
         const core::Rect thumb = thumbnailRect(i).translated(scrollShift);
@@ -482,13 +474,13 @@ void PageThumbnailList::paintSelf(PaintContext& context) const {
         if (const std::shared_ptr<const core::Bitmap> bitmap = source_->cachedTile(tileKey, revision)) {
             context.drawBitmap(*bitmap, thumb);
         } else {
-            context.fillRect(thumb, kThumbnailPlaceholder);
+            context.fillRect(thumb, colors().pagePlaceholder);
             requestThumbnail(i, context.backingScale(),
                              (selectedIndex_ && *selectedIndex_ == i)
                                  ? render::RenderPriority::Impending
                                  : render::RenderPriority::Prefetch);
         }
-        context.strokeRect(thumb, kThumbnailBorder, 1.0);
+        context.strokeRect(thumb, colors().pageBorder, 1.0);
 
         // Page label from the PDF page-label tree when present, else the
         // 1-based positional page number.
@@ -498,7 +490,7 @@ void PageThumbnailList::paintSelf(PaintContext& context) const {
                 : std::format("Page {}", i + 1);
         context.drawText(labelText,
                          core::Rect{0.0, thumb.maxY(), bounds().size.width, kLabelHeight},
-                         kLabelFont, kLabelColor, TextAlign::Center);
+                         kLabelFont, colors().textSecondary, TextAlign::Center);
     }
 
     // Drop insertion indicator: a line in the gap between two rows (top of
@@ -510,7 +502,7 @@ void PageThumbnailList::paintSelf(PaintContext& context) const {
         context.fillRect(core::Rect{kInset, y - kInsertionThickness / 2.0,
                                     std::max(0.0, bounds().size.width - 2.0 * kInset),
                                     kInsertionThickness},
-                         kInsertionColor);
+                         colors().accent);
     }
 
     context.popClip();

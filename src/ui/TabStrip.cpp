@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 #include "ui/TabStrip.hpp"
+#include "ui/Theme.hpp"
 
 #include "core/geometry/Insets.hpp"
 
@@ -13,15 +14,7 @@ namespace {
 constexpr Font kTabFont{13.0, Font::Weight::Regular};
 constexpr Font kCloseFont{11.0, Font::Weight::Regular};
 
-constexpr Color kStripBackground = Color::gray(0.949); // like Sidebar
-constexpr Color kActiveTabFill = Color::white();
-constexpr Color kInactiveTabFill = Color::gray(0.9);
-constexpr Color kActiveTabBorder = Color::rgba(0.0, 0.0, 0.0, 0.25);
-constexpr Color kInactiveTabBorder = Color::rgba(0.0, 0.0, 0.0, 0.12);
-constexpr Color kTitleColor = Color::rgba(0.10, 0.10, 0.10, 1.0);
-constexpr Color kCloseGlyphColor = Color::gray(0.45);
 
-constexpr Color kDirtyDotColor = Color::gray(0.35);
 constexpr double kDirtyDotSize = 6.0;
 constexpr double kTabCornerRadius = 5.0;
 constexpr double kStrokeWidth = 1.0;
@@ -180,17 +173,17 @@ bool TabStrip::onMouse(const PointerEvent& event) {
 
 void TabStrip::paintSelf(PaintContext& context) const {
     const core::Rect area = bounds();
-    context.fillRect(area, kStripBackground);
+    context.fillRect(area, colors().chromeBackground);
     layoutTabs(context);
 
     context.pushClip(area);
     for (std::size_t index = 0; index < visibleCount_; ++index) {
         const bool active = activeIndex_ && *activeIndex_ == index;
         const core::Rect tab = tabRects_[index];
-        context.fillRoundedRect(tab, active ? kActiveTabFill : kInactiveTabFill, kTabCornerRadius);
+        context.fillRoundedRect(tab, active ? colors().chromeActiveTab : colors().controlFill, kTabCornerRadius);
         context.strokeRect(tab.inset(core::Insets::uniform(0.5)),
-                           active ? kActiveTabBorder : kInactiveTabBorder, kStrokeWidth);
-        context.drawText(kCloseGlyph, closeButtonRect(index), kCloseFont, kCloseGlyphColor,
+                           active ? colors().chromeSeparator : colors().chromeSeparator, kStrokeWidth);
+        context.drawText(kCloseGlyph, closeButtonRect(index), kCloseFont, colors().textSecondary,
                          TextAlign::Center);
         const bool dirty = tabs_[index].dirty;
         const double dotReserve = dirty ? kDirtyDotSize + 4.0 : 0.0;
@@ -199,14 +192,14 @@ void TabStrip::paintSelf(PaintContext& context) const {
             context.fillRoundedRect(
                 core::Rect{close.minX() - kDirtyDotSize - 3.0, tab.minY() + (kTabHeight - kDirtyDotSize) / 2.0,
                            kDirtyDotSize, kDirtyDotSize},
-                kDirtyDotColor, kDirtyDotSize / 2.0);
+                colors().textSecondary, kDirtyDotSize / 2.0);
         }
         const double titleWidth = tab.size.width - 2.0 * kTabLeftPadding - kCloseButtonSize - dotReserve;
         const core::Rect titleRect{
             core::Point{tab.minX() + kTabLeftPadding, tab.minY()},
             core::Size{std::max(0.0, titleWidth), kTabHeight}};
         context.drawText(displayTitle(tabs_[index].title, tab.size.width - dotReserve, context), titleRect,
-                         kTabFont, kTitleColor, TextAlign::Left);
+                         kTabFont, colors().textPrimary, TextAlign::Left);
     }
     context.popClip();
 }

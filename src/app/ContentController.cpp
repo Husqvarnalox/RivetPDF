@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 #include "app/ContentController.hpp"
+#include "ui/Theme.hpp"
 
 #include "core/Error.hpp"
 #include "editor/DocumentSession.hpp"
@@ -119,7 +120,7 @@ ContentController::ContentController(ShellContext& context, ui::Widget& parent, 
 
     auto area = std::make_unique<ui::TextArea>();
     editorArea_ = area.get();
-    editorArea_->setBackground(ui::Color::white());
+    editorArea_->setBackground(ui::colors().editorPaper);
     editorArea_->setOnFocusRequested([this] { context_.setFocus(editorArea_); });
     editorArea_->setOnCommit([this] { commitEditor(); });
     editorArea_->setOnEscape([this] { cancelEditor(); });
@@ -743,7 +744,7 @@ void ContentController::openEditorForNew(std::size_t pageIndex, core::Point topL
 void ContentController::showEditor() {
     editorArea_->setText(editing_->original);
     editorArea_->setTextColor(uiColor(editing_->color));
-    editorArea_->setBackground(ui::Color::white());
+    editorArea_->setBackground(ui::colors().editorPaper);
     editorArea_->setMetrics(editing_->fontSize * context_.viewport.zoomFactor(),
                             editing_->lineAdvance * context_.viewport.zoomFactor(), kEditorPadding);
     placeEditor(context_.viewport);

@@ -3,6 +3,7 @@
 // mouse and the translation of every gesture into one source edit. The
 // source stays authoritative; see MarkdownPreviewView.hpp for the behaviour.
 #include "app/MarkdownPreviewView.hpp"
+#include "ui/Theme.hpp"
 
 #include "markdown/Grapheme.hpp"
 
@@ -838,7 +839,7 @@ void MarkdownPreviewView::paintEditSelection(ui::PaintContext& context) const {
     const std::optional<std::size_t> b = toSnapshot(std::max(anchor_, caret_));
     const markdown::CaretMap* map = caretMap();
     if (!a || !b || map == nullptr) return;
-    const ui::Color color = isFocused() ? palette_.selection : ui::Color::rgba(0.5, 0.5, 0.5, 0.22);
+    const ui::Color color = isFocused() ? palette().selection : palette().selectionInactive;
     const auto pa = map->positionOf(*a);
     const auto pb = map->positionOf(*b);
     if (pa && pb && *pa < *pb) {
@@ -865,12 +866,12 @@ void MarkdownPreviewView::paintEditing(ui::PaintContext& context) const {
         const ui::Font font = fontFor(style);
         const double lh = measurer_.lineHeight(style);
         const double width = context.measureText(optimisticText_, font).width;
-        context.fillRect(core::Rect{x, top, width, r->size.height}, palette_.background);
+        context.fillRect(core::Rect{x, top, width, r->size.height}, palette().background);
         context.drawText(optimisticText_, core::Rect{x, top + (r->size.height - lh) / 2.0, width + 8.0, lh}, font,
                          colorFor(style), ui::TextAlign::Left);
         x += width;
     }
-    if (caretVisible_) context.fillRect(core::Rect{x, top, r->size.width, r->size.height}, palette_.text);
+    if (caretVisible_) context.fillRect(core::Rect{x, top, r->size.width, r->size.height}, palette().text);
 }
 
 } // namespace rivet::app

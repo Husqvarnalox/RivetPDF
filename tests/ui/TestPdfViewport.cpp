@@ -14,6 +14,7 @@
 #include "render/ViewerState.hpp"
 #include "render/ZoomState.hpp"
 #include "ui/PdfViewport.hpp"
+#include "ui/Theme.hpp"
 #include "ui/ViewerTextBridge.hpp"
 #include "ui/ViewportTool.hpp"
 #include "ui/UiTypes.hpp"
@@ -196,7 +197,7 @@ RIVET_TEST(missingTilesAreRequestedAtVisiblePriority) {
     // A gray placeholder is painted per missing tile.
     int placeholders = 0;
     for (const auto& fill : context.fills) {
-        if (sameColor(fill.color, rivet::ui::Color::gray(0.92))) ++placeholders;
+        if (sameColor(fill.color, rivet::ui::colors().pagePlaceholder)) ++placeholders;
     }
     CHECK_EQ(placeholders, 4);
 }

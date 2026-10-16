@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 #include "app/AnnotationPainter.hpp"
+#include "ui/Theme.hpp"
 
 #include "ui/Path.hpp"
 
@@ -41,7 +42,7 @@ ui::Path toPath(const std::vector<editor::DisplayPathSegment>& segments, const c
 void paintHandle(ui::PaintContext& context, core::Point center) {
     const double size = AnnotationInteraction::kHandleSize;
     const core::Rect box{center.x - size / 2.0, center.y - size / 2.0, size, size};
-    context.fillRect(box, ui::Color::white());
+    context.fillRect(box, ui::colors().editorPaper);
     context.strokeRect(box, AnnotationPainter::accentColor(), kChromeWidth);
 }
 
@@ -66,7 +67,7 @@ void paintArrowHead(ui::PaintContext& context, core::Point from, core::Point to,
 
 } // namespace
 
-ui::Color AnnotationPainter::accentColor() { return ui::Color::rgba(0.10, 0.45, 0.95, 1.0); }
+ui::Color AnnotationPainter::accentColor() { return ui::colors().accent; }
 
 ui::Color AnnotationPainter::toColor(const pdf::PdfColor& color, double alpha) {
     return ui::Color::rgba(static_cast<double>(color.r), static_cast<double>(color.g),

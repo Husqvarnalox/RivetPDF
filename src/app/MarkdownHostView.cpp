@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 #include "app/MarkdownHostView.hpp"
+#include "ui/Theme.hpp"
 
 #include "app/MarkdownPreviewView.hpp"
 #include "app/MarkdownSourcePane.hpp"
@@ -303,11 +304,11 @@ public:
 
     void paintSelf(ui::PaintContext& context) const override {
         if (state_ == nullptr) {
-            context.fillRect(bounds(), ui::Color::white());
+            context.fillRect(bounds(), ui::colors().windowBackground);
             return;
         }
         if (appliedMode_ == MarkdownDisplayMode::Split) {
-            context.fillRect(panes_.divider, ui::Color::gray(0.8));
+            context.fillRect(panes_.divider, ui::colors().chromeSeparator);
         }
     }
 
