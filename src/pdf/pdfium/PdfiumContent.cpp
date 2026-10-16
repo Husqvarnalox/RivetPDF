@@ -1043,6 +1043,55 @@ core::Status applyTextBlock(ApplyContext& context, const PdfTextBlockEdit& block
     return core::ok();
 }
 
+// --- Invisible (OCR) text (ADR-0027) --------------------------------------------------
+
+// Appends one render-mode-3 text object per run in the bundled Sans face. The
+// objects are Created with the edits' invisibleTag. Text the face cannot
+// encode is refused (the planner removes such characters beforehand).
+core::Status applyInvisibleRuns(ApplyContext& context, const PdfPageContentEdits& edits) {
+    if (edits.invisibleRuns.empty()) {
+        return core::ok();
+    }
+    if (edits.invisibleRuns.size() > kMaxContentObjectsPerPage - context.createdLines) {
+        return fail(core::ErrorCode::InvalidArgument, "the page would have too many objects");
+    }
+    const FPDF_FONT font = context.fonts->get(PdfBundledFont::SansRegular);
+    if (font == nullptr) {
+        return fail(core::ErrorCode::Internal, "PDFium could not load the bundled font");
+    }
+    for (const PdfInvisibleTextRun& run : edits.invisibleRuns) {
+        const std::u32string text = decodeUtf8(run.text);
+        for (const char32_t c : text) {
+            if (!bundledFontCovers(PdfBundledFont::SansRegular, c)) {
+                return fail(core::ErrorCode::InvalidArgument,
+                            "the text contains characters the bundled font cannot display");
+            }
+        }
+        OwnedObject object(FPDFPageObj_CreateTextObj(context.document, font, static_cast<float>(run.fontSize)));
+        if (object.get() == nullptr) {
+            return fail(core::ErrorCode::Internal, "PDFium could not create a text object");
+        }
+        const std::vector<FPDF_WCHAR> utf16 = toUtf16(text);
+        if (FPDFText_SetText(object.get(), utf16.data()) == 0) {
+            return fail(core::ErrorCode::Internal, "PDFium could not set the text");
+        }
+        const FS_MATRIX fs = toFs(core::Matrix{run.placement.a * run.horizontalScale,
+                                               run.placement.b * run.horizontalScale, run.placement.c,
+                                               run.placement.d, run.placement.tx, run.placement.ty});
+        if (FPDFPageObj_SetMatrix(object.get(), &fs) == 0) {
+            return fail(core::ErrorCode::Internal, "PDFium could not place the text");
+        }
+        if (FPDFTextObj_SetTextRenderMode(object.get(), FPDF_TEXTRENDERMODE_INVISIBLE) == 0) {
+            return fail(core::ErrorCode::Internal, "PDFium could not make the text invisible");
+        }
+        const FPDF_PAGEOBJECT handle = object.release();
+        FPDFPage_InsertObject(context.page, handle);
+        context.originOf[handle] = PdfContentOrigin{PdfContentOrigin::Kind::Created, 0, edits.invisibleTag};
+    }
+    context.createdLines += edits.invisibleRuns.size();
+    return core::ok();
+}
+
 // --- Redactions (ADR-0026) ------------------------------------------------------------
 //
 // Rule of thumb for everything below: when the public API cannot do the
@@ -1625,6 +1674,10 @@ core::Result<ContentApplyResult> applyContentEdits(FPDF_DOCUMENT document,
         if (core::Status applied = applyTextBlock(context, block); !applied.has_value()) {
             return std::unexpected(applied.error());
         }
+    }
+
+    if (core::Status invisible = applyInvisibleRuns(context, edits); !invisible.has_value()) {
+        return std::unexpected(invisible.error());
     }
 
     if (core::Status redacted = applyRedactions(context, edits.redactions); !redacted.has_value()) {
