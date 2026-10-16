@@ -5,6 +5,7 @@
 #import "MacosPrintService.h"
 #import "MacosFileDialog.h"
 #import "MacosImageDecoder.h"
+#import "MacosImageEncoder.h"
 #import "MacosLifecycle.h"
 #import "MacosMainThreadDispatcher.h"
 #import "RivetContentView.h"
@@ -179,6 +180,7 @@ int main(int argc, char** argv) {
         const auto dispatcher = std::make_unique<rivet::platform::MacosMainThreadDispatcher>();
         const auto fileDialog = std::make_unique<rivet::platform::MacosFileDialog>();
         const auto imageDecoder = std::make_unique<rivet::platform::MacosImageDecoder>();
+        const auto imageEncoder = std::make_unique<rivet::platform::MacosImageEncoder>();
         const auto clipboard = std::make_unique<rivet::platform::MacosClipboard>();
         const auto urlOpener = std::make_unique<rivet::platform::MacosExternalUrlOpener>();
         const auto printService = std::make_unique<rivet::platform::MacosPrintService>();
@@ -196,6 +198,7 @@ int main(int argc, char** argv) {
         services.mainDispatcher = dispatcher.get();
         services.fileDialog = fileDialog.get();
         services.imageDecoder = imageDecoder.get();
+        services.imageEncoder = imageEncoder.get();
         services.clipboard = clipboard.get();
         services.urlOpener = urlOpener.get();
         services.printService = printService.get();

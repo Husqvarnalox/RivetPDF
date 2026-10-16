@@ -10,6 +10,7 @@
 #include "LinuxExternalUrlOpener.hpp"
 #include "LinuxFileDialog.hpp"
 #include "LinuxImageDecoder.hpp"
+#include "LinuxImageEncoder.hpp"
 #include "LinuxMainThreadDispatcher.hpp"
 #include "LinuxMenuBar.hpp"
 #include "X11Window.hpp"
@@ -87,6 +88,7 @@ int main(int argc, char** argv) {
     const auto fileDialog = std::make_unique<platform::LinuxFileDialog>(*connection, alertService.get());
     fileDialog->setOwner(window.get());
     const auto imageDecoder = std::make_unique<platform::LinuxImageDecoder>();
+    const auto imageEncoder = std::make_unique<platform::LinuxImageEncoder>();
     const auto clipboard = std::make_unique<platform::LinuxClipboard>(*connection);
     const auto urlOpener = std::make_unique<platform::LinuxExternalUrlOpener>();
 #if RIVET_HAVE_CUPS
@@ -99,6 +101,7 @@ int main(int argc, char** argv) {
     services.mainDispatcher = dispatcher.get();
     services.fileDialog = fileDialog.get();
     services.imageDecoder = imageDecoder.get();
+    services.imageEncoder = imageEncoder.get();
     services.clipboard = clipboard.get();
     services.urlOpener = urlOpener.get();
 #if RIVET_HAVE_CUPS

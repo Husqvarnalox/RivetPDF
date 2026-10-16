@@ -24,6 +24,7 @@ if(APPLE)
     add_executable(rivet_platform_tests
         TestClipboard.cpp
         TestImageDecoder.mm
+        TestImageEncoder.mm
         TestPrintService.mm
     )
 
