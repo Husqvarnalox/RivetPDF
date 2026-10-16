@@ -36,6 +36,7 @@ add_library(rivet_app STATIC
     SearchBarController.cpp
     ShellController.cpp
     SidebarController.cpp
+    SignatureStore.cpp
     StatusBarController.cpp
     TextInteractionController.cpp
     TextLabel.cpp

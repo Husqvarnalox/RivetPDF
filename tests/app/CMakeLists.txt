@@ -3,6 +3,8 @@ add_executable(rivet_app_tests
     TestShellWiring.cpp
     TestWorkspaceLifecycle.cpp
     TestUrlPolicy.cpp
+    # Saved signatures (ADR-0025).
+    TestSignatureStore.cpp
     TestMenuModel.cpp
     TestFormController.cpp
     # Redaction tool, marks and Apply Redactions (ADR-0026), fake backend.
