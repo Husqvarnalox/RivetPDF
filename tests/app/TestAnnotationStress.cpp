@@ -399,8 +399,8 @@ RIVET_TEST(stressRapidToolSwitchingWithCancelledGestures) {
 
     std::size_t completed = 0;
     for (int i = 0; i < 500; ++i) {
-        const AnnotationTool tool = static_cast<AnnotationTool>(i % static_cast<int>(app::kAnnotationToolCount));
-        const int variant = (i / static_cast<int>(app::kAnnotationToolCount)) % 3; // 0 complete, 1 tool switch, 2 Esc
+        const AnnotationTool tool = static_cast<AnnotationTool>(i % static_cast<int>(app::kMenuToolCount));
+        const int variant = (i / static_cast<int>(app::kMenuToolCount)) % 3; // 0 complete, 1 tool switch, 2 Esc
         const std::size_t page = static_cast<std::size_t>(i) % 3;
         const std::size_t local = static_cast<std::size_t>(i) / 3;
         // A fresh 36-point cell per gesture: nothing is ever hit, so every
@@ -424,7 +424,7 @@ RIVET_TEST(stressRapidToolSwitchingWithCancelledGestures) {
         if (variant == 1) {
             // A tool switch (menu / toolbar) in the middle of the press.
             c.perform(static_cast<AnnotationCommand>((static_cast<int>(tool) + 1) %
-                                                     static_cast<int>(app::kAnnotationToolCount)));
+                                                     static_cast<int>(app::kMenuToolCount)));
             CHECK(!c.interaction().gestureActive());
             cancelled = true;
         } else if (variant == 2) {

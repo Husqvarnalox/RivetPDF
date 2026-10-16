@@ -719,21 +719,21 @@ RIVET_TEST(annotationBarShowsToolsAndOnlyTheStyleControlsThatApply) {
     for (const auto& child : children) {
         if (!child->frame().isEmpty()) ++shown;
     }
-    CHECK_EQ(shown, std::size_t{11 + 6 + 4 + 4 + 1}); // tools, swatches, opacity, widths, fill
+    CHECK_EQ(shown, std::size_t{12 + 6 + 4 + 4 + 1}); // tools, swatches, opacity, widths, fill
 
     click(bar.toolButton(AnnotationTool::Highlight));
     shown = 0;
     for (const auto& child : children) {
         if (!child->frame().isEmpty()) ++shown;
     }
-    CHECK_EQ(shown, std::size_t{11 + 6 + 4}); // no width, no fill
+    CHECK_EQ(shown, std::size_t{12 + 6 + 4}); // no width, no fill
 
     click(bar.toolButton(AnnotationTool::Stamp));
     shown = 0;
     for (const auto& child : children) {
         if (!child->frame().isEmpty()) ++shown;
     }
-    CHECK_EQ(shown, std::size_t{11 + 6 + 1}); // colors + the stamp name
+    CHECK_EQ(shown, std::size_t{12 + 6 + 1}); // colors + the stamp name
 
     // Hiding returns to the Select tool.
     bar.setVisible(false);
@@ -763,4 +763,58 @@ RIVET_TEST(annotationBarSwatchRestylesTheSelectionAndMarksTheCurrentColor) {
     click(*blueSwatch);
     CHECK(shell.viewOf(id, 0)->style.color == app::kPresetColors[3]);
     CHECK(blueSwatch->active());
+}
+
+// --- Visual signatures (ADR-0025) ---------------------------------------------------
+
+RIVET_TEST(controllerSignToolPlacesTheArmedSignatureOnceThenSelects) {
+    Shell shell;
+    CHECK(shell.open("sign") != nullptr);
+    AnnotationController& c = *shell.annotations;
+    int requests = 0;
+    c.setOnSignatureRequested([&] { ++requests; });
+
+    // Choosing Sign with nothing armed asks the shell for a signature.
+    c.setTool(AnnotationTool::Sign);
+    CHECK_EQ(requests, 1);
+    CHECK(c.tool() == AnnotationTool::Select);
+    CHECK(!c.canPerform(AnnotationCommand::Sign)); // handled by the shell sheet
+    CHECK(!c.canPerform(AnnotationCommand::ManageSignatures));
+
+    pdf::PdfSignatureAppearance typed;
+    typed.source = pdf::PdfSignatureSource::Text;
+    typed.text = "Jane Doe";
+    c.armSignature(std::make_shared<const pdf::PdfSignatureAppearance>(typed));
+    CHECK(c.tool() == AnnotationTool::Sign);
+    CHECK(c.interaction().signatureAspect() > 1.0);
+
+    Intent place = intent(IntentKind::CreateSignature);
+    place.rect = core::Rect{100.0, 100.0, 150.0, 50.0};
+    c.applyIntent(place);
+    CHECK_EQ(shell.countOn(0), 1u);
+    CHECK(c.tool() == AnnotationTool::Select); // one placement per Sign
+    const auto id = c.selectedId();
+    CHECK(id.has_value());
+    if (id.has_value()) {
+        const auto view = shell.viewOf(*id, 0);
+        CHECK(view.has_value());
+        if (view.has_value()) {
+            CHECK(view->kind == pdf::PdfAnnotationKind::Signature);
+            CHECK(view->appearance.has_value() && !view->appearance->paths.empty());
+        }
+    }
+    // A signature has no style controls.
+    CHECK(c.styleTool() == AnnotationTool::Select);
+    CHECK(shell.session().undo());
+    CHECK_EQ(shell.countOn(0), 0u);
+
+    // Still armed: the strip's Sign button places another copy.
+    c.setTool(AnnotationTool::Sign);
+    CHECK(c.tool() == AnnotationTool::Sign);
+    CHECK_EQ(requests, 1);
+    c.armSignature(nullptr);
+    CHECK(c.tool() == AnnotationTool::Select);
+    // Without an armed signature a stray placement creates nothing.
+    c.applyIntent(place);
+    CHECK_EQ(shell.countOn(0), 0u);
 }

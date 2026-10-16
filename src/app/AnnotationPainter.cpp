@@ -87,6 +87,12 @@ void AnnotationPainter::paintAnnotation(ui::PaintContext& context, const editor:
     if (!view.drawnByOverlay || !view.appearance) return;
     const editor::DisplayAppearance& appearance = *view.appearance;
     const double alpha = static_cast<double>(appearance.opacity);
+    // Images first (signatures): already turned upright for display.
+    for (const editor::DisplayImage& image : appearance.images) {
+        if (image.bitmap != nullptr && image.bitmap->isValid()) {
+            context.drawBitmap(*image.bitmap, toViewport(pageRect, zoom, image.box));
+        }
+    }
     for (const editor::DisplayPath& displayPath : appearance.paths) {
         if (displayPath.segments.empty()) continue;
         const ui::Path path = toPath(displayPath.segments, pageRect, zoom);
@@ -163,7 +169,7 @@ void AnnotationPainter::paintPreview(ui::PaintContext& context, const Annotation
     }
     case Kind::Rect: {
         const core::Rect box = toViewport(pageRect, zoom, preview.rect);
-        if (preview.tool == AnnotationTool::Stamp) {
+        if (preview.tool == AnnotationTool::Stamp || preview.tool == AnnotationTool::Sign) {
             context.strokeDashedRect(box, color, kChromeWidth, kDash);
             break;
         }

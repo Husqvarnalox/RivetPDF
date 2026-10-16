@@ -581,7 +581,8 @@ bool ShellController::canPerformPageEdit(PageEditCommand command) const {
 void ShellController::performAnnotation(AnnotationCommand command) {
     if (annotations_ == nullptr) return;
     // A tool chosen from the menu reveals the strip that shows it.
-    if (static_cast<std::size_t>(command) < kAnnotationToolCount && annotationBar_ != nullptr &&
+    if (static_cast<std::size_t>(command) <= static_cast<std::size_t>(AnnotationCommand::ToolStamp) &&
+        annotationBar_ != nullptr &&
         command != AnnotationCommand::ToolSelect && readyActiveTab() != nullptr) {
         annotationBar_->setVisible(true);
     }

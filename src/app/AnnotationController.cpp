@@ -141,6 +141,11 @@ void AnnotationController::repaint() { context_.viewport.invalidate(); }
 // --- Tool and style state --------------------------------------------------------
 
 void AnnotationController::setTool(AnnotationTool tool) {
+    if (tool == AnnotationTool::Sign && armedSignature_ == nullptr) {
+        // Nothing to place yet: the shell lets the user choose a signature.
+        if (onSignatureRequested_) onSignatureRequested_();
+        return;
+    }
     closeNoteEditor();
     const bool changed = tool != interaction_.tool();
     interaction_.setTool(tool); // cancels a running gesture
@@ -160,6 +165,8 @@ editor::AnnotationStyle AnnotationController::displayedStyle() const {
 
 AnnotationTool AnnotationController::styleTool() const {
     if (const std::optional<Resolved> selected = resolveSelected(); selected.has_value()) {
+        // Nothing to restyle (signatures): no style controls.
+        if ((selected->view.caps & editor::kCapRestyle) == 0) return AnnotationTool::Select;
         for (std::size_t i = 0; i < kAnnotationToolCount; ++i) {
             const AnnotationTool candidate = static_cast<AnnotationTool>(i);
             if (annotationKindForTool(candidate) == selected->view.kind) return candidate;
@@ -244,6 +251,16 @@ void AnnotationController::setFillEnabled(bool enabled) {
 void AnnotationController::setStampName(pdf::PdfStampName name) {
     styles_[static_cast<std::size_t>(AnnotationTool::Stamp)].stampName = name;
     notifyState();
+}
+
+void AnnotationController::armSignature(pdf::PdfSignatureAppearancePtr signature) {
+    armedSignature_ = std::move(signature);
+    if (armedSignature_ == nullptr) {
+        if (interaction_.tool() == AnnotationTool::Sign) setTool(AnnotationTool::Select);
+        return;
+    }
+    interaction_.setSignatureAspect(pdf::signatureAspect(*armedSignature_));
+    setTool(AnnotationTool::Sign);
 }
 
 // --- Selection ---------------------------------------------------------------------
@@ -356,10 +373,19 @@ void AnnotationController::create(const Intent& intent) {
     case Intent::Kind::CreateNote: tool = AnnotationTool::Note; break;
     case Intent::Kind::CreateInk: tool = AnnotationTool::Ink; break;
     case Intent::Kind::CreateStamp: tool = AnnotationTool::Stamp; break;
+    case Intent::Kind::CreateSignature: tool = AnnotationTool::Sign; break;
     default: break;
     }
     editor::AnnotationDraft draft = draftFor(tool, page);
     switch (tool) {
+    case AnnotationTool::Sign:
+        if (armedSignature_ == nullptr) {
+            context_.setStatus("Choose a signature first (Annotate > Sign\xE2\x80\xA6)");
+            return;
+        }
+        draft.rect = intent.rect;
+        draft.signature = armedSignature_;
+        break;
     case AnnotationTool::Note:
     case AnnotationTool::Stamp:
     case AnnotationTool::Rectangle:
@@ -399,6 +425,12 @@ void AnnotationController::create(const Intent& intent) {
     const std::optional<std::vector<core::AnnotationId>> ids =
         run(editor::createAnnotations(session, std::move(drafts)));
     if (!ids.has_value() || ids->empty()) return;
+    if (tool == AnnotationTool::Sign) {
+        // One placement per Sign: back to Select with the signature selected
+        // (it moves and resizes like any annotation).
+        setTool(AnnotationTool::Select);
+        context_.setStatus("Signature placed");
+    }
     select(ids->front());
     if (tool == AnnotationTool::Note) openNoteEditor(ids->front());
 }
@@ -419,6 +451,7 @@ void AnnotationController::applyIntent(const Intent& intent) {
     case Intent::Kind::CreateInk:
     case Intent::Kind::CreateShape:
     case Intent::Kind::CreateStamp:
+    case Intent::Kind::CreateSignature:
         create(intent);
         return;
     case Intent::Kind::Move:
@@ -617,8 +650,11 @@ bool AnnotationController::canPerform(AnnotationCommand command) const {
         return selected.has_value() && (selected->view.caps & editor::kCapEditContents) != 0 &&
                !lockedForEditing(*tab);
     }
+    case AnnotationCommand::Sign:
+    case AnnotationCommand::ManageSignatures:
+        return false; // the shell's signature sheet
     default:
-        return static_cast<std::size_t>(command) < kAnnotationToolCount;
+        return static_cast<std::size_t>(command) <= static_cast<std::size_t>(AnnotationCommand::ToolStamp);
     }
 }
 
@@ -634,8 +670,11 @@ void AnnotationController::perform(AnnotationCommand command) {
     case AnnotationCommand::EditNote:
         editSelectedNote();
         return;
+    case AnnotationCommand::Sign:
+    case AnnotationCommand::ManageSignatures:
+        return; // the shell's signature sheet
     default:
-        if (static_cast<std::size_t>(command) < kAnnotationToolCount) {
+        if (static_cast<std::size_t>(command) <= static_cast<std::size_t>(AnnotationCommand::ToolStamp)) {
             setTool(static_cast<AnnotationTool>(command));
         }
         return;

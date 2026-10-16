@@ -26,6 +26,7 @@ inline std::optional<pdf::PdfAnnotationKind> annotationKindForTool(AnnotationToo
     case AnnotationTool::Line: return Kind::Line;
     case AnnotationTool::Arrow: return Kind::Arrow;
     case AnnotationTool::Stamp: return Kind::Stamp;
+    case AnnotationTool::Sign: return Kind::Signature;
     }
     return std::nullopt;
 }
@@ -43,6 +44,7 @@ inline const char* annotationToolLabel(AnnotationTool tool) {
     case AnnotationTool::Line: return "Line";
     case AnnotationTool::Arrow: return "Arrow";
     case AnnotationTool::Stamp: return "Stamp";
+    case AnnotationTool::Sign: return "Sign";
     }
     return "";
 }
@@ -57,7 +59,8 @@ inline bool toolUsesFill(AnnotationTool tool) {
 }
 inline bool toolUsesOpacity(AnnotationTool tool) {
     // Notes and stamps are drawn opaque by the appearance builder.
-    return tool != AnnotationTool::Select && tool != AnnotationTool::Note && tool != AnnotationTool::Stamp;
+    return tool != AnnotationTool::Select && tool != AnnotationTool::Note && tool != AnnotationTool::Stamp &&
+           tool != AnnotationTool::Sign;
 }
 inline bool toolUsesStampName(AnnotationTool tool) { return tool == AnnotationTool::Stamp; }
 
@@ -103,6 +106,9 @@ inline ToolStyle defaultToolStyle(AnnotationTool tool) {
         break;
     case AnnotationTool::Note:
         result.style.color = kPresetColors[0];
+        break;
+    case AnnotationTool::Sign: // ink and typed signatures: dark blue
+        result.style.color = pdf::PdfColor{0.05F, 0.12F, 0.45F};
         break;
     default: // Ink, shapes, lines, stamp (and Select, unused)
         result.style.color = kPresetColors[1];
