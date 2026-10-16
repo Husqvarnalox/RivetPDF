@@ -63,7 +63,8 @@ DocumentSession::DocumentSession(core::DocumentId id,
       textService_(*this),
       linkService_(*this),
       annotationService_(*this),
-      contentService_(*this) {
+      contentService_(*this),
+      formService_(*this) {
     layout_.setPageGapPoints(16.0);
     layout_.setPageMarginPoints(24.0);
     rebuildLayout();
@@ -260,6 +261,10 @@ core::Status DocumentSession::rebaseOnto(RebaseTarget target, std::optional<std:
         if (!sameView) {
             contentRevision = model_->mintContentRevision();
             rasterRevision = contentRevision;
+        } else if (!formService_.hiddenWidgets(*current, old).empty()) {
+            // Edited widgets were overlay-drawn and hidden from the raster;
+            // the new file draws their written appearances.
+            rasterRevision = model_->mintRasterRevision();
         }
         entries.push_back(PageEntry{old.id, target.document, index, page.nativeView, contentRevision,
                                     page.mediaBox, page.nativeView, std::move(state), rasterRevision, nullptr});
@@ -280,6 +285,9 @@ core::Status DocumentSession::rebaseOnto(RebaseTarget target, std::optional<std:
     // Content: the extraction cache describes the previous documents; object
     // ids follow the saved file's object indices.
     contentService_.rebased(contentRekeys);
+    // Forms: the description belongs to the previous base; the values are
+    // cleared by the model rebase below.
+    formService_.rebased();
     // Recorded commands reference entries of the previous documents; they
     // cannot be re-targeted (see header). Clear before the publish so no
     // stale command can run against the new model.
@@ -343,6 +351,16 @@ std::optional<RenderPageTarget> DocumentSession::resolveRenderTarget(core::PageI
     if (entry == nullptr) return std::nullopt;
     std::vector<std::uint32_t> hidden;
     if (entry->annotations != nullptr) hidden = entry->annotations->suppressed;
+    // Widgets of fields with an edited value are drawn by the form overlay.
+    const PageModelSnapshot& snapshot = *pageSnapshot();
+    if (snapshot.formValues() != nullptr) {
+        const std::vector<std::uint32_t> widgets = formService_.hiddenWidgets(snapshot, *entry);
+        if (!widgets.empty()) {
+            hidden.insert(hidden.end(), widgets.begin(), widgets.end());
+            std::sort(hidden.begin(), hidden.end());
+            hidden.erase(std::unique(hidden.begin(), hidden.end()), hidden.end());
+        }
+    }
     return RenderPageTarget{entry->source, entry->sourcePageIndex, entry->view, entry->rasterRevision,
                             std::move(hidden), entry->contentEdits};
 }

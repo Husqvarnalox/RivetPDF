@@ -1122,6 +1122,53 @@ RIVET_TEST(addedLayersFollowTheAnnotationLayerAndAllPaint) {
     CHECK_EQ(f.viewport.layerCount(), std::size_t{0});
 }
 
+RIVET_TEST(belowAnnotationLayersPrecedeTheAnnotationLayer) {
+    Fixture f;
+    EventLog log;
+    LoggingLayer annotation(log);
+    LoggingLayer content(log);
+    LoggingLayer form(log);
+    annotation.tag = "ann";
+    content.tag = "content";
+    form.tag = "form";
+    LoggingBridge bridge(log);
+    f.viewport.setTextBridge(&bridge);
+    f.viewport.setAnnotationLayer(&annotation);
+    f.viewport.addLayer(&content);
+    f.viewport.addLayer(&form, PdfViewport::LayerPlacement::BelowAnnotations);
+    CHECK_EQ(f.viewport.layerCount(), std::size_t{3});
+
+    form.consumeMouse = true;
+    CHECK_EQ(f.viewport.onMouse(mouseAt(PointerEventType::Down, Point{100.0, 100.0})), true);
+    CHECK(log == (EventLog{"form.mouse"}));
+    log.clear();
+
+    FakePaintContext context;
+    f.viewport.paint(context);
+    CHECK(log == (EventLog{"form.page", "ann.page", "content.page", "form.above", "ann.above", "content.above"}));
+    log.clear();
+
+    // Re-installing the annotation layer keeps the below-layer first.
+    f.viewport.setAnnotationLayer(nullptr);
+    f.viewport.setAnnotationLayer(&annotation);
+    form.consumeMouse = false;
+    f.viewport.onMouse(mouseAt(PointerEventType::Move, Point{700.0, 590.0}));
+    CHECK(log == (EventLog{"form.mouse", "ann.mouse", "content.mouse", "form.after", "ann.after", "content.after"}));
+    log.clear();
+
+    f.viewport.removeLayer(&form);
+    f.viewport.removeLayer(&content);
+    f.viewport.setAnnotationLayer(nullptr);
+    CHECK_EQ(f.viewport.layerCount(), std::size_t{0});
+    // A later below-layer is still placed first.
+    f.viewport.setAnnotationLayer(&annotation);
+    f.viewport.addLayer(&form, PdfViewport::LayerPlacement::BelowAnnotations);
+    f.viewport.onMouse(mouseAt(PointerEventType::Move, Point{700.0, 590.0}));
+    CHECK(log == (EventLog{"form.mouse", "ann.mouse", "form.after", "ann.after"}));
+    f.viewport.removeLayer(&form);
+    f.viewport.setAnnotationLayer(nullptr);
+}
+
 RIVET_TEST(hostPageCountAndPageAtMapViewportPointsToPageDisplayPoints) {
     PdfViewport empty;
     empty.setFrame(Rect{0.0, 0.0, 800.0, 600.0});

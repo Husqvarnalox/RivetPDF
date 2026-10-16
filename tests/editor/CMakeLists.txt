@@ -32,6 +32,10 @@ add_executable(rivet_editor_tests
     TestContentService.cpp
     TestContentCommands.cpp
     TestContentSession.cpp
+    # AcroForm values (ADR-0024): portable service/commands and the
+    # PDFium-ON fill -> save -> rebase -> reopen round trip.
+    TestFormCommands.cpp
+    TestFormRoundTrip.cpp
 )
 
 add_test(NAME editor COMMAND rivet_editor_tests)
@@ -47,7 +51,7 @@ if(RIVET_WITH_PDFIUM)
     target_link_libraries(rivet_editor_tests PRIVATE rivet::pdfium)
 endif()
 
-target_include_directories(rivet_editor_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+target_include_directories(rivet_editor_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}" "${CMAKE_SOURCE_DIR}/tests/pdf")
 
 target_compile_definitions(rivet_editor_tests PRIVATE
     RIVET_EDITOR_PDF_FIXTURE_DIR="${CMAKE_SOURCE_DIR}/tests/pdf/fixtures"

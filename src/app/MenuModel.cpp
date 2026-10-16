@@ -50,6 +50,7 @@ std::vector<Menu> buildMenuBar() {
     Menu edit{"Edit", {}};
     edit.items.push_back(item("Undo", AppCommand::of(PageEditCommand::Undo), cmd("z")));
     edit.items.push_back(item("Redo", AppCommand::of(PageEditCommand::Redo), cmd("z", true)));
+    edit.items.push_back(item("Reset Form", AppCommand::of(FormCommand::ResetForm), std::nullopt, true));
     bar.push_back(std::move(edit));
 
     Menu view{"View", {}};
@@ -64,6 +65,10 @@ std::vector<Menu> buildMenuBar() {
         m.checkable = true;
         view.items.push_back(std::move(m));
     }
+    MenuItem highlight =
+        item("Highlight Form Fields", AppCommand::of(FormCommand::HighlightFields), std::nullopt, true);
+    highlight.checkable = true;
+    view.items.push_back(std::move(highlight));
     bar.push_back(std::move(view));
 
     Menu page{"Page", {}};

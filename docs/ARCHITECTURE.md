@@ -499,6 +499,15 @@ Full rationale: [ADR-0014](adr/ADR-0014-content-object-model.md) (object model, 
 - **Interaction**: one tool state per shell; the content layer sits after the annotation layer. Selection is single and per tab; drag-move, resize and nudge bursts are one command each (nudges coalesce within 500 ms by undo + combined move, guarded by the command-stack state id). The inline editor commits as one undo step and is committed by Save, close and quit.
 - **Save**: assembly applies the page's edits after the view through the same `applyContentEdits`; the report re-keys identities; the written document is reloaded and shows the same content without a tile flush.
 
+### Forms
+
+Full rationale: [ADR-0024](adr/ADR-0024-acroform-filling.md).
+
+- **Read**: `PdfDocument::formInfo()` returns an immutable `PdfFormInfo` (fields, widgets by page and `/Annots` index, options, flags) read once through a private PDFium form environment (version 1, no JS platform, no XFA; document/page actions are never run). Limits (5000 fields, 20000 widgets, 64 KiB per value, 1000 options) make over-limit fields or forms view-only. The PDFium-OFF backend reports NotAvailable: no form.
+- **Model**: values are document-level `PdfFormValues` (field name -> value) on the page-model snapshot, changed only by `FormValuesCommand` (one undo step per change; Reset Form is one step). `FormService` loads the description lazily on its own executor and maps widgets to display space; widgets of edited fields are hidden from the raster and drawn by the overlay. A save rebases the values away.
+- **Save**: assembly applies the values with PDFium's form filler after content edits and before annotation edits, verifies every field and fails the save on any field it could not apply.
+- **UI**: `FormLayer` sits below the annotation layer and is live in the Select tool; `FormController` owns the inline TextField/TextArea editor, the choice popup, Tab/Shift+Tab traversal, Space/Enter/Esc, the Edit > Reset Form and View > Highlight Form Fields commands and status-bar reasons for read-only, XFA or over-limit forms. Field names and values are never logged.
+
 ---
 
 ## 15. Directory layout

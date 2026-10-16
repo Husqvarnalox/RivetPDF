@@ -5,6 +5,7 @@ set(RIVET_PDF_SOURCES
     PdfAnnotation.cpp
     PdfBuild.cpp
     PdfContent.cpp
+    PdfForms.cpp
     PdfPageGeometry.cpp
     PdfText.cpp
     PdfTextLayout.cpp

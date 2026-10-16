@@ -5,6 +5,7 @@
 #include "DocumentRenderer.hpp"
 #include "AnnotationService.hpp"
 #include "ContentService.hpp"
+#include "FormService.hpp"
 #include "LinkService.hpp"
 #include "PageModel.hpp"
 #include "TextService.hpp"
@@ -234,6 +235,10 @@ public:
     //     target.contentReport entry keeps its object ids (re-keyed to the
     //     objects' new indices through ContentService::rebased); without one
     //     the page's object ids are dropped and minted afresh;
+    //   - form values (ADR-0024): the file holds them now (/V and /AP), so
+    //     the model's values are cleared, every entry that hid edited widgets
+    //     gets a fresh raster revision (the raster now draws the written
+    //     appearances) and the form description is reloaded for the new base;
     //   - the UNDO HISTORY IS CLEARED: recorded commands hold entries of the
     //     previous documents and cannot be re-targeted (a deleted page does
     //     not exist in the new file). The current stateId is kept, so the
@@ -290,6 +295,11 @@ public:
     void setOnContentChanged(std::function<void(core::PageId)> onChanged) {
         contentService_.setOnChanged(std::move(onChanged));
     }
+
+    // AcroForm of the base document (ADR-0024): the lazily loaded field
+    // description; the edited values live on the page model snapshot.
+    FormService& forms() { return formService_; }
+    const FormService& forms() const { return formService_; }
 
     // RENDER revision (tile-cache epoch), bumped only by markModified().
     // Page-model edits do NOT bump it: tiles are keyed by (PageId,
@@ -350,6 +360,7 @@ private:
     LinkService linkService_;
     AnnotationService annotationService_;
     ContentService contentService_;
+    FormService formService_;
 };
 
 } // namespace rivet::editor

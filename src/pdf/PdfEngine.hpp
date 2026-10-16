@@ -7,6 +7,7 @@
 #include "pdf/PdfAssembly.hpp"
 #include "pdf/PdfBuild.hpp"
 #include "pdf/PdfContent.hpp"
+#include "pdf/PdfForms.hpp"
 #include "pdf/PdfPageGeometry.hpp"
 #include "pdf/PdfText.hpp"
 #include "pdf/PdfNavigation.hpp"
@@ -143,6 +144,15 @@ public:
         (void)pageIndex;
         return std::unexpected(core::makeError(core::ErrorCode::NotAvailable,
                                                "this backend has no annotation support", "pdf"));
+    }
+
+    // The document's AcroForm fields (ADR-0024), read from the document AS
+    // STORED IN ITS FILE through a private reader with JavaScript and XFA
+    // disabled; cached for the document's lifetime. A document without a
+    // form yields an empty PdfFormInfo. Default: NotAvailable (no forms).
+    virtual core::Result<PdfFormInfoPtr> formInfo() const {
+        return std::unexpected(core::makeError(core::ErrorCode::NotAvailable,
+                                               "this backend has no form support", "pdf"));
     }
 
     // All links of a page. Default: NotAvailable.

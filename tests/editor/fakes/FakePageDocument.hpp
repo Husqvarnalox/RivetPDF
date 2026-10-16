@@ -159,6 +159,21 @@ public:
         return it->second;
     }
 
+    // --- Forms (ADR-0024) ------------------------------------------------
+    // formInfo() returns this description (null = NotAvailable, like a
+    // backend without form support).
+    void setFormInfo(pdf::PdfFormInfoPtr info) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        formInfo_ = std::move(info);
+    }
+    core::Result<pdf::PdfFormInfoPtr> formInfo() const override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (formInfo_ == nullptr) {
+            return std::unexpected(core::makeError(core::ErrorCode::NotAvailable, "no forms", "test"));
+        }
+        return formInfo_;
+    }
+
     std::vector<std::uint32_t> lastHiddenAnnotations() const {
         std::lock_guard<std::mutex> lock(mutex_);
         return lastHidden_;
@@ -372,6 +387,7 @@ private:
     std::map<std::size_t, std::vector<pdf::PdfPageLink>> links_;
     pdf::PdfPageView lastRenderView_;
     std::vector<std::uint32_t> lastHidden_;
+    pdf::PdfFormInfoPtr formInfo_;
     pdf::PdfPageContentEditsPtr lastRenderContent_;
     mutable pdf::PdfPageContentEditsPtr lastTextContent_;
     mutable pdf::PdfPageContentEditsPtr lastContentEdits_;
@@ -393,11 +409,14 @@ public:
     core::Result<std::unique_ptr<pdf::PdfDocument>> openDocument(const std::filesystem::path&,
                                                                  std::string_view) override {
         auto document = std::make_unique<FakePageDocument>(pageCount_);
+        if (formInfo != nullptr) document->setFormInfo(formInfo);
         lastDocument = document.get();
         return std::unique_ptr<pdf::PdfDocument>(std::move(document));
     }
 
     FakePageDocument* lastDocument = nullptr;
+    // Form description given to every document opened afterwards.
+    pdf::PdfFormInfoPtr formInfo;
 
 private:
     std::size_t pageCount_;
