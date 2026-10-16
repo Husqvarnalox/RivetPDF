@@ -6,6 +6,7 @@
 #include "core/async/AsyncScope.hpp"
 #include "core/async/IMainThreadDispatcher.hpp"
 #include "core/async/TaskScheduler.hpp"
+#include "app/ComparisonTabState.hpp"
 #include "app/MarkdownTabState.hpp"
 #include "editor/DocumentSession.hpp"
 #include "editor/SelectionModel.hpp"
@@ -55,6 +56,9 @@ public:
     enum class State : std::uint8_t { Loading, Ready, Error, NeedsPassword };
 
     DocumentTab(TabId id, std::filesystem::path path, std::string title);
+    // A comparison tab (ADR-0029): no file identity (empty path and dedup
+    // key, so it never matches a file the user opens).
+    DocumentTab(TabId id, std::string title, std::unique_ptr<ComparisonTabState> comparison);
     ~DocumentTab();
 
     DocumentTab(const DocumentTab&) = delete;
@@ -64,6 +68,7 @@ public:
     DocumentKind kind() const { return kind_; }
     bool isPdf() const { return kind_ == DocumentKind::Pdf; }
     bool isMarkdown() const { return kind_ == DocumentKind::Markdown; }
+    bool isComparison() const { return kind_ == DocumentKind::Comparison; }
     const std::filesystem::path& path() const { return path_; }
     // Normalized identity used for duplicate detection (never displayed).
     const std::filesystem::path& dedupKey() const { return dedupKey_; }
@@ -86,6 +91,10 @@ public:
     // Markdown payload (null unless this is a Ready Markdown tab).
     MarkdownTabState* markdown() { return markdown_.get(); }
     const MarkdownTabState* markdown() const { return markdown_.get(); }
+
+    // Comparison payload (null unless this is a comparison tab).
+    ComparisonTabState* comparison() { return comparison_.get(); }
+    const ComparisonTabState* comparison() const { return comparison_.get(); }
 
     // Kind-agnostic document queries. All false/no-op without a payload.
     bool hasContent() const { return session_ != nullptr || markdown_ != nullptr; }
@@ -143,6 +152,7 @@ private:
     editor::SelectionModel selection_;
     std::unique_ptr<editor::TextSearchController> search_;
     std::unique_ptr<MarkdownTabState> markdown_;
+    std::unique_ptr<ComparisonTabState> comparison_;
     std::size_t currentPage_ = 0;
     bool viewStateInitialized_ = false;
 };
@@ -204,6 +214,11 @@ public:
     // file) and makes it active. Asynchronous: the Loading tab exists before
     // this returns; the session arrives via a later main-thread completion.
     void openDocument(const std::filesystem::path& path);
+
+    // Adds a comparison tab hosting `comparison` (already started) and makes
+    // it active. Closing the tab destroys the state, which cancels its work
+    // and releases both documents.
+    DocumentTab* openComparisonTab(std::string title, std::unique_ptr<ComparisonTabState> comparison);
 
     // Save As completion only: adopts the new file identity into the tab
     // (see DocumentTab::retitle) and fires the tabs-changed hook.

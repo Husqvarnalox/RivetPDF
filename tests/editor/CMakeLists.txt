@@ -1,4 +1,7 @@
 add_executable(rivet_editor_tests
+    # Document comparison (ADR-0029): Myers text diff, word tokens, page pairs.
+    TestTextDiff.cpp
+    TestDocumentComparison.cpp
     TestSelectionModel.cpp
     TestTextPageCache.cpp
     TestTextPipeline.cpp

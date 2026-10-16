@@ -3,6 +3,7 @@
 
 #include "app/AnnotationBarController.hpp"
 #include "app/AnnotationController.hpp"
+#include "app/ComparisonHostView.hpp"
 #include "app/ContentBarController.hpp"
 #include "app/ContentController.hpp"
 #include "app/DocumentWorkspace.hpp"
@@ -132,6 +133,8 @@ public:
     DocumentWorkspace& workspace() { return workspace_; }
     ui::PdfViewport& pdfViewport() { return *viewport_; }
     MarkdownHostView& markdownHost() { return *markdownView_; }
+    ComparisonHostView& comparisonHost() { return *comparisonView_; }
+    bool comparisonChromeActive() const { return chromeComparison_; }
     ui::Toolbar& toolbar() { return *toolbar_; }
     FileController& fileController() { return *fileLifecycle_; }
     MarkdownExportController& markdownExport() { return *markdownExport_; }
@@ -158,9 +161,13 @@ private:
     void refreshTabStrip();
     void bindActiveTab();
     void bindMarkdownTab(DocumentTab* tab);
+    void bindComparisonTab(DocumentTab* tab);
+    // File > Compare With... (ADR-0029): pick a second PDF, open the comparison tab.
+    void performCompare();
+    bool canPerformCompare() const;
     // Shows the chrome of the active tab's kind (PDF toolbar items + sidebar
     // + bars vs. the Markdown mode switcher) and relayouts when it changed.
-    void applyChromeForKind(bool markdown);
+    void applyChromeForKind(bool markdown, bool comparison = false);
     bool markdownChromeActive() const { return chromeMarkdown_; }
     void syncModeButtons();
     void onMarkdownChanged(TabId tab);
@@ -209,11 +216,13 @@ private:
     ui::Button* addTextButton_ = nullptr;
     ui::PdfViewport* viewport_ = nullptr;
     MarkdownHostView* markdownView_ = nullptr; // content slot of Markdown tabs
+    ComparisonHostView* comparisonView_ = nullptr; // content slot of comparison tabs
     // Toolbar items per kind (hidden/shown by applyChromeForKind).
     std::vector<ui::Widget*> pdfToolbarItems_;
     std::vector<ui::Widget*> markdownToolbarItems_;
     ui::Button* modeButtons_[3] = {nullptr, nullptr, nullptr}; // Rendered, Source, Split
     bool chromeMarkdown_ = false;
+    bool chromeComparison_ = false;
     TextLabel* overlayLabel_ = nullptr; // loading / error state over the viewport
     TextLabel* zoomLabel_ = nullptr;
 

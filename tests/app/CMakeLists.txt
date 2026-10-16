@@ -21,6 +21,8 @@ add_executable(rivet_app_tests
     TestPageEditingController.cpp
     TestFileController.cpp
     TestMarkdownShell.cpp
+    # Document comparison tab (ADR-0029).
+    TestComparisonTab.cpp
     TestMarkdownPreview.cpp
     TestMarkdownSourcePane.cpp
     TestMarkdownLive.cpp

@@ -175,6 +175,11 @@ public:
     // Status-bar hook; invoked when the zoom actually changes (not on scroll).
     void setZoomChangedCallback(std::function<void(double)> onZoomChanged);
 
+    // Fired when the scroll offset or the zoom of the bound state changed
+    // (user scrolling, programmatic scrolling, zoom). The comparison view
+    // keeps its two viewports in step with it. Not fired while unbound.
+    void setScrollChangedCallback(std::function<void()> onScrollChanged);
+
     // Fired when the tracked current page changes (scroll, zoom, resize,
     // goToPage). The shell updates the sidebar selection and the page field.
     void setCurrentPageChangedCallback(std::function<void(std::size_t)> onPageChanged);
@@ -282,6 +287,7 @@ private:
     std::function<void(double)> onZoomChanged_;
     std::function<void(std::size_t)> onPageChanged_;
     std::function<void()> onFocusRequested_;
+    std::function<void()> onScrollChanged_;
 
     // Scrollbar children, overlaying the content (created here, owned by the
     // widget tree; raw pointers valid for the viewport's lifetime).

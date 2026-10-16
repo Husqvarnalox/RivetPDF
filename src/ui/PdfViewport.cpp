@@ -356,6 +356,11 @@ void PdfViewport::onStateChanged() {
     syncScrollbars();
     updateCurrentPage();
     invalidate();
+    if (onScrollChanged_ && state_ != &emptyStateState_) onScrollChanged_();
+}
+
+void PdfViewport::setScrollChangedCallback(std::function<void()> onScrollChanged) {
+    onScrollChanged_ = std::move(onScrollChanged);
 }
 
 void PdfViewport::syncScrollbars() {

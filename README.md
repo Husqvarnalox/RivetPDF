@@ -27,7 +27,8 @@ Documents never leave the machine: Rivet has no network code of its own, no acco
 | Redaction: mark areas or selected text, review, apply as one undo step; on save the content under the marks (glyphs, image pixels, drawings, links, form widgets and their values) is removed, not covered; optional metadata removal | Implemented (macOS) |
 | Reduce file size: File > Save Reduced Copy (High / Medium / Small) downsamples and JPEG-recompresses oversized images in a copy; Remove Password and Save As for documents opened with a password. Adding a password is not supported | Implemented (macOS, Linux encoder), with the limits in ADR-0028 |
 | Signatures: place a drawn, typed or image signature (saved signatures are remembered); existing digital signatures are listed as present but are not verified, and saving edits over them warns first. No cryptographic signing | Implemented (macOS) |
-| OCR, encryption (adding a password), document comparison | Not implemented |
+| Document comparison: File > Compare With… shows two PDFs side by side with synchronized scrolling, word-level text differences (deletions red, insertions green), a change list and inserted/deleted pages; text only, no visual diff, compares the saved files | Implemented (macOS) |
+| OCR, encryption (adding a password) | Not implemented |
 | Windows (Win32 + Direct2D) and Linux (X11 + Cairo) shells | Implemented; see docs/BUILDING.md for platform differences |
 | Markdown: Rendered (read-only), Source (with live preview) and Split views; text editing with undo/redo and background save | Implemented (macOS) |
 | Markdown export to PDF (vector, bundled fonts, links) and printing | Implemented (macOS) |
@@ -103,8 +104,8 @@ CI (GitHub Actions) builds with `-Werror` and runs CTest on macOS (AppleClang) a
 
 ## Roadmap
 
-Done: PDF viewer, page editing, annotations, content editing, form filling, redaction, file size reduction, password removal, visual signatures, Markdown viewing, source editing and export (see Status).
-Next: OCR and document comparison, Markdown WYSIWYG, Mermaid and math.
+Done: PDF viewer, page editing, annotations, content editing, form filling, redaction, file size reduction, password removal, visual signatures, document comparison, Markdown viewing, source editing and export (see Status).
+Next: OCR, Markdown WYSIWYG, Mermaid and math.
 
 ## Contributing
 

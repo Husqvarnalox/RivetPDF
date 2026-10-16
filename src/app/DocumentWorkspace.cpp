@@ -23,6 +23,13 @@ DocumentTab::DocumentTab(TabId id, std::filesystem::path path, std::string title
     dedupKey_ = dedupKeyForPath(path_);
 }
 
+DocumentTab::DocumentTab(TabId id, std::string title, std::unique_ptr<ComparisonTabState> comparison)
+    : id_(id),
+      kind_(DocumentKind::Comparison),
+      title_(std::move(title)),
+      state_(State::Ready),
+      comparison_(std::move(comparison)) {}
+
 void DocumentTab::retitle(std::filesystem::path path) {
     path_ = std::move(path);
     dedupKey_ = dedupKeyForPath(path_);
@@ -63,6 +70,7 @@ void DocumentTab::releaseSession() {
     search_.reset();
     session_.reset();
     markdown_.reset();
+    comparison_.reset();
 }
 
 void DocumentTab::attachMarkdown(std::unique_ptr<MarkdownTabState> markdown) {
@@ -145,6 +153,16 @@ void DocumentWorkspace::openDocument(const std::filesystem::path& path) {
     activate(tabs_.size() - 1);
     startOpen(tabRef, {}, false);
     fireTabsChanged();
+}
+
+DocumentTab* DocumentWorkspace::openComparisonTab(std::string title,
+                                                  std::unique_ptr<ComparisonTabState> comparison) {
+    auto tab = std::make_unique<DocumentTab>(tabIds_.next(), std::move(title), std::move(comparison));
+    DocumentTab& tabRef = *tab;
+    tabs_.push_back(std::move(tab));
+    activate(tabs_.size() - 1);
+    fireTabsChanged();
+    return &tabRef;
 }
 
 void DocumentWorkspace::retryWithPassword(std::size_t tabIndex, std::string password) {

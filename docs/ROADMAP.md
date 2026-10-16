@@ -23,7 +23,7 @@ shippable and documented in the README status table when it lands.
 | 6E | **OCR.** A portable `ITextRecognizer` interface implemented by the platform layer (macOS: Vision) that produces an invisible text layer (render mode 3) through the content pipeline, so scanned pages become searchable and selectable. | ADR-0027 (planned) | Planned |
 | 6F | **Reduce file size.** Image recompression and downsampling on Save As through the content image-replacement path; unreferenced objects are already dropped by non-incremental saves. | ADR-0028 | Done |
 | 6G | **Encryption.** Remove a password on Save As (backend `RemoveSecurity`). Adding a password requires an encrypting writer PDFium does not have; deferred until a crypto dependency is approved. | ADR-0030 | Remove password: Done; add password: deferred |
-| 6H | **Document comparison.** Two documents side by side with text-level differences (word diff per page pair) highlighted in both. | ADR-0029 (planned) | Planned |
+| 6H | **Document comparison.** Two documents side by side with text-level differences (word diff per page pair) highlighted in both. | [ADR-0029](adr/ADR-0029-document-comparison.md) | Done |
 
 ## Phase 7: Markdown authoring
 

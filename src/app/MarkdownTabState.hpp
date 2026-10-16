@@ -19,7 +19,7 @@ namespace rivet::app {
 
 // Which kind of document a tab hosts. Chosen from the file extension only
 // (never by sniffing content): see documentKindForPath().
-enum class DocumentKind : std::uint8_t { Pdf, Markdown };
+enum class DocumentKind : std::uint8_t { Pdf, Markdown, Comparison };
 
 // .md / .markdown / .mdown (case-insensitive) -> Markdown; everything else is
 // treated as a PDF (the historical behavior: any file the user picks with the

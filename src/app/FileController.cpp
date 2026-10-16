@@ -154,6 +154,7 @@ void FileController::perform(FileCommand command) {
         if (const auto quality = reduceQualityOf(command)) saveReducedCopy(*tab, *quality);
         break;
     case FileCommand::ExportPdf: break; // handled above
+    case FileCommand::Compare: break;   // handled by the shell
     }
 }
 
