@@ -127,6 +127,9 @@ public:
     // applyExternalEdit() or setText()), i.e. when buffer() is up to date.
     // Hosts refresh text-derived state (search matches) from it.
     void setOnTextChanged(std::function<void()> callback) { onTextChanged_ = std::move(callback); }
+    // Fired after a key or mouse event moved the caret or the selection (not
+    // for setSelection()/applyExternalEdit()): Split-mode caret sync.
+    void setOnSelectionChanged(std::function<void()> callback) { onSelectionChanged_ = std::move(callback); }
     // Test seam for multi-click timing.
     void setClock(std::function<std::chrono::steady_clock::time_point()> clock) { clock_ = std::move(clock); }
 
@@ -210,6 +213,9 @@ private:
     void ensureCaretVisible();
     void measureCell(PaintContext& context) const;
 
+    bool handleKey(const KeyEvent& event);
+    bool handleMouse(const PointerEvent& event);
+
     // Movement.
     void moveCaret(std::size_t offset, bool extend);
     void moveVertical(long delta, bool extend, bool toEdges);
@@ -245,6 +251,7 @@ private:
     std::function<void()> onFocusRequested_;
     std::function<void()> onScrolled_;
     std::function<void()> onTextChanged_;
+    std::function<void()> onSelectionChanged_;
     std::function<std::chrono::steady_clock::time_point()> clock_;
 
     ScrollBar* vScroll_ = nullptr;

@@ -84,6 +84,13 @@ void MarkdownPreviewView::setDocumentSnapshot(std::shared_ptr<const markdown::Ma
     revision_ = revision;
     source_ = std::move(source);
     replaced_ = true;
+    caretMap_.reset();
+    std::erase_if(journal_, [revision](const JournalEntry& e) { return e.revision <= revision; });
+    if (editState_ != nullptr && revision == editState_->revision()) {
+        journal_.clear();
+        journalComplete_ = true;
+        optimisticText_.clear();
+    }
     layoutDirty_ = true;
     blockScrollX_.clear();
     hoverLink_ = 0;
@@ -97,6 +104,10 @@ void MarkdownPreviewView::setDocumentSnapshot(std::shared_ptr<const markdown::Ma
 void MarkdownPreviewView::clearDocument() {
     document_.reset();
     layout_.reset();
+    caretMap_.reset();
+    journal_.clear();
+    optimisticText_.clear();
+    pendingKeys_.clear();
     revision_ = 0;
     source_.clear();
     scrollY_ = 0.0;
@@ -136,6 +147,15 @@ void MarkdownPreviewView::prepare(ui::PaintContext& context) {
     }
     const MeasurerBinding binding(measurer_, context);
     ensureLayout(bounds().size.width, false);
+    if (editable()) {
+        // Keys that waited for this layout run now; each edit re-parses, so
+        // lay out again until they are all through (bounded).
+        for (int round = 0; round < 64 && !pendingKeys_.empty() && layoutFresh(); ++round) {
+            drainPendingKeys();
+            ensureLayout(bounds().size.width, false);
+        }
+        if (revealPending_ && layoutFresh()) revealCaretNow();
+    }
 }
 
 void MarkdownPreviewView::ensureLayout(double width, bool force) {
@@ -188,6 +208,7 @@ void MarkdownPreviewView::doRelayout(double width) {
     ++layoutCount_;
 
     warmed_.assign(layout_->runs.size(), 0);
+    caretMap_.reset();
     selectionRectsDirty_ = true;
     if (hasSelection_ && !(sameShape && layout_->runs.size() == oldRuns)) clearSelection();
     hoverLink_ = 0;
@@ -363,6 +384,7 @@ std::string MarkdownPreviewView::linkUrlAt(const markdown::HitResult& hit) const
 // ============================================================== selection
 
 std::string MarkdownPreviewView::selectedText() const {
+    if (editable()) return selectedEditText();
     if (layout_ == nullptr || !hasSelection()) return {};
     return layout_->selectedText(std::min(selectionAnchor_, selectionFocus_),
                                  std::max(selectionAnchor_, selectionFocus_));
@@ -383,6 +405,10 @@ bool MarkdownPreviewView::copySelection() {
 }
 
 bool MarkdownPreviewView::selectAll() {
+    if (editable()) {
+        setSelectionInternal(0, editState_->source().size(), true);
+        return true;
+    }
     if (layout_ == nullptr || layout_->runs.empty()) return false;
     selectionAnchor_ = markdown::TextPosition{0, 0};
     const auto last = static_cast<std::uint32_t>(layout_->runs.size() - 1);
@@ -459,6 +485,9 @@ bool MarkdownPreviewView::handleScroll(const ui::PointerEvent& event) {
 bool MarkdownPreviewView::onMouse(const ui::PointerEvent& event) {
     if (Widget::onMouse(event)) return true; // the scroll bar
     if (layout_ == nullptr) return false;
+    if (editable() && event.type != ui::PointerEventType::Scroll && event.type != ui::PointerEventType::Exited) {
+        return onEditMouse(event);
+    }
 
     switch (event.type) {
     case ui::PointerEventType::Scroll:
@@ -560,6 +589,7 @@ bool MarkdownPreviewView::onMouse(const ui::PointerEvent& event) {
 }
 
 bool MarkdownPreviewView::onKey(const ui::KeyEvent& event) {
+    if (editable()) return onEditKey(event);
     const double page = std::max(kArrowScrollPoints, bounds().size.height * 0.9);
     if (event.modifiers.command || event.modifiers.control) {
         if (event.key == ui::Key::Character && !event.modifiers.shift && !event.modifiers.option) {
@@ -694,6 +724,7 @@ void MarkdownPreviewView::paintSelf(ui::PaintContext& context) const {
     for (const std::size_t i : layout_->decorationsInRange(y0, y1)) paintDecoration(context, layout_->decorations[i]);
     paintSelectionAndMatches(context);
     for (std::size_t b = b0; b < b1; ++b) paintBlock(context, b);
+    if (editable()) paintEditing(context);
 
     // Per-block horizontal scroll indicators.
     for (std::size_t b = b0; b < b1; ++b) {
@@ -797,7 +828,8 @@ void MarkdownPreviewView::fillDocRect(ui::PaintContext& context, const core::Rec
 void MarkdownPreviewView::paintSelectionAndMatches(ui::PaintContext& context) const {
     const double y0 = scrollY_;
     const double y1 = scrollY_ + bounds().size.height;
-    if (hasSelection()) {
+    if (editable()) paintEditSelection(context);
+    if (!editable() && hasSelection()) {
         if (selectionRectsDirty_) {
             selectionRects_ = layout_->selectionRects(std::min(selectionAnchor_, selectionFocus_),
                                                       std::max(selectionAnchor_, selectionFocus_), measurer_);

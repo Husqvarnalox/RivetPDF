@@ -4,6 +4,7 @@
 #include "app/MarkdownPreviewView.hpp"
 #include "app/MarkdownSourcePane.hpp"
 #include "app/MarkdownSourceSearch.hpp"
+#include "markdown/MarkdownEditing.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -162,7 +163,19 @@ public:
 
         pane_->editor().setOnScrolled([this] { onEditorScrolled(); });
         pane_->editor().setOnTextChanged([this] { sourceSearch_->refresh(); });
+        pane_->editor().setOnSelectionChanged([this] { onEditorCaretMoved(); });
         preview_->setOnScrolled([this] { onPreviewScrolled(); });
+        MarkdownPreviewView::EditHooks hooks;
+        hooks.onCaretChanged = [this](std::size_t anchor, std::size_t caret) { onPreviewCaretMoved(anchor, caret); };
+        platform::IClipboard* clipboard = services != nullptr ? services->clipboard : nullptr;
+        hooks.linkTarget = [clipboard]() -> std::string {
+            if (clipboard == nullptr) return {};
+            std::string text = clipboard->text();
+            while (!text.empty() && (text.back() == '\n' || text.back() == ' ')) text.pop_back();
+            const bool url = text.starts_with("http://") || text.starts_with("https://") || text.starts_with("mailto:");
+            return url && text.find_first_of(" \n()") == std::string::npos ? text : std::string();
+        };
+        preview_->setEditHooks(std::move(hooks));
     }
 
     ~MarkdownHost() override {
@@ -170,7 +183,10 @@ public:
         coordinator_.reset();
         pane_->editor().setOnScrolled({});
         pane_->editor().setOnTextChanged({});
+        pane_->editor().setOnSelectionChanged({});
         preview_->setOnScrolled({});
+        preview_->setEditHooks({});
+        preview_->setEditTarget(nullptr);
     }
 
     void bind(MarkdownTabState* state) override {
@@ -182,6 +198,7 @@ public:
         coordinator_->unbind();
         state_ = state;
         lastRequested_.reset();
+        preview_->setEditTarget(nullptr);
         preview_->clearDocument(); // also forgets the preview's search state
         if (state == nullptr) {
             const bool ownedFocus = pane_->editor().isFocused() || preview_->isFocused();
@@ -197,6 +214,7 @@ public:
 
         appliedMode_ = state->mode();
         preview_->setBaseDirectory(state->path().parent_path());
+        preview_->setEditTarget(state);
         pane_->bind(sourceShown(appliedMode_) ? state : nullptr);
         sourceSearch_->reset();
         coordinator_->bind([this] { return MarkdownParseCoordinator::Snapshot{state_->source(), state_->revision()}; });
@@ -221,13 +239,19 @@ public:
         if (state_ == nullptr) return;
         const MarkdownDisplayMode mode = state_->mode();
         const bool modeChanged = mode != appliedMode_;
+        preview_->editTargetChanged();
         if (modeChanged) {
             changeMode(mode);
         } else if (sourceShown(mode)) {
             pane_->stateChanged();
             sourceSearch_->refresh();
         }
-        requestParse(modeChanged);
+        // An edit made in the preview needs its layout at once (the caret
+        // lives there); typing in the Source pane may wait for the debounce.
+        requestParse(modeChanged || preview_->isFocused());
+        if (appliedMode_ == MarkdownDisplayMode::Split && preview_->isFocused()) {
+            onPreviewCaretMoved(preview_->anchorOffset(), preview_->caretOffset());
+        }
         updateFrames();
         invalidate();
     }
@@ -243,6 +267,18 @@ public:
         if (state_ == nullptr || !previewShown(appliedMode_)) return false;
         if (appliedMode_ == MarkdownDisplayMode::Split && pane_->editor().isFocused()) return false;
         return preview_->selectAll();
+    }
+
+    bool applyFormat(MarkdownFormatCommand command) override {
+        if (state_ == nullptr) return false;
+        if (state_->isEditingLocked()) {
+            if (environment().setStatus) environment().setStatus("A save is in progress — editing is paused");
+            return false;
+        }
+        const bool editorTarget = appliedMode_ == MarkdownDisplayMode::Source ||
+                                  (appliedMode_ == MarkdownDisplayMode::Split && !preview_->isFocused());
+        if (!editorTarget) return preview_->applyFormat(command);
+        return formatInEditor(command);
     }
 
     Panes panes() const override { return panes_; }
@@ -379,6 +415,60 @@ private:
         preview_->setDocumentSnapshot(std::move(result.document), result.revision, std::move(result.source));
         if (appliedMode_ == MarkdownDisplayMode::Split) syncPreviewFromEditor();
         invalidate();
+    }
+
+    // --------------------------------------------------------- formatting
+    // The Source pane: same text-only edits on the editor's selection.
+    bool formatInEditor(MarkdownFormatCommand command) {
+        namespace ed = markdown::editing;
+        ui::SourceEditor& editor = pane_->editor();
+        const ui::SourceEditor::Selection sel = editor.selection();
+        const std::string& src = state_->source();
+        ed::Edit edit;
+        if (command <= MarkdownFormatCommand::Link) {
+            const ed::InlineFormat f = command == MarkdownFormatCommand::Bold     ? ed::InlineFormat::Bold
+                                       : command == MarkdownFormatCommand::Italic ? ed::InlineFormat::Italic
+                                       : command == MarkdownFormatCommand::Code   ? ed::InlineFormat::Code
+                                       : command == MarkdownFormatCommand::Link   ? ed::InlineFormat::Link
+                                                                                  : ed::InlineFormat::Strikethrough;
+            std::string url;
+            if (f == ed::InlineFormat::Link) {
+                const std::string selected = src.substr(sel.begin, sel.end - sel.begin);
+                if (selected.starts_with("http://") || selected.starts_with("https://")) url = selected;
+            }
+            edit = ed::toggleInline(src, sel.begin, sel.end, f, url);
+        } else {
+            const auto block = static_cast<ed::BlockFormat>(static_cast<int>(command) -
+                                                            static_cast<int>(MarkdownFormatCommand::Paragraph));
+            edit = ed::applyBlockFormat(src, sel.begin, sel.end, block);
+        }
+        if (!edit.changesText()) return false;
+        if (!state_->execute(std::make_unique<TextEditCommand>(*state_, edit.offset, edit.removeLength, edit.insert,
+                                                                "Format"))) {
+            return false;
+        }
+        // stateChanged() has resynced the editor's mirror; restore the selection.
+        editor.setSelection(edit.anchor, edit.caret);
+        editor.revealOffset(edit.caret);
+        if (appliedMode_ == MarkdownDisplayMode::Split) preview_->setCaretFromSource(edit.anchor, edit.caret, false);
+        return true;
+    }
+
+    // ---------------------------------------------------------- caret sync
+    // Split mode: one caret, shown by both panes (source offsets).
+    void onPreviewCaretMoved(std::size_t anchor, std::size_t caret) {
+        if (syncing_ || appliedMode_ != MarkdownDisplayMode::Split) return;
+        const SyncGuard guard(*this);
+        pane_->editor().setSelection(anchor, caret);
+        pane_->editor().revealOffset(caret);
+    }
+    void onEditorCaretMoved() {
+        if (syncing_ || appliedMode_ != MarkdownDisplayMode::Split) return;
+        const SyncGuard guard(*this);
+        const ui::SourceEditor& editor = pane_->editor();
+        const ui::SourceEditor::Selection sel = editor.selection();
+        const std::size_t caret = editor.caretOffset();
+        preview_->setCaretFromSource(caret == sel.begin ? sel.end : sel.begin, caret, true);
     }
 
     // ---------------------------------------------------------- sync scroll

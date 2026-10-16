@@ -747,6 +747,11 @@ void ShellController::perform(const AppCommand& command) {
     case AppCommand::Kind::Annotation: performAnnotation(command.annotation()); break;
     case AppCommand::Kind::Content: performContent(command.content()); break;
     case AppCommand::Kind::MarkdownMode: performMarkdownMode(command.markdownMode()); break;
+    case AppCommand::Kind::MarkdownFormat:
+        if (context_ != nullptr && context_->readyMarkdownTab() != nullptr) {
+            markdownView_->applyFormat(command.markdownFormat());
+        }
+        break;
     case AppCommand::Kind::Form:
         if (forms_ != nullptr) forms_->perform(command.form());
         break;
@@ -765,6 +770,10 @@ bool ShellController::canPerform(const AppCommand& command) const {
     case AppCommand::Kind::Annotation: return canPerformAnnotation(command.annotation());
     case AppCommand::Kind::Content: return canPerformContent(command.content());
     case AppCommand::Kind::MarkdownMode: return canPerformMarkdownMode();
+    case AppCommand::Kind::MarkdownFormat: {
+        const DocumentTab* tab = context_ != nullptr ? context_->readyMarkdownTab() : nullptr;
+        return tab != nullptr && !tab->markdown()->isEditingLocked();
+    }
     case AppCommand::Kind::Form: return forms_ != nullptr && forms_->canPerform(command.form());
     case AppCommand::Kind::Redact: return redaction_ != nullptr && redaction_->canPerform(command.redact());
     }

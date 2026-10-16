@@ -225,6 +225,7 @@ bool MarkdownTabState::applyEdit(std::size_t offset, std::size_t removeLength, s
     if (!isUtf8Boundary(source_, offset) || !isUtf8Boundary(source_, offset + removeLength)) return false;
     source_.replace(offset, removeLength, insert);
     ++revision_;
+    lastEdit_ = SourceChange{offset, removeLength, insert.size(), revision_};
     return true; // the command stack notifies after the command settles
 }
 

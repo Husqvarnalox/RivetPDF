@@ -69,6 +69,10 @@ public:
     // Edit-menu actions on the displayed view; false when not applicable.
     virtual bool copySelection() { return false; }
     virtual bool selectAll() { return false; }
+    // Format menu command (ADR-0031) on the focused view's selection: the
+    // Rendered view's caret/selection, or the Source editor's. One undo step.
+    // False when nothing is bound, editing is locked or nothing changed.
+    virtual bool applyFormat(MarkdownFormatCommand) { return false; }
 
     // Child geometry in host-local coordinates (empty rect = hidden).
     struct Panes {

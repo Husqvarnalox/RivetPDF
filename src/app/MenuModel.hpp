@@ -25,7 +25,18 @@ namespace rivet::app {
 
 // A tagged value identifying any shell command reachable from a menu.
 struct AppCommand {
-    enum class Kind : std::uint8_t { Open, Quit, File, PageEdit, Annotation, Content, MarkdownMode, Form, Redact };
+    enum class Kind : std::uint8_t {
+        Open,
+        Quit,
+        File,
+        PageEdit,
+        Annotation,
+        Content,
+        MarkdownMode,
+        Form,
+        Redact,
+        MarkdownFormat,
+    };
 
     Kind kind = Kind::Open;
     // The underlying enumerator value for File/PageEdit/Annotation/Content/
@@ -41,6 +52,7 @@ struct AppCommand {
     static AppCommand of(FormCommand c) { return {Kind::Form, static_cast<std::uint8_t>(c)}; }
     static AppCommand of(RedactCommand c) { return {Kind::Redact, static_cast<std::uint8_t>(c)}; }
     static AppCommand of(MarkdownDisplayMode m) { return {Kind::MarkdownMode, static_cast<std::uint8_t>(m)}; }
+    static AppCommand of(MarkdownFormatCommand f) { return {Kind::MarkdownFormat, static_cast<std::uint8_t>(f)}; }
 
     FileCommand file() const { return static_cast<FileCommand>(value); }
     PageEditCommand pageEdit() const { return static_cast<PageEditCommand>(value); }
@@ -49,6 +61,7 @@ struct AppCommand {
     FormCommand form() const { return static_cast<FormCommand>(value); }
     RedactCommand redact() const { return static_cast<RedactCommand>(value); }
     MarkdownDisplayMode markdownMode() const { return static_cast<MarkdownDisplayMode>(value); }
+    MarkdownFormatCommand markdownFormat() const { return static_cast<MarkdownFormatCommand>(value); }
 
     friend bool operator==(const AppCommand&, const AppCommand&) = default;
 };
@@ -82,7 +95,7 @@ struct Menu {
     std::vector<MenuItem> items;
 };
 
-// The full menu bar: File, Edit, View, Page, Content, Annotate.
+// The full menu bar: File, Edit, View, Format, Page, Content, Annotate.
 std::vector<Menu> buildMenuBar();
 
 // All items in menu order (first menu to last, items first to last). The
