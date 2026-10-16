@@ -8,6 +8,7 @@
 #include "core/geometry/Size.hpp"
 
 #include <limits>
+#include <numbers>
 
 using namespace rivet::core;
 
@@ -137,7 +138,7 @@ RIVET_TEST(matrixSingularHasNoInverse) {
 
 RIVET_TEST(matrixMapRectBounds) {
     const Rect r{0.0, 0.0, 10.0, 10.0};
-    const Rect mapped = Matrix::rotation(M_PI / 2.0).mapRect(r);
+    const Rect mapped = Matrix::rotation(std::numbers::pi / 2.0).mapRect(r);
     // Rotating the unit square 90 degrees: x in [-10, 0], y in [0, 10].
     CHECK_NEAR(mapped.minX(), -10.0, 1e-9);
     CHECK_NEAR(mapped.maxX(), 0.0, 1e-9);
