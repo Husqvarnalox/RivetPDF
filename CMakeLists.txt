@@ -6,8 +6,9 @@ project(rivet
     LANGUAGES CXX)
 
 # Objective-C++ exists only for the macOS platform backend; Windows/Linux
-# builds must not require it. Non-Apple platforms configure the portable
-# libraries and tests, but no desktop executable yet (src/platform/CMakeLists.txt).
+# builds must not require it. Linux/UNIX builds the X11 desktop shell when its
+# development packages are present (src/platform/linux); Windows configures
+# the portable libraries and tests only (src/platform/CMakeLists.txt).
 if(APPLE)
     enable_language(OBJCXX)
     set(CMAKE_OBJCXX_STANDARD 23)
