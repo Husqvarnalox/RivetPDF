@@ -23,7 +23,8 @@ Documents never leave the machine: Rivet has no network code of its own, no acco
 | Saving: background Save / Save As with atomic file replacement, unsaved-changes prompts | Implemented (macOS) |
 | Annotations: highlight, underline, strikeout, notes, ink, shapes, stamps | Implemented (macOS) |
 | Content editing: select/move/resize/delete page objects, retype text, add text, replace images | Implemented (macOS), with the limits below |
-| Forms, signatures, OCR, redaction, compression, encryption, document comparison | Not implemented |
+| Forms (AcroForm): fill text, check box, radio, combo and list fields with undo/redo, Reset Form, field highlighting; saved with the document. XFA and form scripts are not supported | Implemented (macOS) |
+| Signatures, OCR, redaction, compression, encryption, document comparison | Not implemented |
 | Windows / Linux shells | Not implemented. Portable layers are built and tested on Ubuntu/GCC in CI |
 | Markdown: Rendered (read-only), Source (with live preview) and Split views; text editing with undo/redo and background save | Implemented (macOS) |
 | Markdown export to PDF (vector, bundled fonts, links) and printing | Implemented (macOS) |
