@@ -31,9 +31,9 @@ Documents never leave the machine: Rivet has no network code of its own, no acco
 | OCR: Content > Recognize Text adds an invisible text layer to scanned pages (searchable, selectable); recognition uses the system engine (Vision), so it is available on macOS only; accuracy on real scans is not measured | Implemented (macOS) |
 | Encryption (adding a password) | Not implemented (needs an approved crypto dependency) |
 | Windows (Win32 + Direct2D) and Linux (X11 + Cairo) shells | Implemented; see docs/BUILDING.md for platform differences |
-| Markdown: Rendered (read-only), Source (with live preview) and Split views; text editing with undo/redo and background save | Implemented (macOS) |
+| Markdown: Rendered, Source (with live preview) and Split views; WYSIWYG editing in the Rendered view and a Format menu; undo/redo shared by both views; background save | Implemented |
 | Markdown export to PDF (vector, bundled fonts, links) and printing | Implemented (macOS) |
-| Markdown WYSIWYG editing, Mermaid, math | Not implemented |
+| Markdown diagrams and math: Mermaid flowcharts and sequence diagrams, inline and display TeX math (subset), drawn natively and identical in preview, print and PDF export | Implemented |
 
 macOS is currently the primary supported desktop shell; the portable core layers build and are tested elsewhere.
 
@@ -105,8 +105,8 @@ CI (GitHub Actions) builds with `-Werror` and runs CTest on macOS (AppleClang) a
 
 ## Roadmap
 
-Done: PDF viewer, page editing, annotations, content editing, form filling, redaction, file size reduction, password removal, visual signatures, document comparison, OCR, Markdown viewing, source editing and export (see Status).
-Next: Markdown WYSIWYG, Mermaid and math.
+Done: PDF viewer, page editing, annotations, content editing, form filling, redaction, file size reduction, password removal, visual signatures, document comparison, OCR, Markdown viewing, WYSIWYG and source editing, diagrams and math, export (see Status).
+Next: visual design system (ADR-0033) and release QA.
 
 ## Contributing
 
