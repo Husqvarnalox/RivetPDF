@@ -54,6 +54,9 @@ public:
 
     // Keyboard activation (Space/Enter while focused by the toolbar).
     void activate();
+    int keyboardStopCount() const override { return enabled_ ? 1 : 0; }
+    void setKeyboardStop(int stop) override { setFocused(stop == 0); }
+    void activateKeyboardStop(int) override { activate(); }
     bool hovered() const { return hovered_; }
 
     // Leaf widget: paints itself only (children would be empty anyway).

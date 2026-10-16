@@ -7,6 +7,7 @@
 #include "ui/UiTypes.hpp"
 
 #include <memory>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -204,6 +205,28 @@ public:
     }
     bool isFocused() const { return focused_; }
 
+    // Tooltip text ("Zoom In  ⌘+"); the shell's tooltip controller shows it
+    // after hovering the widget for a moment. Empty = no tooltip.
+    void setTooltip(std::string tooltip) { tooltip_ = std::move(tooltip); }
+    const std::string& tooltip() const { return tooltip_; }
+
+    // Keyboard navigation stops (the toolbar's Tab/arrow navigation). A
+    // widget with N stops is visited N times; the current stop is drawn
+    // with a focus ring and Space/Enter activates it. Default: none.
+    virtual int keyboardStopCount() const { return 0; }
+    // -1 clears the keyboard focus of this widget.
+    virtual void setKeyboardStop(int stop) { (void)stop; }
+    virtual void activateKeyboardStop(int stop) { (void)stop; }
+
+    // Origin of this widget in the coordinate space of the tree's root.
+    core::Point originInRoot() const {
+        core::Point origin = frame_.origin;
+        for (const Widget* p = parent_; p != nullptr && p->parent_ != nullptr; p = p->parent_) {
+            origin = origin + p->frame_.origin;
+        }
+        return origin;
+    }
+
 private:
     // Starts capturing the child after a consumed Down, unless the handler
     // already removed it from this widget.
@@ -222,6 +245,7 @@ private:
     core::Rect frame_;
     IRedrawSink* redrawSink_ = nullptr;
     bool focused_ = false;
+    std::string tooltip_;
 };
 
 } // namespace rivet::ui

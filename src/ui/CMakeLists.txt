@@ -1,10 +1,15 @@
 add_library(rivet_ui STATIC
+    Animation.cpp
     Button.cpp
+    IconButton.cpp
+    Icons.cpp
     Theme.cpp
     OutlinePanel.cpp
     PageThumbnailList.cpp
     PdfViewport.cpp
+    PopupMenu.cpp
     ScrollBar.cpp
+    SegmentedControl.cpp
     SourceEditor.cpp
     Sidebar.cpp
     TabStrip.cpp
@@ -12,6 +17,8 @@ add_library(rivet_ui STATIC
     TextArea.cpp
     TextField.cpp
     Toolbar.cpp
+    Tooltip.cpp
+    ZoomControl.cpp
 )
 
 add_library(rivet::ui ALIAS rivet_ui)

@@ -4,6 +4,7 @@
 
 #include "core/geometry/Insets.hpp"
 #include "core/geometry/Point.hpp"
+#include "ui/Drawing.hpp"
 #include "ui/Utf8.hpp"
 
 #include <algorithm>
@@ -94,7 +95,7 @@ double TextField::prefixWidthUpTo(std::size_t byteIndex) const {
 }
 
 void TextField::updateHorizontalScroll(const core::Rect& bounds) const {
-    const double viewWidth = std::max(0.0, bounds.size.width - 2.0 * kHorizontalPadding);
+    const double viewWidth = std::max(0.0, bounds.size.width - leadingPadding() - kHorizontalPadding);
     const double caretX = prefixWidthUpTo(caret_);
     double scroll = horizontalScroll_;
     if (caretX < scroll) {
@@ -109,11 +110,11 @@ std::size_t TextField::boundaryForClickX(double localX) const {
     if (prefixWidths_.size() != text_.size() + 1) {
         // No cached measurement (never painted since the last text change):
         // right of the text start maps to the end, at/before it to 0.
-        return localX > kHorizontalPadding ? text_.size() : 0;
+        return localX > leadingPadding() ? text_.size() : 0;
     }
     // Click position in text space (text origin sits at the padded left edge
     // minus the scroll offset).
-    const double textX = localX - kHorizontalPadding + horizontalScroll_;
+    const double textX = localX - leadingPadding() + horizontalScroll_;
     std::size_t bestByte = 0;
     double bestDistance = 0.0;
     bool found = false;
@@ -319,12 +320,17 @@ void TextField::paintSelf(PaintContext& context) const {
     }
 
     const bool focused = isFocused();
-    context.fillRoundedRect(rect, focused ? colors().fieldBackground : colors().fieldBackground, kCornerRadius);
-    context.strokeRect(rect.inset(core::Insets::uniform(0.5)),
-                       focused ? colors().accent : colors().fieldBorder, kStrokeWidth);
+    context.fillRoundedRect(rect, colors().fieldBackground, kCornerRadius);
+    strokeRoundedRect(context, rect, colors().fieldBorder, kStrokeWidth, kCornerRadius);
+    if (focused) drawFocusRing(context, rect, kCornerRadius);
+    if (leadingIcon_.has_value()) {
+        const double side = 14.0;
+        drawIcon(context, *leadingIcon_,
+                 core::Rect{kHorizontalPadding + 1.0, (rect.size.height - side) / 2.0, side, side}, colors().textSecondary);
+    }
 
     context.pushClip(rect);
-    const double textOriginX = kHorizontalPadding - horizontalScroll_;
+    const double textOriginX = leadingPadding() - horizontalScroll_;
     if (!text_.empty()) {
         const Selection selected = selection();
         if (selected.begin != selected.end) {
@@ -349,6 +355,16 @@ void TextField::paintSelf(PaintContext& context) const {
                          colors().textPrimary, kCaretWidth);
     }
     context.popClip();
+}
+
+} // namespace rivet::ui
+
+namespace rivet::ui {
+
+void TextField::setLeadingIcon(std::optional<Icon> icon) {
+    if (leadingIcon_ == icon) return;
+    leadingIcon_ = icon;
+    invalidate();
 }
 
 } // namespace rivet::ui
