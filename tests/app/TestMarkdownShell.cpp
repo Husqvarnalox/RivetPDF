@@ -27,6 +27,7 @@
 #include <deque>
 #include <filesystem>
 #include <fstream>
+#include <sstream>
 #include <functional>
 #include <iterator>
 #include <memory>
@@ -70,7 +71,9 @@ void writeBytes(const fs::path& path, const std::string& bytes) {
 
 std::string readBytes(const fs::path& path) {
     std::ifstream in(path, std::ios::binary);
-    return std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+    std::ostringstream contents;
+    contents << in.rdbuf();
+    return contents.str();
 }
 
 class WaitDispatcher final : public rivet::core::IMainThreadDispatcher {

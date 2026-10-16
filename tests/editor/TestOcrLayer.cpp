@@ -148,7 +148,7 @@ RIVET_TEST(ocrPlanIsBoundedByTheRunLimit) {
     CHECK_EQ(plan.skipped, std::size_t{5});
     CHECK(pdf::validate([&] {
               pdf::PdfPageContentEdits edits;
-              edits.invisibleRuns = plan.runs;
+              edits.invisibleRuns = std::vector(plan.runs); // copy, then move-assign (avoids GCC 13 -Wnull-dereference in vector::operator=)
               edits.invisibleTag = 1;
               return edits;
           }(),

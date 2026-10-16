@@ -609,6 +609,7 @@ RIVET_TEST(annotationConcurrencyHiddenRendersReadsAndSavesShareTheCallGate) {
     };
 
     std::vector<std::thread> threads;
+    threads.reserve(5); // also sidesteps a GCC 13 -Wnull-dereference false positive in vector growth
     threads.emplace_back([&] { renderLoop({0}, false, true, 8); });
     threads.emplace_back([&] { renderLoop({6}, true, false, 8); });
     threads.emplace_back([&] { renderLoop({}, true, true, 8); });

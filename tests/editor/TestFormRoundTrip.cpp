@@ -113,7 +113,8 @@ RIVET_TEST(formRoundTripFillSaveRebaseReopen) {
     const std::uint64_t page1Raster = session.pageSnapshot()->at(1).rasterRevision;
     // Edits never mutate the live document: its description is unchanged.
     const auto live = session.document().formInfo();
-    CHECK(live.has_value() && field(**live, "name") != nullptr && field(**live, "name")->value == "Alice");
+    const auto* liveName = live.has_value() ? field(**live, "name") : nullptr;
+    CHECK(liveName != nullptr && liveName->value == "Alice");
 
     // Save + rebase.
     auto job = makeSaveJob(session, path);
@@ -135,7 +136,8 @@ RIVET_TEST(formRoundTripFillSaveRebaseReopen) {
     // The description is reloaded for the new base (it was in use).
     CHECK(settle(opened.dispatcher, [&] { return session.forms().state() == FormService::State::Ready; }));
     const pdf::PdfFormInfoPtr rebased = session.forms().info();
-    CHECK(rebased != nullptr && field(*rebased, "name") != nullptr && field(*rebased, "name")->value == "Zoe");
+    const auto* rebasedName = rebased != nullptr ? field(*rebased, "name") : nullptr;
+    CHECK(rebasedName != nullptr && rebasedName->value == "Zoe");
 
     // A fresh session on the saved file sees the values.
     Opened reopened(*engine, path);

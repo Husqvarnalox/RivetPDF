@@ -320,8 +320,8 @@ core::Result<std::unique_ptr<Command>> applyRedactions(DocumentSession& session,
         if (auto blocked = annotationBlocker(originals, index)) return std::unexpected(std::move(*blocked));
 
         // Content edits: the current ones plus one redaction per mark.
-        auto edits = std::make_shared<pdf::PdfPageContentEdits>();
-        if (entry.contentEdits != nullptr) *edits = *entry.contentEdits;
+        auto edits = entry.contentEdits != nullptr ? std::make_shared<pdf::PdfPageContentEdits>(*entry.contentEdits)
+                                                   : std::make_shared<pdf::PdfPageContentEdits>();
         for (const pdf::PdfBox& mark : marks) edits->redactions.push_back(pdf::PdfRedaction{mark, options.fill});
         if (core::Status valid = pdf::validate(*edits, view->sourceObjectCount); !valid) {
             return std::unexpected(invalid(pageLabel(index) + " cannot be redacted: " + valid.error().message));

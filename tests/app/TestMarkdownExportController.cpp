@@ -33,6 +33,7 @@
 #include <cstddef>
 #include <filesystem>
 #include <fstream>
+#include <sstream>
 #include <iterator>
 #include <memory>
 #include <mutex>
@@ -75,7 +76,9 @@ private:
 
 std::string readBytes(const fs::path& path) {
     std::ifstream in(path, std::ios::binary);
-    return std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+    std::ostringstream contents;
+    contents << in.rdbuf();
+    return contents.str();
 }
 
 std::size_t countEntries(const fs::path& dir) {

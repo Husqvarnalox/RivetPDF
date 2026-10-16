@@ -183,7 +183,7 @@ ReconstructedBlock buildBlock(const pdf::PdfPageContent& content, const std::vec
                               const std::vector<ReconstructedLine>& lines, const LineInfo& first, std::uint64_t tag,
                               double measuredStep) {
     ReconstructedBlock block;
-    block.lines = lines;
+    block.lines.assign(lines.begin(), lines.end());
     block.tag = tag;
     block.angleRadians = first.angle;
     block.fontSize = first.size;
