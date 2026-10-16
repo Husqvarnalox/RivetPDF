@@ -71,3 +71,45 @@ light and dark themes, the document as the focus.
 - One look across macOS, Windows and Linux, adapted by platform appearance.
 - Every new widget must use tokens; a test greps that no `rgba(` literals
   remain outside `ui/Theme.cpp` and the icon file.
+
+## Implementation notes (2026-10-17)
+
+- **Tokens** live in `ui/Theme.{hpp,cpp}`: `ui::Palette` (one struct of
+  colors per theme, built by `Theme::make(dark, accent)`), `ui::metrics`
+  (spacing, radii, control/bar heights, sidebar 220 px [160..420], page gap
+  16, fade 120 ms, tooltip delay 600 ms) and `ui::fonts` roles. The current
+  theme is a main-thread global (`ui::currentTheme()`, `ui::colors()`,
+  `themeGeneration()` for caches such as the Markdown palette). Accent-derived
+  text/fill tokens are pushed to >= 4.5:1 by `ensureContrast`
+  (`tests/ui/TestTheme.cpp`, also with unusual accents).
+- **Appearance**: `platform::IAppearance` (`ShellServices::appearance`).
+  `RIVET_THEME=light|dark` overrides everywhere. macOS observes
+  `effectiveAppearance` (KVO) and system color changes; Windows reads
+  `AppsUseLightTheme` + `DwmGetColorizationColor` and re-reads on
+  `WM_SETTINGCHANGE`/`WM_THEMECHANGED`/`WM_DWMCOLORIZATIONCOLORCHANGED`.
+  Linux reads `RIVET_THEME`, `GTK_THEME` and the XSETTINGS `Net/ThemeName`
+  (pure parser in `LinuxXSettings`) **once at startup**: live theme changes
+  are not tracked there (deviation). The Windows native `HMENU` menu bar is
+  not themed (only the immersive dark title bar follows); the Linux in-window
+  menu bar is a Rivet widget and follows the theme.
+- **No raw colors**: `tests/ui/TestNoHardcodedColors.cpp` scans `src/ui` and
+  `src/app` for `Color::rgba/gray/white/black` and `Color{...}` literals;
+  only `ui/Theme.cpp` and `ui/Icons.cpp` are allowed.
+- **Icons**: `ui/Icons.{hpp,cpp}` (enum `ui::Icon`, `drawIcon`), stroked
+  `ui::Path`s on a 20x20 grid. **Controls**: `IconButton`, `SegmentedControl`,
+  `ZoomControl` (percent opens a preset `PopupMenu`), `Tooltip` (delay through
+  `ui::IDelayedRunner`; the shell runs it on the task scheduler fenced by an
+  `AsyncScope` and delivers it through the main-thread dispatcher), focus rings
+  only while keyboard-navigating; `Toolbar` groups (leading/center/trailing)
+  with Tab/Shift-Tab/arrow navigation, entered by a Tab the content did not use.
+- **Shell** (`ShellController`): tab strip -> toolbar -> one context bar
+  (annotation / content-edit / forms / redaction for the tool mode, Markdown
+  format icons) -> sidebar (segmented header, splitter) + canvas -> status
+  bar. Tool modes are derived from the controllers' state
+  (`ShellController::toolMode()`), so menu shortcuts and the segmented control
+  stay in sync. The overflow "more" menu is generated from
+  `app::buildMenuBar()`. The empty workspace shows `WelcomeView` with
+  `RecentFiles` (`recent-files.txt` in the app-data directory; paths only,
+  max 10, missing files greyed and not openable). Hover leaves are tracked at
+  the root (`ShellRoot::onPointer`) and platform pointer-leave events.
+
