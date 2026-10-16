@@ -2,6 +2,7 @@
 #pragma once
 
 #include "core/Error.hpp"
+#include "pdf/ImageReduce.hpp"
 #include "pdf/PdfAnnotation.hpp"
 #include "pdf/PdfContent.hpp"
 #include "pdf/PdfForms.hpp"
@@ -10,6 +11,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -85,6 +87,16 @@ struct PdfAssemblyRequest {
     // carried over. Refused (InvalidArgument) for an encrypted base, whose
     // encryption a rebuild would drop.
     bool removeMetadata = false;
+    // ADR-0028 (Save Reduced Copy): downsample and JPEG-re-encode the
+    // top-level images of the PreserveBase output that exceed the target
+    // resolution (see ImageReduce.hpp and the backend for the exact rules).
+    // Ignored for Fresh assemblies.
+    std::optional<PdfImageReduction> reduceImages;
+    // ADR-0030 (Remove Password): write the document without its encryption
+    // (PDFium FPDF_REMOVE_SECURITY). Only meaningful for PreserveBase of a
+    // document opened with its password; refused (InvalidArgument) together
+    // with removeMetadata.
+    bool removeSecurity = false;
 };
 
 } // namespace rivet::pdf
