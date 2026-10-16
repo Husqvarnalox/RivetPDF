@@ -24,6 +24,8 @@ unsigned annotationCaps(pdf::PdfAnnotationKind kind) {
     case pdf::PdfAnnotationKind::Arrow:
     case pdf::PdfAnnotationKind::Stamp:
         return kCapMove | kCapResize | kCapRestyle | kCapDelete;
+    case pdf::PdfAnnotationKind::Signature:
+        return kCapMove | kCapResize | kCapDelete;
     case pdf::PdfAnnotationKind::Other:
         break;
     }

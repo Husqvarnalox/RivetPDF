@@ -64,7 +64,7 @@ struct AnnotationDraft {
     core::PageId page;
     pdf::PdfAnnotationKind kind = pdf::PdfAnnotationKind::Other;
     std::vector<DisplayQuad> quads;                    // markup
-    core::Rect rect;                                   // Note, Square, Circle, Stamp
+    core::Rect rect;                                   // Note, Square, Circle, Stamp, Signature
     std::vector<std::vector<core::Point>> strokes;     // Ink
     core::Point lineStart;                             // Line, Arrow
     core::Point lineEnd;
@@ -72,6 +72,7 @@ struct AnnotationDraft {
     std::string contents; // UTF-8
     std::string author;   // UTF-8
     pdf::PdfStampName stampName = pdf::PdfStampName::Approved;
+    pdf::PdfSignatureAppearancePtr signature; // Signature: the appearance source (rect = placement)
 };
 
 // Fields left empty stay unchanged. `interiorColor`: outer optional = change

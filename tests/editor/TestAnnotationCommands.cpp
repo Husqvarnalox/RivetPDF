@@ -237,6 +237,7 @@ RIVET_TEST(annotationCreateAllKindsInEveryView) {
                 CHECK(near(view.lineStart, d.lineStart));
                 CHECK(near(view.lineEnd, d.lineEnd));
                 break;
+            case Kind::Signature:
             case Kind::Other:
                 CHECK(false);
                 break;

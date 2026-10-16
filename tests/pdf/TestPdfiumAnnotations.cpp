@@ -306,6 +306,7 @@ void expectMatches(const PdfAnnotationData& want, const PdfPageAnnotation& got) 
             CHECK_EQ(got.data.rotation, want.rotation);
             break;
         case PdfAnnotationKind::Note:
+        case PdfAnnotationKind::Signature:
         case PdfAnnotationKind::Other:
             break;
     }

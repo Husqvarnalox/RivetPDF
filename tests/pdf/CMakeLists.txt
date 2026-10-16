@@ -18,6 +18,9 @@ add_executable(rivet_pdf_tests
     TestPdfPageGeometry.cpp
     # Engine-independent annotation data, validation and appearance builder.
     TestPdfAnnotation.cpp
+    # Visual-signature appearances, glyph outlines, byte-range analysis
+    # (ADR-0025): run in both build modes.
+    TestPdfSignature.cpp
     # Engine-independent content-edit validation, UTF-8 helpers, text layout
     # and bundled-font tables (Phase 5): run in both build modes.
     TestPdfContent.cpp
@@ -54,6 +57,9 @@ add_executable(rivet_pdf_tests
     # the latter.
     TestPdfForms.cpp
     TestPdfiumForms.cpp
+    # Visual signatures through the assembly and digital-signature listing
+    # (ADR-0025): PDFium-ON bodies only.
+    TestPdfiumSignatures.cpp
     # Compiled directly into the test binary rather than linked from
     # rivet_pdfium, so the gate tests run with RIVET_WITH_PDFIUM=OFF too. The
     # gate translation unit has no FPDF_* dependency. In PDFium-ON builds the
