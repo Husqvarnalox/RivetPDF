@@ -254,9 +254,10 @@ void PdfViewport::setAnnotationLayer(ViewportLayer* layer) {
     // -Wnull-dereference misfires on vector::insert's reallocating path.
     std::vector<ViewportLayer*> layers;
     layers.reserve(layers_.size() + 1);
+    for (std::size_t i = 0; i < belowAnnotationLayers_; ++i) layers.push_back(layers_[i]);
     if (layer != nullptr) layers.push_back(layer);
-    for (ViewportLayer* existing : layers_) {
-        if (existing != annotationLayer_) layers.push_back(existing);
+    for (std::size_t i = belowAnnotationLayers_; i < layers_.size(); ++i) {
+        if (layers_[i] != annotationLayer_) layers.push_back(layers_[i]);
     }
     layers_ = std::move(layers);
     annotationLayer_ = layer;
@@ -271,14 +272,28 @@ bool PdfViewport::hasLayer(const ViewportLayer* layer) const {
     return std::find(layers_.begin(), layers_.end(), layer) != layers_.end();
 }
 
-void PdfViewport::addLayer(ViewportLayer* layer) {
+void PdfViewport::addLayer(ViewportLayer* layer, LayerPlacement placement) {
     if (layer == nullptr || std::find(layers_.begin(), layers_.end(), layer) != layers_.end()) return;
-    layers_.push_back(layer);
+    if (placement == LayerPlacement::BelowAnnotations) {
+        // Rebuilt (see setAnnotationLayer): after the existing below-layers.
+        std::vector<ViewportLayer*> layers;
+        layers.reserve(layers_.size() + 1);
+        for (std::size_t i = 0; i < belowAnnotationLayers_; ++i) layers.push_back(layers_[i]);
+        layers.push_back(layer);
+        for (std::size_t i = belowAnnotationLayers_; i < layers_.size(); ++i) layers.push_back(layers_[i]);
+        layers_ = std::move(layers);
+        ++belowAnnotationLayers_;
+    } else {
+        layers_.push_back(layer);
+    }
     invalidate();
 }
 
 void PdfViewport::removeLayer(ViewportLayer* layer) {
     if (layer == nullptr || layer == annotationLayer_) return;
+    const auto it = std::find(layers_.begin(), layers_.end(), layer);
+    if (it == layers_.end()) return;
+    if (static_cast<std::size_t>(it - layers_.begin()) < belowAnnotationLayers_) --belowAnnotationLayers_;
     if (std::erase(layers_, layer) == 0) return;
     selecting_ = false;
     linkPressed_ = false;

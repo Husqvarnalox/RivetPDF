@@ -148,13 +148,16 @@ public:
     void setAnnotationLayer(ViewportLayer* layer);
     ViewportLayer* annotationLayer() const { return annotationLayer_; }
 
-    // Additional ordered layers (the content layer). The annotation layer, when
-    // installed, is always first; added layers follow in insertion order. For
-    // events the first layer that consumes wins; every layer paints (earlier
-    // layers below later ones). A layer ignores input while its tool is not
-    // the active one, so only the active tool's layer ever handles input.
-    // Non-owning; removeLayer must run before the layer dies.
-    void addLayer(ViewportLayer* layer);
+    // Additional ordered layers (the content layer). Order: layers added with
+    // LayerPlacement::BelowAnnotations (the form layer), then the annotation
+    // layer when installed, then the other added layers, each group in
+    // insertion order. For events the first layer that consumes wins; every
+    // layer paints (earlier layers below later ones). A layer ignores input
+    // while its tool is not the active one, so only the active tool's layer
+    // ever handles input. Non-owning; removeLayer must run before the layer
+    // dies.
+    enum class LayerPlacement : std::uint8_t { AboveAnnotations, BelowAnnotations };
+    void addLayer(ViewportLayer* layer, LayerPlacement placement = LayerPlacement::AboveAnnotations);
     void removeLayer(ViewportLayer* layer);
     std::size_t layerCount() const { return layers_.size(); }
 
@@ -271,7 +274,10 @@ private:
     double anchorFraction_ = 0.0;
     ViewportTool* activeTool_ = nullptr;
     ViewportLayer* annotationLayer_ = nullptr;
-    std::vector<ViewportLayer*> layers_; // annotationLayer_ first when installed
+    // Below-annotation layers first, then annotationLayer_ when installed,
+    // then the others.
+    std::vector<ViewportLayer*> layers_;
+    std::size_t belowAnnotationLayers_ = 0; // leading entries of layers_
 
     std::function<void(double)> onZoomChanged_;
     std::function<void(std::size_t)> onPageChanged_;
