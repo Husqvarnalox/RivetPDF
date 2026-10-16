@@ -48,3 +48,38 @@ source map from laid-out runs back to source byte ranges
 
 - Source formatting is preserved byte-for-byte outside the edited range.
 - Some structures (tables, HTML) need the Source view.
+
+## Implementation notes (MD5)
+
+- **Provenance.** The parser records `TextSpan`s for every Text/Code inline
+  and code-block text (MD4C's synthesized newlines in verbatim blocks map to
+  the next source `\n`); spans whose text differs from the source (entities,
+  escapes, soft breaks, tabs) are atomic, so the caret never lands inside
+  them. The layout aggregates spans per run (`LayoutRun::spanBegin/spanEnd`).
+- **Caret.** `markdown::CaretMap` (src/markdown/MarkdownCaret.*) is built
+  from a layout; positions are source offsets in `MarkdownPreviewView`, and
+  the run-start stop that coincides with the previous run's end is dropped,
+  so typing at a style boundary continues the preceding style. Graphemes
+  follow a compact extend/ZWJ/regional-indicator rule (`Grapheme.hpp`).
+- **Edits** are pure (`markdown::editing`, src/markdown/MarkdownEditing.*)
+  and become one `TextEditCommand`; consecutive typing merges like the
+  Source pane (a word typed after a space starts a new undo step). Format
+  commands work identically on the Source editor's selection.
+- **Islands.** `SpecialBlock {None, Mermaid, DisplayMath}` on `Block` and
+  `LayoutBlock::special`: fenced code whose info word is `mermaid`, fenced
+  ```` ```math ````, or a paragraph wrapped in `$$ … $$` (converted to a
+  code block with info `math` and the TeX as text). `isReadOnlyIsland()`
+  covers these plus tables, raw HTML and image blocks; the caret map has no
+  stops in them, Backspace/Delete next to an image selects it (a second press
+  deletes it) and refuses to join into other islands. MD6 renderers paint
+  island blocks by `special` without touching the editing code.
+- **Latency.** Keys that need the new document/layout are queued and
+  drained in `prepare()` once the layout of the current source exists;
+  plain typing during a background parse is applied immediately and drawn
+  optimistically over the stale layout.
+- **Known limitations.** Escaping of optimistically typed text uses the
+  snapshot's context; an empty paragraph cannot exist in Markdown, so Enter
+  at a paragraph end leaves the caret on the blank line between blocks
+  (drawn at its left edge) until text is typed; turning a list off merges
+  its items' lines into one paragraph (toggling it back restores items per
+  line); a leading typed space is inserted as `&#32;` so it survives.

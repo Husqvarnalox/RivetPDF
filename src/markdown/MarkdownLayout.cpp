@@ -82,7 +82,34 @@ struct Token {
     double width = 0.0;
     SourceRange src;
     bool exact = false; // src.size() == text.size() and maps 1:1
+    // Provenance of Word/Space tokens cut from a Text/Code inline: the token
+    // covers [at, at+len) of the inline's text, mapped through `spans`.
+    // Other tokens (images, soft breaks, unmapped text) are atomic over src.
+    const std::vector<TextSpan>* spans = nullptr;
+    std::uint32_t at = 0;
+    std::uint32_t len = 0;
+    std::string_view raw; // Space tokens: the whitespace as decoded (" ", "\t", "  ")
 };
+
+// Source offset of inline-text position x. A position that starts a piece
+// maps to that piece's start (so a caret before a word lands before its
+// source bytes); a position inside an exact piece maps 1:1; inside an atomic
+// piece or past the last piece, to the piece's end.
+std::size_t mapTextPos(const std::vector<TextSpan>& spans, std::size_t x, std::size_t fallback) {
+    if (spans.empty()) return fallback;
+    auto it = std::upper_bound(spans.begin(), spans.end(), x,
+                               [](std::size_t v, const TextSpan& sp) { return v < sp.textEnd(); });
+    if (it == spans.end()) return spans.back().sourceEnd();
+    if (x < it->text) return it->source;
+    if (x == it->text) return it->source;
+    if (it->exact()) return it->source + (x - it->text);
+    return it->sourceEnd();
+}
+
+std::size_t tokenSourceStart(const Token& t) {
+    if (t.spans != nullptr) return mapTextPos(*t.spans, t.at, t.src.start);
+    return t.src.start;
+}
 
 struct Ctx {
     double x = 0.0;
@@ -149,6 +176,12 @@ private:
             tok.link = link;
             tok.exact = exact;
             tok.src = exact ? SourceRange{in.range.start + a, in.range.start + i} : in.range;
+            tok.raw = t.substr(a, i - a);
+            if (!in.spans.empty()) {
+                tok.spans = &in.spans;
+                tok.at = static_cast<std::uint32_t>(a);
+                tok.len = static_cast<std::uint32_t>(i - a);
+            }
             if (ws) {
                 tok.type = Token::Type::Space;
                 tok.text = " ";
@@ -238,6 +271,79 @@ private:
         }
     }
 
+    // ------------------------------------------------------- provenance
+    void pushSpan(TextSpan span) {
+        if (!out_.runSpans.empty()) {
+            TextSpan& last = out_.runSpans.back();
+            // Merge only within the run being built (callers start a run's
+            // range after the previous run's last span).
+            if (out_.runs.size() > 0 && out_.runSpans.size() > out_.runs.back().spanBegin && last.exact() &&
+                span.exact() && last.textEnd() == span.text && last.sourceEnd() == span.source) {
+                last.textLength += span.textLength;
+                last.sourceLength += span.sourceLength;
+                return;
+            }
+        }
+        out_.runSpans.push_back(span);
+    }
+    // Provenance of tok.text[from, to) placed at run text offset `runOffset`.
+    void appendSpans(const Token& tok, std::size_t from, std::size_t to, std::uint32_t runOffset) {
+        if (to <= from) return;
+        const auto length = static_cast<std::uint32_t>(to - from);
+        if (tok.spans == nullptr || tok.type != Token::Type::Word) {
+            TextSpan sp;
+            sp.text = runOffset;
+            sp.textLength = length;
+            if (tok.spans != nullptr) { // collapsed whitespace inside a text inline
+                const std::size_t s = mapTextPos(*tok.spans, tok.at, tok.src.start);
+                const std::size_t e = mapTextPos(*tok.spans, static_cast<std::size_t>(tok.at) + tok.len, s);
+                sp.source = s;
+                sp.sourceLength = static_cast<std::uint32_t>(e >= s ? e - s : 0);
+                sp.opaque = tok.raw != " ";
+            } else {
+                if (tok.src.empty() && tok.type == Token::Type::Word) return; // unmapped
+                sp.source = tok.src.start;
+                sp.sourceLength = static_cast<std::uint32_t>(tok.src.size());
+                sp.opaque = tok.type != Token::Type::Word; // soft breaks, images
+            }
+            pushSpan(sp);
+            return;
+        }
+        const std::vector<TextSpan>& spans = *tok.spans;
+        const std::size_t lo = static_cast<std::size_t>(tok.at) + from;
+        const std::size_t hi = static_cast<std::size_t>(tok.at) + to;
+        auto it = std::upper_bound(spans.begin(), spans.end(), lo,
+                                   [](std::size_t v, const TextSpan& sp) { return v < sp.textEnd(); });
+        for (; it != spans.end() && it->text < hi; ++it) {
+            const std::size_t cs = std::max<std::size_t>(it->text, lo);
+            const std::size_t ce = std::min<std::size_t>(it->textEnd(), hi);
+            if (ce <= cs) continue;
+            TextSpan sp;
+            sp.text = runOffset + static_cast<std::uint32_t>(cs - lo);
+            sp.textLength = static_cast<std::uint32_t>(ce - cs);
+            if (it->exact()) {
+                sp.source = it->source + (cs - it->text);
+                sp.sourceLength = sp.textLength;
+            } else {
+                sp.source = it->source;
+                sp.sourceLength = it->sourceLength;
+                sp.opaque = true;
+            }
+            pushSpan(sp);
+        }
+    }
+    // A soft break's source runs to the next token's first byte (it covers the
+    // next line's container prefix too), so deleting the rendered space joins
+    // the lines cleanly.
+    static void extendSoftBreaks(std::vector<Token>& toks) {
+        for (std::size_t k = 0; k + 1 < toks.size(); ++k) {
+            Token& t = toks[k];
+            if (t.type != Token::Type::Space || t.spans != nullptr || t.src.empty()) continue;
+            const std::size_t next = tokenSourceStart(toks[k + 1]);
+            if (next > t.src.end) t.src.end = next;
+        }
+    }
+
     // -------------------------------------------------------------- flow
     struct FlowResult {
         double bottom = 0.0;
@@ -270,10 +376,12 @@ private:
         };
 
         const auto place = [&](std::string_view text, const TextStyle& st, std::uint32_t link, bool image, double w,
-                               SourceRange src) {
+                               SourceRange src, const Token& tok, std::size_t from, std::size_t to) {
             if (out_.runs.size() > runStart) {
                 LayoutRun& last = out_.runs.back();
                 if (last.style == st && last.link == link && !last.isImage && !image) {
+                    appendSpans(tok, from, to, static_cast<std::uint32_t>(last.text.size()));
+                    last.spanEnd = static_cast<std::uint32_t>(out_.runSpans.size());
                     last.text.append(text);
                     last.width += w;
                     last.source = unite(last.source, src);
@@ -284,6 +392,9 @@ private:
                 }
             }
             LayoutRun& r = out_.runs.emplace_back();
+            r.spanBegin = static_cast<std::uint32_t>(out_.runSpans.size());
+            appendSpans(tok, from, to, 0);
+            r.spanEnd = static_cast<std::uint32_t>(out_.runSpans.size());
             r.text.assign(text);
             r.style = st;
             r.link = link;
@@ -350,7 +461,7 @@ private:
                     SourceRange src = tok.src;
                     if (tok.exact) src = {tok.src.start + fragStart, tok.src.start + end};
                     place(text.substr(fragStart, end - fragStart), tok.style, tok.link, tok.type == Token::Type::Image,
-                          fragWidth, src);
+                          fragWidth, src, tok, fragStart, end);
                 }
                 fragStart = end;
                 fragWidth = 0.0;
@@ -389,10 +500,11 @@ private:
                     break;
                 }
                 if (lineHasContent && hasPending) {
-                    place(pending.text, pending.style, pending.link, false, pending.width, pending.src);
+                    place(pending.text, pending.style, pending.link, false, pending.width, pending.src, pending, 0,
+                          pending.text.size());
                 }
                 hasPending = false;
-                place(tok.text, tok.style, tok.link, image, tok.width, tok.src);
+                place(tok.text, tok.style, tok.link, image, tok.width, tok.src, tok, 0, tok.text.size());
                 break;
             }
             }
@@ -430,6 +542,7 @@ private:
         lb.blockId = b.id;
         lb.kind = kind;
         lb.source = b.range;
+        lb.special = b.special;
         lb.lineBegin = lb.lineEnd = static_cast<std::uint32_t>(out_.lines.size());
         lb.cellBegin = lb.cellEnd = static_cast<std::uint32_t>(out_.tableCells.size());
         lb.decoBegin = lb.decoEnd = static_cast<std::uint32_t>(out_.decorations.size());
@@ -477,6 +590,7 @@ private:
         std::vector<Token> toks;
         tokenize(b.inlines, base, 0, toks, 0);
         if (toks.empty()) return false;
+        extendSoftBreaks(toks);
         const std::size_t idx = out_.blocks.size();
         LayoutBlock& lb = beginLeaf(b, heading ? LayoutBlockKind::Heading : LayoutBlockKind::Paragraph);
         lb.headingLevel = heading ? b.level : 0;
@@ -523,6 +637,7 @@ private:
             }
             std::string_view line = text.substr(pos, nl - pos);
             if (!line.empty() && line.back() == '\r') line.remove_suffix(1);
+            const std::size_t lineStart = pos;
             pos = nl + 1;
 
             std::string_view shown = line;
@@ -548,7 +663,10 @@ private:
             const double w = shown.empty() ? 0.0 : cache_.width(m_, shown, style);
             const auto lineIndex = static_cast<std::uint32_t>(out_.lines.size());
             const auto runIndex = static_cast<std::uint32_t>(out_.runs.size());
-            if (!shown.empty()) {
+            // An empty line gets an empty run when its position in the source
+            // is known, so the editor has a caret stop there.
+            const bool emptyMapped = shown.empty() && !b.textSpans.empty() && lineStart < b.text.size();
+            if (!shown.empty() || emptyMapped) {
                 LayoutRun& r = out_.runs.emplace_back();
                 r.text.assign(shown);
                 r.style = style;
@@ -556,9 +674,12 @@ private:
                 r.width = w;
                 r.line = lineIndex;
                 r.source = b.range;
+                r.spanBegin = static_cast<std::uint32_t>(out_.runSpans.size());
+                appendCodeLineSpans(b.textSpans, line, lineStart);
+                out_.runs.back().spanEnd = static_cast<std::uint32_t>(out_.runSpans.size());
             }
             const double baseline = y + (lineHeight - (sm.ascent + sm.descent)) * 0.5 + sm.ascent;
-            if (!shown.empty()) out_.runs.back().baseline = baseline;
+            if (runIndex < out_.runs.size()) out_.runs.back().baseline = baseline;
             LayoutLine& ln = out_.lines.emplace_back();
             ln.top = y;
             ln.height = lineHeight;
@@ -580,6 +701,72 @@ private:
         endLeaf(idx, rect, std::max(ctx.width, maxWidth + 2.0 * pad));
         bottom = top + height;
         return true;
+    }
+
+    // Provenance of one code line (block text [lineStart, lineStart+line.size()))
+    // as drawn: tabs expand to spaces (atomic), everything else maps through
+    // the block's spans. An empty line gets one empty span at its position.
+    void appendCodeLineSpans(const std::vector<TextSpan>& spans, std::string_view line, std::size_t lineStart) {
+        if (line.empty()) {
+            TextSpan sp;
+            sp.source = mapTextPos(spans, lineStart, 0);
+            out_.runSpans.push_back(sp);
+            return;
+        }
+        const std::size_t tab = static_cast<std::size_t>(std::max(1, t_.tabSize));
+        std::size_t col = 0;   // column in the shown text
+        std::size_t shown = 0; // byte offset in the shown text
+        std::size_t i = 0;
+        while (i < line.size()) {
+            const std::size_t abs = lineStart + i;
+            auto it = std::upper_bound(spans.begin(), spans.end(), abs,
+                                       [](std::size_t v, const TextSpan& sp) { return v < sp.textEnd(); });
+            if (line[i] == '\t') {
+                const std::size_t n = tab - (col % tab);
+                TextSpan sp;
+                sp.text = static_cast<std::uint32_t>(shown);
+                sp.textLength = static_cast<std::uint32_t>(n);
+                sp.source = mapTextPos(spans, abs, 0);
+                sp.sourceLength = (it != spans.end() && it->text <= abs && it->exact()) ? 1u : 0u;
+                sp.opaque = true;
+                out_.runSpans.push_back(sp);
+                col += n;
+                shown += n;
+                ++i;
+                continue;
+            }
+            // A stretch without tabs inside one piece (or an unmapped gap).
+            std::size_t end = line.size();
+            const std::size_t tabAt = line.find('\t', i);
+            if (tabAt != std::string_view::npos) end = tabAt;
+            if (it != spans.end() && it->text <= abs) {
+                end = std::min(end, it->textEnd() - lineStart);
+            } else if (it != spans.end()) {
+                end = std::min(end, it->text - lineStart);
+            }
+            if (end <= i) end = i + 1;
+            std::size_t cps = 0;
+            for (std::size_t k = i; k < end; k += utf8::decode(line, k).length) ++cps;
+            TextSpan sp;
+            sp.text = static_cast<std::uint32_t>(shown);
+            sp.textLength = static_cast<std::uint32_t>(end - i);
+            if (it != spans.end() && it->text <= abs) {
+                if (it->exact()) {
+                    sp.source = it->source + (abs - it->text);
+                    sp.sourceLength = sp.textLength;
+                } else {
+                    sp.source = it->source;
+                    sp.sourceLength = it->sourceLength;
+                }
+            } else {
+                sp.source = mapTextPos(spans, abs, 0);
+                sp.sourceLength = 0;
+            }
+            pushSpan(sp);
+            shown += end - i;
+            col += cps;
+            i = end;
+        }
     }
 
     bool layoutRule(const Block& b, const Ctx& ctx, double top, double& bottom) {

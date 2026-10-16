@@ -167,6 +167,12 @@ struct LayoutRun {
     // byte source.start + i of the source.
     SourceRange source;
     bool exactSource = false;
+    // [spanBegin, spanEnd) into MarkdownLayout::runSpans: where each piece of
+    // `text` came from (TextSpan::text is relative to this run's text). Runs
+    // of unmapped text have none. This is the precise mapping the WYSIWYG
+    // editor uses; `source` above is only the union.
+    std::uint32_t spanBegin = 0;
+    std::uint32_t spanEnd = 0;
 };
 
 struct LayoutLine {
@@ -233,6 +239,8 @@ struct LayoutBlock {
     // should clip to `rect` and offer horizontal scrolling.
     double contentWidth = 0.0;
     SourceRange source;
+    // Special renderer marker copied from the Block (Mermaid / display math).
+    SpecialBlock special = SpecialBlock::None;
     std::uint32_t lineBegin = 0; // [lineBegin, lineEnd) into MarkdownLayout::lines
     std::uint32_t lineEnd = 0;
     std::uint32_t cellBegin = 0; // tables: [cellBegin, cellEnd) into MarkdownLayout::tableCells
@@ -241,6 +249,11 @@ struct LayoutBlock {
     std::uint32_t decoEnd = 0;
 
     bool overflowsHorizontally() const { return contentWidth > rect.size.width + 0.5; }
+    // Not edited in place by the WYSIWYG editor (see markdown::isReadOnlyIsland).
+    bool readOnlyIsland() const {
+        return special != SpecialBlock::None || kind == LayoutBlockKind::Table || kind == LayoutBlockKind::Html ||
+               kind == LayoutBlockKind::Image;
+    }
 };
 
 // A caret position: a run and a byte offset (code point boundary) in its text.
@@ -267,6 +280,8 @@ struct MarkdownLayout {
     std::vector<Decoration> decorations;
     std::vector<TableCellLayout> tableCells;
     std::vector<LinkTarget> links;
+    // Source provenance of run text (see LayoutRun::spanBegin).
+    std::vector<TextSpan> runSpans;
     // Block id -> index in `blocks` (container ids map to their first leaf);
     // kNoBlock when the block produced nothing.
     std::vector<std::uint32_t> blockIndexById;

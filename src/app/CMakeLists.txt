@@ -11,6 +11,7 @@ add_library(rivet_app STATIC
     MarkdownParseCoordinator.cpp
     MarkdownPdfExport.cpp
     MarkdownPreviewView.cpp
+    MarkdownPreviewEditing.cpp
     MarkdownSourceSearch.cpp
     MarkdownSourcePane.cpp
     AnnotationBarController.cpp

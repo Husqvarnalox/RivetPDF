@@ -78,6 +78,33 @@ std::vector<Menu> buildMenuBar() {
     view.items.push_back(std::move(highlight));
     bar.push_back(std::move(view));
 
+    // Markdown formatting (ADR-0031); enabled only for Markdown tabs. Works on
+    // the Rendered view's selection and on the Source editor's alike.
+    Menu format{"Format", {}};
+    format.items.push_back(item("Bold", AppCommand::of(MarkdownFormatCommand::Bold), cmd("b")));
+    format.items.push_back(item("Italic", AppCommand::of(MarkdownFormatCommand::Italic), cmd("i")));
+    format.items.push_back(
+        item("Strikethrough", AppCommand::of(MarkdownFormatCommand::Strikethrough), cmd("x", true)));
+    format.items.push_back(item("Inline Code", AppCommand::of(MarkdownFormatCommand::Code), cmd("e")));
+    format.items.push_back(item("Link", AppCommand::of(MarkdownFormatCommand::Link), cmd("k")));
+    const std::pair<const char*, MarkdownFormatCommand> levels[] = {
+        {"Paragraph", MarkdownFormatCommand::Paragraph}, {"Heading 1", MarkdownFormatCommand::Heading1},
+        {"Heading 2", MarkdownFormatCommand::Heading2},  {"Heading 3", MarkdownFormatCommand::Heading3},
+        {"Heading 4", MarkdownFormatCommand::Heading4},  {"Heading 5", MarkdownFormatCommand::Heading5},
+        {"Heading 6", MarkdownFormatCommand::Heading6},
+    };
+    for (std::size_t i = 0; i < std::size(levels); ++i) {
+        // Cmd/Ctrl+Alt+0..6 (plain Cmd+digits switch the display mode).
+        format.items.push_back(item(levels[i].first, AppCommand::of(levels[i].second),
+                                    Shortcut{std::to_string(i), true, false, true}, i == 0));
+    }
+    format.items.push_back(
+        item("Bulleted List", AppCommand::of(MarkdownFormatCommand::BulletList), std::nullopt, true));
+    format.items.push_back(item("Numbered List", AppCommand::of(MarkdownFormatCommand::NumberedList)));
+    format.items.push_back(item("Task List", AppCommand::of(MarkdownFormatCommand::TaskList)));
+    format.items.push_back(item("Quote", AppCommand::of(MarkdownFormatCommand::Quote)));
+    bar.push_back(std::move(format));
+
     Menu page{"Page", {}};
     const std::pair<const char*, PageEditCommand> pageItems[] = {
         {"Rotate Left", PageEditCommand::RotateLeft},

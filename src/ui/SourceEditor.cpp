@@ -577,6 +577,14 @@ void SourceEditor::paste() {
 // --- keyboard ------------------------------------------------------------------------
 
 bool SourceEditor::onKey(const KeyEvent& event) {
+    const std::size_t anchor = anchor_;
+    const std::size_t caret = caret_;
+    const bool handled = handleKey(event);
+    if ((anchor != anchor_ || caret != caret_) && onSelectionChanged_) onSelectionChanged_();
+    return handled;
+}
+
+bool SourceEditor::handleKey(const KeyEvent& event) {
     if (!isFocused()) return false;
     const ModifierFlags& mods = event.modifiers;
     const bool primary = mods.command || mods.control;
@@ -711,6 +719,14 @@ bool SourceEditor::onKey(const KeyEvent& event) {
 // --- mouse ----------------------------------------------------------------------------
 
 bool SourceEditor::onMouse(const PointerEvent& event) {
+    const std::size_t anchor = anchor_;
+    const std::size_t caret = caret_;
+    const bool handled = handleMouse(event);
+    if ((anchor != anchor_ || caret != caret_) && onSelectionChanged_) onSelectionChanged_();
+    return handled;
+}
+
+bool SourceEditor::handleMouse(const PointerEvent& event) {
     if (drag_ == DragMode::None && Widget::onMouse(event)) return true; // scrollbars
 
     switch (event.type) {

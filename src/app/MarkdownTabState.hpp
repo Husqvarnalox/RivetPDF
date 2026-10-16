@@ -35,6 +35,27 @@ enum class LineEnding : std::uint8_t { LF, CRLF };
 // How a Markdown tab presents its document. Rendered is the default.
 enum class MarkdownDisplayMode : std::uint8_t { Rendered, Source, Split };
 
+// Format menu commands (ADR-0031). They wrap/unwrap the selection's source in
+// the Rendered view and in the Source view alike; each is one undo step.
+enum class MarkdownFormatCommand : std::uint8_t {
+    Bold,
+    Italic,
+    Strikethrough,
+    Code,
+    Link,
+    Paragraph, // heading level 0
+    Heading1,
+    Heading2,
+    Heading3,
+    Heading4,
+    Heading5,
+    Heading6,
+    BulletList,
+    NumberedList,
+    TaskList,
+    Quote,
+};
+
 // A file's bytes decoded for the text editor.
 struct DecodedText {
     std::string text;            // UTF-8, BOM dropped, every CRLF turned into LF
@@ -97,6 +118,16 @@ public:
     std::string encode() const { return encodeMarkdownBytes(source_, lineEnding_, hasBom_); }
 
     std::uint64_t revision() const { return revision_; }
+    // The newest source mutation: [offset, offset+removed) became `inserted`
+    // bytes, producing `revision`. Views use it to carry carets across edits
+    // made elsewhere (undo/redo, the other pane).
+    struct SourceChange {
+        std::size_t offset = 0;
+        std::size_t removed = 0;
+        std::size_t inserted = 0;
+        std::uint64_t revision = 0;
+    };
+    const SourceChange& lastChange() const { return lastEdit_; }
     // Revision at the last save (the load counts as saved).
     std::uint64_t savedRevision() const { return savedRevision_; }
 
@@ -156,6 +187,7 @@ private:
     bool hasBom_ = false;
     bool mixedLineEndings_ = false;
     std::uint64_t revision_ = 0;
+    SourceChange lastEdit_;
     std::uint64_t savedRevision_ = 0;
     std::uint64_t savedStateId_ = 0;
     MarkdownDisplayMode mode_ = MarkdownDisplayMode::Rendered;
