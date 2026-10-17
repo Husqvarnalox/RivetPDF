@@ -32,11 +32,12 @@ target_link_libraries(rivet_crypto PUBLIC rivet::core)
 
 if(RIVET_ENABLE_CRYPTO)
     find_package(OpenSSL 3 REQUIRED COMPONENTS Crypto)
-    target_sources(rivet_crypto PRIVATE openssl/OpenSslProvider.cpp)
+    target_sources(rivet_crypto PRIVATE openssl/OpenSslProvider.cpp openssl/OpenSslSymmetric.cpp)
     target_compile_definitions(rivet_crypto PUBLIC RIVET_CRYPTO_OPENSSL=1)
     target_link_libraries(rivet_crypto PRIVATE OpenSSL::Crypto)
     message(STATUS "Rivet: crypto backend OpenSSL ${OPENSSL_VERSION}")
 else()
+    target_sources(rivet_crypto PRIVATE SymmetricNull.cpp)
     message(STATUS "Rivet: crypto backend OFF (null provider; RIVET_ENABLE_CRYPTO=OFF)")
 endif()
 
