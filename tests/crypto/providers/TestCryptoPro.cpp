@@ -90,6 +90,14 @@ Bytes makeGostCert(std::string_view curveOid, std::string_view digestOid, std::s
 
 // ---- always run -------------------------------------------------------------
 
+RIVET_TEST(cryptoProRelativeLibraryDirectoryIsRefused) {
+    CryptoProOptions options;
+    options.libraryDirectory = "cryptopro/lib";
+    auto store = makeCryptoProIdentityStore(options);
+    CHECK(store != nullptr);
+    CHECK(!store->isAvailable());
+}
+
 RIVET_TEST(cryptoProUnavailableBackendIsGraceful) {
     CryptoProOptions options;
     options.libraryDirectory = "/nonexistent/cryptopro/lib";

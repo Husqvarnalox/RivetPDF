@@ -35,6 +35,11 @@ CspApi::~CspApi() {
 std::shared_ptr<const CspApi> CspApi::load(const std::string& libraryDirectory, std::string& reason) {
     std::vector<std::string> dirs;
     if (!libraryDirectory.empty()) {
+        // A relative directory would be resolved against the working directory (library planting).
+        if (libraryDirectory.front() != '/') {
+            reason = "CryptoProOptions::libraryDirectory must be an absolute path";
+            return nullptr;
+        }
         dirs.push_back(libraryDirectory);
     } else {
         for (const char* d : {"/opt/cprocsp/lib", "/opt/cprocsp/lib/aarch64", "/opt/cprocsp/lib/amd64",

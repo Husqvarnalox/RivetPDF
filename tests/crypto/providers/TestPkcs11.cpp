@@ -661,6 +661,27 @@ RIVET_TEST(factoryReportsBuildMode) {
     CHECK(store->assurance() == ProviderAssurance::HardwareToken);
 }
 
+RIVET_TEST(relativeModulePathIsRefused) {
+    // Security review: a relative module path (cwd / loader search path planting) is never loaded.
+    const auto dir = std::filesystem::temp_directory_path() / "rivet_pkcs11_relpath";
+    std::filesystem::create_directories(dir);
+    const auto file = dir / "libplanted.so";
+    {
+        std::ofstream f(file, std::ios::binary);
+        f << "x";
+    }
+    std::error_code ec;
+    const auto rel = std::filesystem::relative(file, std::filesystem::current_path(), ec);
+    Pkcs11Options options;
+    options.modulePath = ec ? std::filesystem::path("libplanted.so") : rel;
+    CHECK(!options.modulePath.is_absolute());
+    auto store = makePkcs11IdentityStore(options);
+    CHECK(store != nullptr);
+    CHECK(!store->isAvailable());
+    if (kPkcs11Built) CHECK(store->unavailableReason().find("absolute") != std::string::npos);
+    std::filesystem::remove_all(dir, ec);
+}
+
 RIVET_TEST(nonModuleFileIsUnavailableNotACrash) {
     const auto dir = std::filesystem::temp_directory_path() / "rivet_pkcs11_nonmodule";
     std::filesystem::create_directories(dir);

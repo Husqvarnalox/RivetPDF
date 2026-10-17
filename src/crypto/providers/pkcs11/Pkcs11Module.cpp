@@ -109,6 +109,9 @@ std::string trimField(const unsigned char* data, std::size_t size) {
 
 CryptoResult<std::shared_ptr<Pkcs11Module>> Pkcs11Module::acquire(const std::filesystem::path& path) {
     if (path.empty()) return fail(CryptoErrorCode::BackendUnavailable, "no PKCS#11 module path configured");
+    // A relative path would be resolved against the working directory or the loader search path (planting).
+    if (!path.is_absolute())
+        return fail(CryptoErrorCode::BackendUnavailable, "the PKCS#11 module path must be absolute: " + path.string());
     std::error_code ec;
     if (!std::filesystem::exists(path, ec))
         return fail(CryptoErrorCode::BackendUnavailable, "PKCS#11 module not found: " + path.string());
