@@ -3,17 +3,21 @@
 # rivet_crypto; it never touches PDFium and never rebuilds the document.
 
 add_library(rivet_pdf_sign STATIC
+    LtvChain.cpp
+    PdfDss.cpp
     PdfFile.cpp
     PdfInflate.cpp
     PdfObject.cpp
+    PdfLtv.cpp
     PdfSignatureVerifier.cpp
     PdfSigner.cpp
+    RevisionWriter.cpp
     SignError.cpp
 )
 add_library(rivet::pdf_sign ALIAS rivet_pdf_sign)
 
 target_include_directories(rivet_pdf_sign PUBLIC ${CMAKE_SOURCE_DIR}/src)
-target_link_libraries(rivet_pdf_sign PUBLIC rivet::core rivet::crypto)
+target_link_libraries(rivet_pdf_sign PUBLIC rivet::core rivet::crypto rivet::revocation)
 
 rivet_set_target_warnings(rivet_pdf_sign)
 rivet_set_target_sanitizers(rivet_pdf_sign)
@@ -27,6 +31,6 @@ rivet_set_target_sanitizers(rivet-pdf-signature-inspect)
 # Dev/test tool: signs a PDF with a PKCS#12 identity and creates throwaway TEST
 # identities. The password comes from RIVET_P12_PASSWORD or stdin, never argv.
 add_executable(rivet-pdf-sign tools/PdfSignMain.cpp)
-target_link_libraries(rivet-pdf-sign PRIVATE rivet::pdf_sign rivet::timestamp rivet::net)
+target_link_libraries(rivet-pdf-sign PRIVATE rivet::pdf_sign rivet::timestamp rivet::revocation)
 rivet_set_target_warnings(rivet-pdf-sign)
 rivet_set_target_sanitizers(rivet-pdf-sign)

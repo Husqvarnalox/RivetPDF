@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 #include "pdf/sign/PdfSigner.hpp"
+#include "pdf/sign/PdfLtv.hpp"
 
 #include "core/io/AtomicFileWriter.hpp"
 
@@ -699,17 +700,40 @@ void fillContents(Layout& L, const Bytes& der) {
 
 } // namespace
 
-std::string_view toString(PadesLevel level) {
-    switch (level) {
-    case PadesLevel::NotPades: return "not PAdES";
-    case PadesLevel::BaselineB: return "PAdES B-B";
-    case PadesLevel::BaselineT: return "PAdES B-T";
-    }
-    return "?";
-}
+static SignResult<SignedPdf> signPdfBase(Bytes pdf, const SignRequest& req, crypto::CryptoProvider& provider,
+                                         crypto::SigningIdentity& identity);
 
 SignResult<SignedPdf> signPdf(Bytes pdf, const SignRequest& req, crypto::CryptoProvider& provider,
                               crypto::SigningIdentity& identity) {
+    if (!req.targetLevel) return signPdfBase(std::move(pdf), req, provider, identity);
+    const PadesLevel level = *req.targetLevel;
+    if (level == PadesLevel::NotPades) return fail(SignErrorCode::InvalidArgument, "targetLevel must be a PAdES level");
+    if (req.profile != SignatureProfile::PadesBaselineB)
+        return fail(SignErrorCode::InvalidArgument, "targetLevel needs the PAdES profile (ETSI.CAdES.detached)");
+    SignRequest r = req;
+    if (level == PadesLevel::BaselineB) r.timestamp.fetch = nullptr;
+    else if (!r.timestamp.fetch)
+        return fail(SignErrorCode::InvalidArgument, "B-T and higher need a signature time-stamp source (timestamp.fetch)");
+    const std::size_t inputSize = pdf.size();
+    auto base = signPdfBase(std::move(pdf), r, provider, identity);
+    if (!base || level <= PadesLevel::BaselineT) {
+        if (base && level == PadesLevel::BaselineT && !base->timestamped)
+            base->levelDowngradeReason = "no signature time-stamp: " + base->timestampSkippedReason;
+        return base;
+    }
+    if (!base->timestamped) {
+        base->levelDowngradeReason = "no signature time-stamp: " + base->timestampSkippedReason;
+        return base;
+    }
+    base->inputSize = inputSize;
+    const TimestampFetcher archive = req.archiveTimestamp ? req.archiveTimestamp : req.timestamp.fetch;
+    if (auto fin = detail::finishLtv(*base, level, req.ltv, archive, req.timestamp.digest, provider); !fin)
+        return std::unexpected(fin.error());
+    return base;
+}
+
+static SignResult<SignedPdf> signPdfBase(Bytes pdf, const SignRequest& req, crypto::CryptoProvider& provider,
+                                         crypto::SigningIdentity& identity) {
     if (req.cancel.cancelled()) return fail(SignErrorCode::Cancelled, "cancelled");
     if (auto ok = crypto::checkCreationAllowed(req.digest); !ok) return failCrypto(ok.error());
     if (req.timestamp.fetch)
@@ -955,7 +979,7 @@ SignResult<Bytes> readWhole(const std::filesystem::path& path) {
 
 } // namespace
 
-namespace {
+namespace detail {
 
 // Reads `input`, lets `produce` build the new file, writes it to a temporary
 // file next to `output`, reads it back, checks that the input bytes are an
@@ -996,7 +1020,7 @@ SignResult<SignedPdf> transactionalFile(const std::filesystem::path& input, cons
         for (const PdfSignatureInfo& s : *verified)
             if (s.signatureRef && *s.signatureRef == signedPdf->signatureRef &&
                 s.validation.crypto == crypto::CryptoCheck::Valid && s.validation.integrity == crypto::IntegrityStatus::Intact &&
-                s.coversWholeFile)
+                (s.coversWholeFile || signedPdf->ltvOperation))
                 ok = true;
     if (!ok) return abort(SignError{SignErrorCode::SelfVerifyFailed, "the written file did not verify", std::nullopt});
     back->clear();
@@ -1007,19 +1031,18 @@ SignResult<SignedPdf> transactionalFile(const std::filesystem::path& input, cons
     return signedPdf;
 }
 
-
-} // namespace
+} // namespace detail
 
 SignResult<SignedPdf> signPdfFile(const std::filesystem::path& input, const std::filesystem::path& output,
                                   const SignRequest& req, crypto::CryptoProvider& provider,
                                   crypto::SigningIdentity& identity) {
-    return transactionalFile(input, output, provider,
+    return detail::transactionalFile(input, output, provider,
                              [&](Bytes data) { return signPdf(std::move(data), req, provider, identity); });
 }
 
 SignResult<SignedPdf> timestampPdfFile(const std::filesystem::path& input, const std::filesystem::path& output,
                                        const DocTimestampRequest& req, crypto::CryptoProvider& provider) {
-    return transactionalFile(input, output, provider,
+    return detail::transactionalFile(input, output, provider,
                              [&](Bytes data) { return timestampPdf(std::move(data), req, provider); });
 }
 

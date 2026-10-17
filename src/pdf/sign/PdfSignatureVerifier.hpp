@@ -10,6 +10,7 @@
 
 #include "crypto/Cms.hpp"
 #include "pdf/sign/PdfFile.hpp"
+#include "pdf/sign/PdfLtvTypes.hpp"
 
 #include <array>
 #include <chrono>
@@ -40,6 +41,13 @@ struct VerifyOptions {
     const crypto::TrustAnchorSet* timestampAnchors = nullptr;
     std::chrono::system_clock::time_point validationTime = std::chrono::system_clock::now();
     std::vector<crypto::Bytes> extraCertificates;
+    // Long-term validation (ADR-0045). The embedded /DSS and /VRI evidence is
+    // always examined offline (zero network calls); the full B-LT / B-LTA
+    // evaluation needs `anchors`.
+    bool evaluateLtv = true;
+    // true (default): B-LT needs a /VRI entry for the signature (ETSI EN 319 142-1 5.4.2).
+    // false: a document-wide /DSS without a /VRI entry is accepted as evidence.
+    bool requireVri = true;
     crypto::CancelToken cancel;
 };
 
@@ -49,6 +57,34 @@ struct VerifyOptions {
 enum class SignatureKind : std::uint8_t { Signature, DocumentTimestamp };
 
 std::string_view toString(SignatureKind kind);
+
+// Long-term-validation view of one signature or document time-stamp, from the
+// embedded /DSS only. Nothing here is ever fetched.
+struct LtvInfo {
+    bool dssPresent = false;
+    bool vriPresent = false;        // a /VRI entry keyed by the SHA-1 of this signature's /Contents
+    std::string vriKey;
+    std::size_t vriCertificates = 0, vriOcspResponses = 0, vriCrls = 0;
+    bool evaluated = false;         // path and offline revocation were evaluated
+    bool signerEvidenceComplete = false;     // every non-anchor certificate of the signer chain has verified evidence
+    bool timestampEvidenceComplete = false;  // same for the TSA chain of the signature time-stamp
+    std::optional<std::chrono::system_clock::time_point> validationTime; // the signature time-stamp genTime
+    // A valid document time-stamp, made after the revision that completed the
+    // validation data, covers the /DSS (the archival B-LTA property).
+    bool dssCoveredByTimestamp = false;
+    std::optional<std::chrono::system_clock::time_point> coveringTimestampTime;
+    std::vector<std::string> missing; // certificates without evidence, path problems
+    std::vector<std::string> reasons; // why the achieved level is not higher
+    std::vector<std::string> limitations;
+};
+
+// Raw material the LTV collector needs (filled for every signature and
+// document time-stamp whose /Contents parsed).
+struct LtvMaterial {
+    crypto::Bytes contentsDer;                    // /Contents, zero padding trimmed
+    std::vector<crypto::Bytes> cmsCertificates;   // certificates embedded in the signature CMS
+    std::vector<crypto::Bytes> tokenCertificates; // certificates embedded in the time-stamp token
+};
 
 struct PdfSignatureInfo {
     std::size_t index = 0;            // order of discovery (field tree order)
@@ -80,6 +116,11 @@ struct PdfSignatureInfo {
     // failure reason and status.
     std::optional<crypto::SignatureTimestampInfo> timestamp;
     crypto::ValidationResult validation;
+    // The honest PAdES baseline level reached, with reasons in `ltv.reasons`.
+    // Meaningful for kind == Signature; document time-stamps report NotPades.
+    PadesLevel level = PadesLevel::NotPades;
+    LtvInfo ltv;
+    LtvMaterial material;
 };
 
 // Verifies every signature reachable from /AcroForm /Fields and /Perms

@@ -8,6 +8,7 @@
 // signatures stay byte-identical and valid.
 
 #include "crypto/timestamp/TimeStamp.hpp"
+#include "pdf/sign/PdfLtvTypes.hpp"
 #include "pdf/sign/PdfSignatureVerifier.hpp"
 
 #include <array>
@@ -52,15 +53,6 @@ using TimestampFetcher = std::function<crypto::CryptoResult<crypto::TimeStampVer
 // Default /Contents room added for an RFC 3161 token (TSA chain included).
 inline constexpr std::size_t kDefaultTimestampTokenReserve = 8192;
 
-// PAdES baseline level actually reached by a produced signature.
-enum class PadesLevel : std::uint8_t {
-    NotPades,   // adbe.pkcs7.detached
-    BaselineB,  // ETSI.CAdES.detached, no signature time-stamp
-    BaselineT,  // ... plus a signature time-stamp (id-aa-signatureTimeStampToken)
-};
-
-std::string_view toString(PadesLevel level);
-
 // PAdES B-T / signature time-stamp step of signPdf (ADR-0038).
 struct SignatureTimestampOptions {
     // Empty: no time-stamp (B-B). Otherwise the token is requested for the hash
@@ -104,6 +96,17 @@ struct SignRequest {
     // Testing / tuning: when non-zero, the exact initial /Contents capacity in bytes.
     std::size_t initialReserveOverride = 0;
     SignatureTimestampOptions timestamp;
+    // One-shot PAdES level (ADR-0045). nullopt: the pre-LTV behaviour (B-B, or
+    // B-T when `timestamp.fetch` is set). Otherwise: B-B ignores `timestamp`;
+    // B-T needs `timestamp.fetch`; B-LT additionally collects the signer and TSA
+    // chains' OCSP/CRL evidence through `ltv` and adds /DSS + /VRI; B-LTA also
+    // adds an archival document time-stamp (`archiveTimestamp`, default:
+    // `timestamp.fetch`). Missing mandatory evidence fails the whole operation
+    // (nothing is returned) unless `ltv.allowPartial`, in which case the level
+    // actually reached and the reason are reported in SignedPdf.
+    std::optional<PadesLevel> targetLevel;
+    LtvOptions ltv;
+    TimestampFetcher archiveTimestamp;
     crypto::CancelToken cancel;
 };
 
@@ -123,6 +126,14 @@ struct SignedPdf {
     std::string timestampSkippedReason;  // signing went ahead without a time-stamp (allowSignWithoutTimestamp)
     std::optional<std::chrono::system_clock::time_point> timestampGenTime;
     std::string timestampTsaSubject;
+    // LTV (signPdf with targetLevel, upgradePdf, addArchiveTimestamp). `level`
+    // is then the honest level the verifier measured, not the requested one.
+    std::string levelDowngradeReason;    // empty when the requested level was reached
+    bool ltvOperation = false;           // produced by the LTV code (later revisions follow the signature)
+    std::size_t dssCertificates = 0, dssOcspResponses = 0, dssCrls = 0; // evidence handed to the /DSS writer
+    std::size_t dssNewStreams = 0, dssReusedStreams = 0;
+    bool archiveTimestamped = false;     // a document time-stamp revision was appended
+    std::vector<std::string> ltvNotes;   // AIA / policy / limitation notes
 };
 
 // Signs `pdf` in memory. Refuses encrypted documents (EncryptedDocument),
@@ -154,6 +165,14 @@ struct DocTimestampRequest {
 SignResult<SignedPdf> timestampPdf(Bytes pdf, const DocTimestampRequest& request, crypto::CryptoProvider& provider);
 SignResult<SignedPdf> timestampPdfFile(const std::filesystem::path& input, const std::filesystem::path& output,
                                        const DocTimestampRequest& request, crypto::CryptoProvider& provider);
+
+namespace detail {
+// Shared by the file variants: reads `input`, lets `produce` build the new file,
+// verifies the temporary output and renames it atomically.
+SignResult<SignedPdf> transactionalFile(const std::filesystem::path& input, const std::filesystem::path& output,
+                                        crypto::CryptoProvider& provider,
+                                        const std::function<SignResult<SignedPdf>(Bytes)>& produce);
+} // namespace detail
 
 // Transactional file signing: reads `input`, signs, writes a temporary file
 // next to `output`, reads it back and verifies it (signature valid, input

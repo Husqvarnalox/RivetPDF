@@ -13,6 +13,7 @@
 #include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 namespace rivet::pdf::sign {
 
@@ -30,6 +31,8 @@ enum class SignErrorCode : std::uint8_t {
     ContentsPlaceholderTooSmall, // the final CMS / time-stamp token does not fit the reserved /Contents (timestamped signing); SignError::requiredBytes says how much
     TimestampFailed,         // the RFC 3161 step failed and the request does not allow signing without it
     SelfVerifyFailed,
+    EvidenceUnavailable,     // B-LT / B-LTA: mandatory validation evidence could not be collected; SignError::missingEvidence lists it (ADR-0045)
+    UnsupportedUpgrade,      // the requested PAdES level cannot be reached from this document (e.g. B-B to B-T)
     Crypto,
     Io,
     Cancelled,
@@ -43,6 +46,7 @@ struct SignError {
     std::string message;
     std::optional<crypto::CryptoErrorCode> cryptoCode;
     std::size_t requiredBytes = 0; // ContentsPlaceholderTooSmall: the /Contents capacity that would have been needed
+    std::vector<std::string> missingEvidence{}; // EvidenceUnavailable: certificates / chains without usable evidence
 };
 
 template <typename T>

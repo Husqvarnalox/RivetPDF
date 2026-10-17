@@ -2,11 +2,14 @@
 #include "pdf/sign/PdfSignatureVerifier.hpp"
 
 #include "crypto/timestamp/TimeStamp.hpp"
+#include "pdf/sign/LtvChain.hpp"
+#include "pdf/sign/PdfDss.hpp"
 
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
 #include <ctime>
+#include <map>
 #include <set>
 #include <sstream>
 
@@ -170,6 +173,7 @@ public:
     struct Outcome {
         ModificationStatus status = ModificationStatus::None;
         std::vector<std::string> notes;
+        bool validationDataOnly = false; // later revisions only add /DSS validation data (ADR-0045)
     };
 
     Outcome run() {
@@ -211,6 +215,11 @@ public:
             if (docTsOnly_ && (classes_ & ~(kSign | kDss)) == 0) {
                 out.status = ModificationStatus::None;
                 out.notes.push_back("followed only by a document time-stamp revision");
+            } else if (classes_ == kDss) {
+                // Validation data is not content: it never changes what the signature covers.
+                out.status = ModificationStatus::None;
+                out.validationDataOnly = true;
+                out.notes.push_back("followed only by validation data (/DSS)");
             } else {
                 out.status = ModificationStatus::Permitted;
             }
@@ -268,6 +277,7 @@ private:
         if (!cat) return false;
         catalogNum_ = cat->first.num;
         const PdfDict& cd = cat->second;
+        if (const PdfObject* dss = cd.find("DSS")) collectDssObjects(*dss, 0);
         if (const PdfObject* af = cd.find("AcroForm"); af && af->isRef()) {
             acroformNum_ = af->ref.num;
             const PdfObject a = f_.resolve(*af, k_);
@@ -362,6 +372,23 @@ private:
         return true;
     }
 
+    // Object numbers reachable from the catalog /DSS (bounded): validation data, not content.
+    void collectDssObjects(const PdfObject& o, int depth) {
+        if (depth > 5 || dssObjs_.size() > 200000) return;
+        if (o.isRef()) {
+            if (!dssObjs_.insert(o.ref.num).second) return;
+            const PdfObject r = f_.resolve(o, k_);
+            collectDssObjects(r, depth + 1);
+        } else if (o.isArray()) {
+            for (const PdfObject& e : *o.array) collectDssObjects(e, depth + 1);
+        } else if (o.isDict()) {
+            for (const auto& [key, v] : o.dict->entries) {
+                (void)key;
+                collectDssObjects(v, depth + 1);
+            }
+        }
+    }
+
     // Is `name` covered by the signature's field lock?
     bool locked(const std::string& name) const {
         switch (lock_.action) {
@@ -383,6 +410,10 @@ private:
         if (!before.value) {
             if (after.value && after.value->isDict() && after.value->dict->isType("XRef")) return;
             return; // a new object: only matters through the objects that reference it
+        }
+        if (dssObjs_.count(n)) {
+            classes_ |= kDss; // validation data of the signed revision, extended or merged later
+            return;
         }
         if (!after.value) {
             disallow("object " + std::to_string(n) + " was deleted");
@@ -575,7 +606,7 @@ private:
     bool docTsOnly_ = false;
     std::uint32_t catalogNum_ = 0, acroformNum_ = 0, fieldsArrayNum_ = 0;
     std::set<std::uint32_t> fieldObjs_, sigFieldObjs_, signedFieldObjs_, sigDictObjs_, apStreams_;
-    std::set<std::uint32_t> pageNums_, pageTreeNodes_, annotsArrays_, annotObjs_;
+    std::set<std::uint32_t> pageNums_, pageTreeNodes_, annotsArrays_, annotObjs_, dssObjs_;
     std::map<std::uint32_t, std::string> fieldName_;
     unsigned classes_ = 0;
     bool disallowed_ = false;
@@ -653,6 +684,215 @@ struct Found {
     bool duplicate = false;
 };
 
+// Raw material of one signature kept for the LTV pass.
+struct Side {
+    Bytes contentsDer;           // /Contents with the zero padding trimmed
+    Bytes contentsRaw;           // /Contents exactly as stored
+    std::vector<Bytes> cmsCerts; // certificates in the signature CMS
+    Bytes tokenDer;              // signature time-stamp token (signature) / the token itself (document time-stamp)
+    std::vector<Bytes> tokenCerts;
+};
+
+void addLimit(LtvInfo& l, const std::string& s) {
+    if (l.limitations.size() < 12 && std::find(l.limitations.begin(), l.limitations.end(), s) == l.limitations.end())
+        l.limitations.push_back(s);
+}
+
+void absorb(LtvInfo& l, const ltv::ChainEvidence& ce) {
+    for (const std::string& m : ce.missing)
+        if (l.missing.size() < 24) l.missing.push_back(m);
+    for (const std::string& m : ce.path.limitations) addLimit(l, m);
+    for (const std::string& m : ce.path.weakNotes) addLimit(l, m);
+}
+
+bool sameItems(const std::vector<DssItem>& wanted, const std::vector<DssItem>& have) {
+    for (const DssItem& w : wanted) {
+        const bool found = std::any_of(have.begin(), have.end(), [&](const DssItem& h) {
+            return h.ref == w.ref && h.data == w.data;
+        });
+        if (!found) return false;
+    }
+    return true;
+}
+
+// TSA chain of a time-stamp token against the embedded evidence, at the token's genTime.
+ltv::ChainEvidence checkTsaChain(crypto::CryptoProvider& provider, const VerifyOptions& options, const Side& side,
+                                 const std::string& tsaSubject, const DssEvidence& ev, crypto::TimePoint genTime,
+                                 const std::shared_ptr<crypto::VectorEvidenceStore>& store) {
+    std::vector<Bytes> poolDer = side.tokenCerts;
+    for (const DssItem& c : ev.certs) poolDer.push_back(c.data);
+    for (const Bytes& c : options.extraCertificates) poolDer.push_back(c);
+    const auto pool = ltv::parseCertificates(provider, poolDer);
+    const crypto::TrustAnchorSet* anchors = options.timestampAnchors ? options.timestampAnchors : options.anchors;
+    crypto::RevocationPolicy policy;
+    policy.allowNetwork = false;
+    policy.store = store;
+    ltv::ChainEvidence best;
+    bool any = false;
+    for (const crypto::CertificateInfo& cand : ltv::parseCertificates(provider, side.tokenCerts)) {
+        if (!tsaSubject.empty() && cand.subject != tsaSubject) continue;
+        ltv::ChainInput in;
+        in.role = "time-stamp authority";
+        in.leaf = cand;
+        in.anchors = anchors;
+        in.pool = pool;
+        in.validationTime = genTime;
+        in.now = options.validationTime;
+        ltv::ChainEvidence ce = ltv::checkChain(provider, in, nullptr, policy, options.cancel);
+        if (!any || ce.complete) best = std::move(ce);
+        any = true;
+        if (best.complete) break;
+    }
+    if (!any) best.missing.push_back("the time-stamp token carries no certificate of the time-stamp authority");
+    return best;
+}
+
+// Fills `level` and `ltv` of every signature / document time-stamp from the embedded /DSS.
+// Offline by construction: no network object is ever passed down.
+void evaluateLtv(PdfFile& f, crypto::CryptoProvider& provider, const VerifyOptions& options,
+                 std::vector<PdfSignatureInfo>& results, const std::map<std::size_t, Side>& sides) {
+    const DssData dss = readDss(f, 0);
+    for (const auto& [idx, side] : sides) {
+        PdfSignatureInfo& r = results[idx];
+        LtvInfo& L = r.ltv;
+        r.material = LtvMaterial{side.contentsDer, side.cmsCerts, side.tokenCerts};
+        L.dssPresent = dss.present;
+        addLimit(L, "certificate policies and name constraints are not evaluated; delta CRLs are not processed");
+        const VriEntry* entry = nullptr;
+        for (const Bytes* cand : {&side.contentsDer, &side.contentsRaw}) {
+            auto k = vriKey(provider, *cand);
+            if (!k) continue;
+            if (L.vriKey.empty()) L.vriKey = *k;
+            if (auto it = dss.vri.find(*k); it != dss.vri.end()) {
+                entry = &it->second;
+                L.vriKey = *k;
+                break;
+            }
+        }
+        L.vriPresent = entry != nullptr;
+        if (entry) {
+            L.vriCertificates = entry->evidence.certs.size();
+            L.vriOcspResponses = entry->evidence.ocsps.size();
+            L.vriCrls = entry->evidence.crls.size();
+        }
+        const bool isSig = r.kind == SignatureKind::Signature;
+        if (isSig && r.level != PadesLevel::BaselineT) {
+            if (r.level == PadesLevel::BaselineB) L.reasons.push_back("no verified signature time-stamp (not B-T)");
+            else L.reasons.push_back("not a PAdES baseline signature");
+            continue;
+        }
+        if (!options.evaluateLtv) continue;
+        if (!dss.present) {
+            L.reasons.push_back("the document has no /DSS");
+            continue;
+        }
+        if (!entry && options.requireVri) {
+            L.reasons.push_back("no /VRI entry for this signature (expected key " + L.vriKey + ")");
+            continue;
+        }
+        const crypto::SignatureTimestampInfo* ts = r.timestamp ? &*r.timestamp : nullptr;
+        if (!ts || !ts->genTime) {
+            L.reasons.push_back("the time-stamp time is unknown");
+            continue;
+        }
+        L.validationTime = ts->genTime;
+        if (!options.anchors && !options.timestampAnchors) {
+            L.reasons.push_back("no trust anchors were supplied: the chains cannot be validated");
+            continue;
+        }
+        const DssEvidence& ev = entry ? entry->evidence : dss.global;
+        auto store = std::make_shared<crypto::VectorEvidenceStore>();
+        for (const DssItem& o : ev.ocsps) store->addOcsp(o.data);
+        for (const DssItem& c : ev.crls) store->addCrl(c.data);
+        L.evaluated = true;
+
+        if (!isSig) {
+            // A document time-stamp: only the TSA chain of its token is judged.
+            const auto ce = checkTsaChain(provider, options, side, ts->tsaSubject, ev, *ts->genTime, store);
+            L.timestampEvidenceComplete = ce.complete;
+            absorb(L, ce);
+            continue;
+        }
+
+        if (r.validation.crypto != CryptoCheck::Valid || r.validation.integrity != IntegrityStatus::Intact) {
+            L.reasons.push_back("the signature itself does not verify");
+            continue;
+        }
+        if (r.validation.modification == ModificationStatus::Disallowed ||
+            r.validation.modification == ModificationStatus::Unknown) {
+            L.reasons.push_back("later changes to the document could not be accepted");
+            continue;
+        }
+        if (!r.signer || !options.anchors) {
+            L.reasons.push_back("no trust anchors were supplied for the signer chain");
+            continue;
+        }
+
+        std::vector<Bytes> poolDer = side.cmsCerts;
+        for (const DssItem& c : ev.certs) poolDer.push_back(c.data);
+        for (const Bytes& c : options.extraCertificates) poolDer.push_back(c);
+        crypto::RevocationPolicy policy;
+        policy.allowNetwork = false;
+        policy.store = store;
+        ltv::ChainInput in;
+        in.role = "signer";
+        in.leaf = *r.signer;
+        in.anchors = options.anchors;
+        in.pool = ltv::parseCertificates(provider, poolDer);
+        in.validationTime = *ts->genTime;
+        in.now = options.validationTime;
+        const ltv::ChainEvidence signerChain = ltv::checkChain(provider, in, nullptr, policy, options.cancel);
+        L.signerEvidenceComplete = signerChain.complete;
+        absorb(L, signerChain);
+        const ltv::ChainEvidence tsaChain = checkTsaChain(provider, options, side, ts->tsaSubject, ev, *ts->genTime, store);
+        L.timestampEvidenceComplete = tsaChain.complete;
+        absorb(L, tsaChain);
+        if (!L.signerEvidenceComplete || !L.timestampEvidenceComplete) {
+            L.reasons.push_back(std::string("validation material is incomplete for the ") +
+                                (!L.signerEvidenceComplete ? "signer chain" : "time-stamp authority chain"));
+            continue;
+        }
+        r.level = PadesLevel::BaselineLT;
+
+        // ---- B-LTA: a valid document time-stamp made after the revision that completed the evidence.
+        const std::size_t n = f.sectionCount();
+        if (n > 64) {
+            L.reasons.push_back("too many revisions to establish when the validation data was added");
+            continue;
+        }
+        std::optional<std::size_t> introduced;
+        for (std::size_t i = n; i-- > 0;) {
+            const DssData at = readDss(f, i);
+            const DssEvidence* have = &at.global;
+            if (entry) {
+                const auto it = at.vri.find(entry->key);
+                if (it == at.vri.end()) continue;
+                have = &it->second.evidence;
+            }
+            if (sameItems(ev.certs, have->certs) && sameItems(ev.ocsps, have->ocsps) && sameItems(ev.crls, have->crls)) {
+                introduced = i;
+                break;
+            }
+        }
+        const std::uint64_t dssEnd = introduced ? f.section(*introduced).eofEnd : 0;
+        if (dssEnd == 0) {
+            L.reasons.push_back("the revision that added the validation data could not be located");
+            continue;
+        }
+        for (const PdfSignatureInfo& d : results) {
+            if (d.kind != SignatureKind::DocumentTimestamp || d.byteRange.size() != 4) continue;
+            if (d.validation.crypto != CryptoCheck::Valid || d.validation.integrity != IntegrityStatus::Intact) continue;
+            if (!d.timestamp || !d.timestamp->verified || !d.timestamp->genTime) continue;
+            if (d.byteRange[1] < static_cast<std::int64_t>(dssEnd)) continue; // does not cover the DSS revision
+            L.dssCoveredByTimestamp = true;
+            if (!L.coveringTimestampTime || *d.timestamp->genTime < *L.coveringTimestampTime)
+                L.coveringTimestampTime = d.timestamp->genTime;
+        }
+        if (L.dssCoveredByTimestamp) r.level = PadesLevel::BaselineLTA;
+        else L.reasons.push_back("the validation data is not covered by a later valid document time-stamp");
+    }
+}
+
 } // namespace
 
 SignResult<std::vector<PdfSignatureInfo>> verifyPdfSignatures(ByteView pdf, crypto::CryptoProvider& provider,
@@ -715,6 +955,7 @@ SignResult<std::vector<PdfSignatureInfo>> verifyPdfSignatures(ByteView pdf, cryp
     results.reserve(found.size());
     const std::uint64_t fileSize = pdf.size();
     std::vector<Shape> shapes;
+    std::map<std::size_t, Side> sides;
     shapes.reserve(found.size());
     for (const Found& fd : found) shapes.push_back(shapeOf(pdf, f, fd.ref));
 
@@ -859,7 +1100,8 @@ SignResult<std::vector<PdfSignatureInfo>> verifyPdfSignatures(ByteView pdf, cryp
                 auto r = an.run();
                 v.modification = r.status;
                 for (auto& n : r.notes) v.notes.push_back(std::move(n));
-                if (r.status == ModificationStatus::None && !info.coversWholeFile && !(later && onlyDocTs)) {
+                if (r.status == ModificationStatus::None && !info.coversWholeFile && !(later && onlyDocTs) &&
+                    !r.validationDataOnly) {
                     v.modification = ModificationStatus::Unknown;
                     v.notes.push_back("data follows the last revision");
                 }
@@ -884,6 +1126,14 @@ SignResult<std::vector<PdfSignatureInfo>> verifyPdfSignatures(ByteView pdf, cryp
                 continue;
             }
             info.hasTimestampToken = false;
+            {
+                Side sd2;
+                sd2.contentsRaw.assign(contents->text.begin(), contents->text.end());
+                sd2.contentsDer = token;
+                sd2.tokenDer = token;
+                sd2.tokenCerts = model->certificates;
+                sides[idx] = std::move(sd2);
+            }
             crypto::SignatureTimestampInfo ti;
             ti.genTime = tst->genTime;
             ti.serialHex = tst->serialHex;
@@ -1008,6 +1258,18 @@ SignResult<std::vector<PdfSignatureInfo>> verifyPdfSignatures(ByteView pdf, cryp
         v = s0.validation;
 
         const crypto::CmsSignerInfo& si = model->signers[0];
+        {
+            Side sd2;
+            sd2.contentsRaw.assign(contents->text.begin(), contents->text.end());
+            sd2.contentsDer = der;
+            sd2.cmsCerts = model->certificates;
+            if (const crypto::CmsAttribute* a = si.findUnsigned(crypto::oid::kSignatureTimeStampToken);
+                a && !a->values.empty()) {
+                sd2.tokenDer = a->values[0];
+                if (auto tm = crypto::parseCms(sd2.tokenDer)) sd2.tokenCerts = tm->certificates;
+            }
+            sides[idx] = std::move(sd2);
+        }
         if (info.subFilter == "ETSI.CAdES.detached") {
             const bool essV2 = si.findSigned(crypto::oid::kSigningCertificateV2) != nullptr;
             const bool hasTime = si.findSigned(crypto::oid::kSigningTime) != nullptr;
@@ -1017,6 +1279,9 @@ SignResult<std::vector<PdfSignatureInfo>> verifyPdfSignatures(ByteView pdf, cryp
                                   si.findSigned(crypto::oid::kMessageDigest) && si.findSigned(crypto::oid::kContentType) &&
                                   s0.digest && !crypto::isLegacy(*s0.digest) && v.crypto == CryptoCheck::Valid;
             info.padesBaselineT = info.padesBaselineB && s0.timestamp && s0.timestamp->verified;
+            info.level = info.padesBaselineT ? PadesLevel::BaselineT
+                         : info.padesBaselineB ? PadesLevel::BaselineB
+                                               : PadesLevel::NotPades;
         }
 
         analyseModifications();
@@ -1029,7 +1294,13 @@ SignResult<std::vector<PdfSignatureInfo>> verifyPdfSignatures(ByteView pdf, cryp
             v.state = crypto::SignatureState::UnableToValidate;
         results.push_back(std::move(info));
     }
+    evaluateLtv(f, provider, options, results, sides);
     return results;
+}
+
+bool ltv::trimSignatureContents(crypto::Bytes& der) {
+    std::string why;
+    return trimContentsDer(der, why);
 }
 
 std::string_view toString(SignatureKind kind) {
@@ -1061,6 +1332,24 @@ std::string describeSignature(const PdfSignatureInfo& s) {
     if (s.subFilter == "ETSI.CAdES.detached") {
         out << "  PAdES B-B container: " << (s.padesBaselineB ? "yes" : "no") << "\n";
         if (s.hasTimestampToken) out << "  PAdES B-T (verified signature time-stamp): " << (s.padesBaselineT ? "yes" : "no") << "\n";
+    }
+    if (s.kind == SignatureKind::Signature && s.subFilter == "ETSI.CAdES.detached")
+        out << "  PAdES level: " << toString(s.level) << "\n";
+    if (s.ltv.dssPresent || s.level >= PadesLevel::BaselineT) {
+        const LtvInfo& l = s.ltv;
+        out << "  /DSS: " << (l.dssPresent ? "present" : "absent") << ", /VRI entry: " << (l.vriPresent ? "yes" : "no");
+        if (l.vriPresent)
+            out << " (" << l.vriCertificates << " certificates, " << l.vriOcspResponses << " OCSP responses, " << l.vriCrls
+                << " CRLs)";
+        out << "\n";
+        if (l.evaluated) {
+            out << "  LTV evidence (embedded, offline): signer chain " << (l.signerEvidenceComplete ? "complete" : "INCOMPLETE");
+            out << ", time-stamp authority chain " << (l.timestampEvidenceComplete ? "complete" : "INCOMPLETE") << "\n";
+        }
+        if (l.dssCoveredByTimestamp) out << "  validation data covered by a later document time-stamp\n";
+        for (const std::string& m : l.missing) out << "  LTV missing: " << m << "\n";
+        for (const std::string& m : l.reasons) out << "  LTV: " << m << "\n";
+        for (const std::string& m : l.limitations) out << "  LTV limitation: " << m << "\n";
     }
     if (s.timestamp) {
         const crypto::SignatureTimestampInfo& t = *s.timestamp;

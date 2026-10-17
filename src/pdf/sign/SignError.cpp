@@ -18,6 +18,8 @@ std::string_view toString(SignErrorCode code) {
     case SignErrorCode::ContentsPlaceholderTooSmall: return "contents placeholder too small";
     case SignErrorCode::TimestampFailed: return "timestamp failed";
     case SignErrorCode::SelfVerifyFailed: return "self-verification failed";
+    case SignErrorCode::EvidenceUnavailable: return "validation evidence unavailable";
+    case SignErrorCode::UnsupportedUpgrade: return "unsupported upgrade";
     case SignErrorCode::Crypto: return "crypto error";
     case SignErrorCode::Io: return "I/O error";
     case SignErrorCode::Cancelled: return "cancelled";
