@@ -129,10 +129,14 @@ core::Result<std::unique_ptr<PdfDocument>> PdfiumEngine::reopenWithCredentialsOf
 core::Status PdfiumEngine::assembleDocument(const PdfAssemblyRequest& request, IPdfByteSink& sink,
                                            std::vector<PdfAssembledPageAnnotations>* annotationReport,
                                            std::vector<PdfAssembledPageContent>* contentReport) {
+    PdfiumLibrary::instance(); // ensure the library is initialized
     return assembleWithPdfium(*this, request, sink, annotationReport, contentReport);
 }
 
 core::Status PdfiumEngine::buildDocument(const PdfBuildDocument& build, IPdfByteSink& sink) {
+    // A Markdown export can be the first PDFium use of the process (no PDF
+    // opened yet), so the library must be initialized here too.
+    PdfiumLibrary::instance();
     return buildWithPdfium(build, sink);
 }
 
