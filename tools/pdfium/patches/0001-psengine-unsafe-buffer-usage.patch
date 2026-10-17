@@ -1,0 +1,20 @@
+diff --git a/core/fpdfapi/page/cpdf_psengine.cpp b/core/fpdfapi/page/cpdf_psengine.cpp
+index e006a85..0d777ed 100644
+--- a/core/fpdfapi/page/cpdf_psengine.cpp
++++ b/core/fpdfapi/page/cpdf_psengine.cpp
+@@ -449,9 +449,12 @@ bool CPDF_PSEngine::DoOperator(PDF_PSOP op) {
+       if (j > 0) {
+         j -= n;
+       }
+-      auto begin_it = std::begin(stack_) + stack_count_ - n;
+-      auto middle_it = begin_it - j;
+-      auto end_it = std::begin(stack_) + stack_count_;
++      // Local patch (Rivet): index arithmetic instead of raw pointer
++      // arithmetic so the file also builds with the system libc++ and
++      // Chromium's -Wunsafe-buffer-usage plugin (see docs/BUILDING_PDFIUM.md).
++      auto begin_it = std::next(std::begin(stack_), static_cast<std::ptrdiff_t>(stack_count_ - n));
++      auto middle_it = std::next(begin_it, static_cast<std::ptrdiff_t>(-j));
++      auto end_it = std::next(std::begin(stack_), static_cast<std::ptrdiff_t>(stack_count_));
+       std::rotate(begin_it, middle_it, end_it);
+       break;
+     }

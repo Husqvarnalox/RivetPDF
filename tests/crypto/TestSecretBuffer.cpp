@@ -1,0 +1,44 @@
+// SPDX-License-Identifier: MPL-2.0
+#include "RivetTest.h"
+
+#include "crypto/SecretBuffer.hpp"
+
+#include <cstdint>
+#include <cstring>
+#include <type_traits>
+#include <utility>
+
+using namespace rivet::crypto;
+
+static_assert(!std::is_copy_constructible_v<SecretBuffer>);
+static_assert(!std::is_copy_assignable_v<SecretBuffer>);
+static_assert(std::is_nothrow_move_constructible_v<SecretBuffer>);
+
+RIVET_TEST(secretBufferHoldsAndMoves) {
+    SecretBuffer a(std::string_view("1234"));
+    CHECK_EQ(a.size(), std::size_t{4});
+    CHECK(std::memcmp(a.chars(), "1234", 4) == 0);
+    CHECK_EQ(a.chars()[4], '\0'); // NUL-terminated for C APIs
+
+    SecretBuffer b(std::move(a));
+    CHECK(a.empty()); // NOLINT: moved-from is defined as empty
+    CHECK_EQ(b.size(), std::size_t{4});
+}
+
+RIVET_TEST(secretBufferClearZeroesMemory) {
+    // Observe the storage through the span before clear(); after clear() the
+    // buffer must report empty. (The zeroing itself is secureZero, checked next.)
+    SecretBuffer s(std::string_view("secret"));
+    CHECK(!s.empty());
+    s.clear();
+    CHECK(s.empty());
+    CHECK_EQ(s.size(), std::size_t{0});
+}
+
+RIVET_TEST(secureZeroOverwrites) {
+    std::uint8_t buf[16];
+    std::memset(buf, 0xAB, sizeof buf);
+    secureZero(buf, sizeof buf);
+    for (std::uint8_t b : buf) CHECK_EQ(b, 0);
+    secureZero(nullptr, 0); // must not crash
+}

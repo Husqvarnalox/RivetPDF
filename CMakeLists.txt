@@ -42,7 +42,9 @@ if(RIVET_WITH_PDFIUM)
             "    -D RIVET_PDFIUM_ROOT=/absolute/path/to/pdfium-install\n"
             "Expected layout:\n"
             "    <root>/include/fpdfview.h   (plus fpdf_*.h headers)\n"
-            "    <root>/lib/libpdfium.a      (macOS/Linux static; .dylib/.so also accepted)")
+            "    <root>/lib/libpdfium.a      (macOS/Linux static; .dylib/.so also accepted)\n"
+            "    <root>/lib/pdfium.lib       (Windows static)\n"
+            "Reproducible build scripts: tools/pdfium/")
     endif()
     message(STATUS "Rivet: PDFium found: ${PDFIUM_LIBRARY}")
 else()
@@ -54,9 +56,10 @@ endif()
 # problems for this code base.
 if(MSVC)
     add_compile_options(/utf-8 /Zc:__cplusplus /EHsc)
-    add_compile_definitions(_CRT_SECURE_NO_WARNINGS _CRT_NONSTDC_NO_WARNINGS)
+    add_compile_definitions(_CRT_SECURE_NO_WARNINGS _CRT_NONSTDC_NO_WARNINGS NOMINMAX WIN32_LEAN_AND_MEAN)
 endif()
 
+include(RivetMsvcRuntime)
 include(RivetWarnings)
 include(RivetSanitizers)
 
@@ -72,9 +75,11 @@ macro(rivet_add_subdirectory dir)
 endmacro()
 
 rivet_add_subdirectory(src/core)
+rivet_add_subdirectory(src/crypto)
 rivet_add_subdirectory(src/markdown)
 rivet_add_subdirectory(src/render)
 rivet_add_subdirectory(src/pdf)
+rivet_add_subdirectory(src/pdf/sign)
 rivet_add_subdirectory(src/editor)
 rivet_add_subdirectory(src/ui)
 rivet_add_subdirectory(src/platform)

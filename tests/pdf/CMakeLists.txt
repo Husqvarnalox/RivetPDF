@@ -99,3 +99,16 @@ target_compile_definitions(rivet_pdf_tests PRIVATE
 
 rivet_set_target_warnings(rivet_pdf_tests)
 rivet_set_target_sanitizers(rivet_pdf_tests)
+
+# Headless end-to-end smoke (open, render page 1, save a copy through the
+# assembly, reopen): proves a PDFium-ON build links AND runs on this OS. CI
+# runs it on Linux and Windows (PDFium jobs) in addition to the unit tests.
+if(RIVET_WITH_PDFIUM)
+    add_executable(rivet-smoke-open RivetSmokeOpen.cpp)
+    target_link_libraries(rivet-smoke-open PRIVATE rivet::pdfium)
+    target_compile_definitions(rivet-smoke-open PRIVATE
+        RIVET_PDF_FIXTURE_DIR="${CMAKE_SOURCE_DIR}/tests/fixtures")
+    rivet_set_target_warnings(rivet-smoke-open)
+    rivet_set_target_sanitizers(rivet-smoke-open)
+    add_test(NAME pdfium_smoke_open COMMAND rivet-smoke-open)
+endif()
