@@ -27,6 +27,10 @@
 #include <system_error>
 #include <vector>
 
+#ifdef _WIN32
+#include <windows.h>
+#endif
+
 #ifndef RIVET_PDF_TEXT_FIXTURE_DIR
 #define RIVET_PDF_TEXT_FIXTURE_DIR "tests/pdf/fixtures"
 #endif
@@ -214,6 +218,34 @@ PdfAssemblyRequest request(PdfAssemblyRequest::Mode mode, const PdfDocument* bas
 
 void addPage(PdfAssemblyRequest& req, const PdfDocument& source, std::size_t index) {
     req.pages.push_back(PdfAssemblyPage{&source, index, nativeView(source, index), nullptr});
+}
+
+// Atomic replace of `to` by `from`, as a save does. Windows needs POSIX rename semantics so that
+// replacing a file another handle holds open (with FILE_SHARE_DELETE) succeeds; MoveFileEx-style
+// replace answers ERROR_ACCESS_DENIED there.
+void replaceFile(const fs::path& from, const fs::path& to, std::error_code& error) {
+#ifdef _WIN32
+    error.clear();
+    HANDLE handle = ::CreateFileW(from.c_str(), DELETE | SYNCHRONIZE,
+                                  FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
+                                  FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (handle == INVALID_HANDLE_VALUE) {
+        error.assign(static_cast<int>(::GetLastError()), std::system_category());
+        return;
+    }
+    const std::wstring target = fs::absolute(to).wstring();
+    std::vector<char> buffer(sizeof(FILE_RENAME_INFO) + target.size() * sizeof(wchar_t));
+    auto* info = reinterpret_cast<FILE_RENAME_INFO*>(buffer.data());
+    info->Flags = FILE_RENAME_FLAG_REPLACE_IF_EXISTS | FILE_RENAME_FLAG_POSIX_SEMANTICS;
+    info->RootDirectory = nullptr;
+    info->FileNameLength = static_cast<DWORD>(target.size() * sizeof(wchar_t));
+    std::memcpy(info->FileName, target.c_str(), (target.size() + 1) * sizeof(wchar_t) - sizeof(wchar_t));
+    if (!::SetFileInformationByHandle(handle, FileRenameInfoEx, info, static_cast<DWORD>(buffer.size())))
+        error.assign(static_cast<int>(::GetLastError()), std::system_category());
+    ::CloseHandle(handle);
+#else
+    fs::rename(from, to, error);
+#endif
 }
 
 } // namespace
@@ -677,7 +709,7 @@ RIVET_TEST(pdfiumAssemblyReadsOriginalBytesAfterPathReplaced) {
         return;
     }
     // Atomic replace of the path (what a save does).
-    fs::rename(replacement, path, error);
+    replaceFile(replacement, path, error);
     if (error) std::fprintf(stderr, "    rename failed: %s\n", error.message().c_str());
     CHECK(!error);
 

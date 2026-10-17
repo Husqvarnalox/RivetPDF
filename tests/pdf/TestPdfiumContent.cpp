@@ -1233,6 +1233,14 @@ RIVET_TEST(contentUnknownFontFallsBackOrKeepsTheText) {
     block.members = {0};
     Edits edits;
     edits.text(block);
+    // The substitute for an unknown font is platform-specific (system fonts differ). Where its
+    // metrics do not reproduce the original geometry the page is refused outright ("never silently
+    // lossy"); where they do, the text must survive and be visible.
+    const Assembled attempt = assemble(*engine, *document, 0, edits.ptr());
+    if (!attempt.status.has_value()) {
+        CHECK(attempt.status.error().message.find("cannot be edited safely") != std::string::npos);
+        return;
+    }
     const RoundTrip saved = roundTrip(*engine, *document, edits.ptr());
     if (!saved.content) return;
     // Whatever font was chosen, the text survives and is visible.
