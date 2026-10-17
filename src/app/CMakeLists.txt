@@ -1,5 +1,13 @@
 add_library(rivet_app STATIC
+    BackgroundRunner.cpp
+    SecurityServices.cpp
+    SecurityDialogs.cpp
+    ShellDocumentSecurityHost.cpp
+    SignatureValidationController.cpp
+    DigitalSignatureController.cpp
     DocumentWorkspace.cpp
+    SecurityText.cpp
+    SetPasswordController.cpp
     ComparisonTabState.cpp
     ComparisonHostView.cpp
     MarkdownTabState.cpp
@@ -56,6 +64,7 @@ add_library(rivet::app ALIAS rivet_app)
 
 target_link_libraries(rivet_app
     PUBLIC rivet::markdown rivet::ui rivet::editor rivet::pdf rivet::platform rivet::core
+            rivet::pdf_sign rivet::pdf_encrypt rivet::crypto rivet::timestamp rivet::net rivet::crypto_providers
 )
 
 rivet_set_target_warnings(rivet_app)

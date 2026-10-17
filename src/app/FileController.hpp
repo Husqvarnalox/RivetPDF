@@ -47,6 +47,9 @@ enum class FileCommand : std::uint8_t {
     SaveReducedMedium = 10,   // ... 150 dpi / q75
     SaveReducedSmall = 11,    // ... 100 dpi / q60
     Compare = 12,             // Compare With... (ADR-0029; handled by the shell)
+    SetPassword = 13,         // Set Password... (ADR-0048; handled by the shell)
+    SignDocument = 14,        // Sign Document... (ADR-0048; handled by the shell)
+    ValidateSignatures = 15,  // Validate Signatures... (ADR-0048; handled by the shell)
 };
 
 class MarkdownExportController;
