@@ -97,6 +97,22 @@ foreach ($patch in Get-ChildItem (Join-Path $here "patches") -Filter *.patch | S
     Write-Host "applied patch: $($patch.Name)"
 }
 
+# --- Windows SDK pin ------------------------------------------------------------
+# PDFium's Chromium build pins an SDK version (build/vs_toolchain.py, setup_toolchain.py) that
+# hosted images may not ship yet. With DEPOT_TOOLS_WIN_TOOLCHAIN=0 we build against the newest
+# installed SDK instead (only the two version constants change; the build tree is a throwaway).
+$sdkInclude = "${env:ProgramFiles(x86)}\Windows Kits\10\Include"
+$sdkVer = (Get-ChildItem $sdkInclude -Directory | Where-Object { $_.Name -match '^10\.0\.\d+\.\d+$' } |
+    Sort-Object { [version]$_.Name } | Select-Object -Last 1).Name
+if (-not $sdkVer) { throw "no Windows 10/11 SDK found under $sdkInclude" }
+foreach ($f in "build\vs_toolchain.py", "build\toolchain\win\setup_toolchain.py") {
+    $path = Join-Path $src $f
+    $text = [System.IO.File]::ReadAllText($path)
+    $new = [regex]::Replace($text, "(?m)^SDK_VERSION = '[0-9.]+'", "SDK_VERSION = '$sdkVer'")
+    if ($new -ne $text) { [System.IO.File]::WriteAllText($path, $new, (New-Object System.Text.UTF8Encoding($false))) }
+}
+Write-Host "building against Windows SDK $sdkVer"
+
 # --- gn args + build -----------------------------------------------------------
 $out = Join-Path $src "out\rivet-windows-$cpu"
 New-Item -ItemType Directory -Force -Path $out | Out-Null
