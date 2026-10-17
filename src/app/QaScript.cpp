@@ -641,8 +641,8 @@ struct QaSession::Impl {
             if (consecutiveIdle < 3) {
                 if (now - phaseStart > idleTimeout) {
                     ++failures;
-                    qaLog(std::format("line {}: ERROR idle timeout after {} ms (continuing)", currentLine,
-                                      idleTimeout.count()));
+                    qaLog(std::format("line {}: ERROR idle timeout after {} ms ({}; continuing)", currentLine,
+                                      idleTimeout.count(), shell->idleBlocker()));
                 } else {
                     return;
                 }

@@ -39,29 +39,32 @@ log-state
 shot 09-graphics-exported.png
 key cmd+w
 
-# WYSIWYG editing on a copy-safe sample (edits are not saved).
+# WYSIWYG editing (edits are discarded at the end).
 open ${QA_FIX}/edit.md
 shot 09-edit-initial.png
-# Click at the end of "First paragraph to edit." and type.
-click 900 200
-log-state
-shot 09-edit-clicked.png
+# Click right of "First paragraph to edit." (puts the caret at its end), type.
+click 900 194
 type  more words
 shot 09-edit-typed.png
-# Bold the next word.
+# Cmd+B with a collapsed caret, type, Cmd+B again, type.
 key cmd+b
+shot 09-edit-cmdb.png
 type bold
+shot 09-edit-typed-bold.png
 key cmd+b
-shot 09-edit-bold.png
-# Into the list: click after "banana", Enter adds an item.
+type  plain
+shot 09-edit-cmdb2.png
+# Enter at the end of the last list item ("banana") continues the list.
+click 400 253
+type \ncherry
+shot 09-edit-list-enter.png
 key cmd+2
 shot 09-edit-source.png
 key cmd+1
 cmd Edit/Undo
-cmd Edit/Undo
-log-state
-shot 09-edit-undo.png
-key cmd+w
+key cmd+2
+shot 09-edit-undo-source.png
 answer savechanges dontsave
-log-state
+key cmd+w
+assert-tabs 0
 quit

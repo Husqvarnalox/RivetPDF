@@ -912,7 +912,13 @@ void ShellController::DelayedRunner::runAfter(std::chrono::milliseconds delay, s
     if (!token) return;
     const auto shared = std::make_shared<core::AsyncScope::Token>(std::move(*token));
     const std::weak_ptr<int> alive = shell_.alive_;
-    shell_.scheduler_.post([shared, alive, dispatcher, delay, task = std::move(task)]() mutable {
+    std::shared_ptr<std::atomic<std::size_t>> delayed = shell_.delayedTasks_;
+    delayed->fetch_add(1, std::memory_order_relaxed);
+    shell_.scheduler_.post([shared, alive, dispatcher, delay, delayed, task = std::move(task)]() mutable {
+        struct Leave {
+            std::atomic<std::size_t>& count;
+            ~Leave() { count.fetch_sub(1, std::memory_order_relaxed); }
+        } leave{*delayed};
         const auto until = std::chrono::steady_clock::now() + delay;
         while (std::chrono::steady_clock::now() < until && !shared->cancelled()) {
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
@@ -1530,20 +1536,29 @@ void ShellController::activateAdjacentTab(int delta) {
     workspace_.activateTab(static_cast<std::size_t>(next));
 }
 
-bool ShellController::isIdle() const {
+bool ShellController::isIdle() const { return idleBlocker().empty(); }
+
+std::string_view ShellController::idleBlocker() const {
     for (std::size_t i = 0; i < workspace_.tabCount(); ++i) {
         const DocumentTab* tab = workspace_.tab(i);
-        if (tab != nullptr && tab->state() == DocumentTab::State::Loading) return false;
+        if (tab != nullptr && tab->state() == DocumentTab::State::Loading) return "a tab is opening";
     }
-    if (fileLifecycle_ != nullptr && fileLifecycle_->isSavingAnything()) return false;
-    if (scheduler_.busyCount() != 0) return false;
+    if (fileLifecycle_ != nullptr && fileLifecycle_->isSavingAnything()) return "a save is running";
+    // Tooltip and caret-blink delays sleep on the pool; they are not work.
+    std::size_t sleeping = delayedTasks_->load(std::memory_order_relaxed);
+    if (markdownView_ != nullptr && markdownView_->previewView() != nullptr &&
+        markdownView_->previewView()->caretBlinkPending()) {
+        ++sleeping;
+    }
+    if (scheduler_.busyCount() > sleeping) return "worker pool busy";
     if (chromeMarkdown_ && markdownView_ != nullptr) {
         const MarkdownParseCoordinator* parser = markdownView_->parseCoordinator();
-        if (parser != nullptr && parser->busy()) return false;
+        if (parser != nullptr && parser->busy()) return "markdown parse pending";
     }
     const bool pdfVisible = context_ != nullptr && context_->readyPdfTab() != nullptr && viewport_ != nullptr &&
                             !viewport_->frame().isEmpty();
-    return !(pdfVisible && viewport_->lastPaintMissedTiles());
+    if (pdfVisible && viewport_->lastPaintMissedTiles()) return "visible tiles not rendered";
+    return {};
 }
 
 const std::string& ShellController::statusText() const {

@@ -36,6 +36,7 @@
 #include "ui/TabStrip.hpp"
 #include "ui/Toolbar.hpp"
 
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
@@ -43,6 +44,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -184,6 +186,8 @@ public:
     // paint of a visible PDF viewport had every tile. A snapshot; callers
     // poll it (the QA runner requires several idle polls in a row).
     bool isIdle() const;
+    // Why the shell is not idle (empty when idle); for diagnostics.
+    std::string_view idleBlocker() const;
     // Current status-bar message.
     const std::string& statusText() const;
     // The find bar's result text ("2 of 5", "No results"; empty when hidden).
@@ -277,6 +281,9 @@ private:
     // destructor; delayScope_ outlives nothing it fences (declared before
     // the scheduler: destroyed after the posted work finished).
     std::shared_ptr<int> alive_ = std::make_shared<int>(0);
+    // Delay tasks (tooltips, caret blink) currently occupying the worker
+    // pool: isIdle() does not count them as pending work.
+    std::shared_ptr<std::atomic<std::size_t>> delayedTasks_ = std::make_shared<std::atomic<std::size_t>>(0);
     RecentFiles recentFiles_;
     // Declaration order = reverse destruction order: the feature controllers
     // die first (they only hold pointers into the tree and the workspace;
