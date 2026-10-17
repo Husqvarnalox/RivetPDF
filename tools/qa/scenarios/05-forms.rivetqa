@@ -25,19 +25,23 @@ shot 05-text-filled.png
 # Checkbox, radio.
 clickpage 1 27 237
 clickpage 1 67 207
-# List box: a click opens a popup under it; try the keyboard first
-# (Down, Return), then click the third row (Cherry) of the popup.
-clickpage 1 200 140
+# List box (QA #8): selects in place like a native list - no popup. Rows
+# are 11.5 pt from the top (y 180): click the first row (Apple), then Down
+# twice selects Cherry.
+clickpage 1 200 174
+assert-state formpopup=closed
+log-state
 shot 05-list-popup.png
 key down
-key return
+key down
+assert-state formpopup=closed
+log-state
 shot 05-list-keyboard.png
-clickpage 1 200 140
-clickpage 1 160 115.7
 shot 05-list-picked.png
 
-# Combo: open and click its third row (Large).
+# Combo: opens its popup (unlike the list box); click its third row (Large).
 clickpage 1 70 170
+assert-state formpopup=open
 shot 05-combo-open.png
 clickpage 1 70 145.7
 shot 05-combo-picked.png
@@ -63,9 +67,15 @@ open ${QA_WORK}/05-form.pdf
 click 1059 54
 shot 05-reopened.png
 
-# Reset Form (asks for confirmation) on the reopened copy.
+# Reset Form (asks for confirmation) on the reopened copy: enabled although
+# nothing was edited in this session (QA #7). Fields go to their /DV
+# ("name": "Your name") or empty; the radio group and the combo box have no
+# /DV and keep their values; the list box loses its selection.
+assert-enabled Edit/Reset Form
 answer confirm yes
 cmd Edit/Reset Form
 log-state
+assert-status Form reset
+assert-disabled Edit/Reset Form
 shot 05-reset.png
 quit

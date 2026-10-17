@@ -458,6 +458,45 @@ RIVET_TEST(formControllerChoicePopupSelectsWithKeys) {
     CHECK_EQ(shell.valueOf("size")->selected, std::vector<std::uint32_t>{2});
 }
 
+// QA #8: a list box selects the clicked row in place (no popup) and the
+// arrow keys move the selection, like a native list.
+RIVET_TEST(formControllerListBoxSelectsInPlace) {
+    auto info = std::make_shared<pdf::PdfFormInfo>(*sampleForm());
+    pdf::PdfFormField fruits;
+    fruits.name = "fruits";
+    fruits.type = pdf::PdfFormFieldType::ListBox;
+    fruits.fontSize = 10.0F; // rows of 11.5 pt from the widget top
+    fruits.options = {{"Apple", "Apple", false}, {"Banana", "Banana", true}, {"Cherry", "Cherry", false}};
+    fruits.value = "Banana";
+    fruits.widgets = {widgetOn(0, 5, {300, 500, 420, 560})}; // display {300, 232, 120, 60}
+    info->fields.push_back(std::move(fruits));
+    Shell shell(info);
+    CHECK(shell.open("list") != nullptr);
+    FormController& forms = *shell.forms;
+
+    CHECK(forms.press(0, core::Point{350.0, 232.0 + 11.5 * 2.5})); // the third row
+    CHECK(!forms.popupOpen());
+    CHECK(forms.focus().has_value());
+    CHECK(shell.valueOf("fruits").has_value());
+    CHECK_EQ(shell.valueOf("fruits")->selected, std::vector<std::uint32_t>{2});
+
+    CHECK(forms.key(keyOf(ui::Key::Up)));
+    CHECK(!shell.valueOf("fruits").has_value()); // back to the stored "Banana"
+    CHECK(forms.key(keyOf(ui::Key::Up)));
+    CHECK_EQ(shell.valueOf("fruits")->selected, std::vector<std::uint32_t>{0});
+    CHECK(forms.key(keyOf(ui::Key::Up))); // stays on the first row
+    CHECK_EQ(shell.valueOf("fruits")->selected, std::vector<std::uint32_t>{0});
+    CHECK(forms.key(keyOf(ui::Key::Down)));
+    CHECK(forms.key(keyOf(ui::Key::Down)));
+    CHECK_EQ(shell.valueOf("fruits")->selected, std::vector<std::uint32_t>{2});
+    CHECK(!forms.popupOpen());
+
+    // A press below the last row changes nothing.
+    const auto state = shell.session().commands().stateId();
+    CHECK(forms.press(0, core::Point{350.0, 232.0 + 11.5 * 4.5}));
+    CHECK_EQ(shell.session().commands().stateId(), state);
+}
+
 RIVET_TEST(formControllerTabTraversesFillableWidgetsInOrder) {
     Shell shell;
     CHECK(shell.open("tab") != nullptr);

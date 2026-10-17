@@ -45,6 +45,24 @@ bool contains(const core::Rect& rect, core::Point p) {
     return p.x >= rect.minX() && p.x <= rect.maxX() && p.y >= rect.minY() && p.y <= rect.maxY();
 }
 
+// Row geometry of a list box drawn in place (display space): rows from the
+// widget top, scrolled so the first selected option is visible.
+struct ListRows {
+    double rowHeight = 1.0;
+    std::size_t first = 0;   // first visible option
+    std::size_t visible = 1; // rows that fit
+};
+
+ListRows listRows(const pdf::PdfFormField& field, const core::Rect& displayRect,
+                  const std::vector<std::uint32_t>& selected) {
+    ListRows rows;
+    const double size = formFontSize(field, displayRect, {}, {});
+    rows.rowHeight = std::max(1.0, size * kFormLineFactor);
+    rows.visible = std::max<std::size_t>(1, static_cast<std::size_t>(displayRect.size.height / rows.rowHeight));
+    if (!selected.empty() && selected.front() >= rows.visible) rows.first = selected.front() + 1 - rows.visible;
+    return rows;
+}
+
 // A check mark inside `box` (viewport space).
 void paintCheck(ui::PaintContext& context, const core::Rect& box) {
     const double inset = std::min(box.size.width, box.size.height) * 0.2;
@@ -257,9 +275,66 @@ void FormController::activate(const Target& target) {
         openEditor(target);
     } else if (field.isToggle()) {
         toggle(target);
-    } else if (field.isChoice()) {
+    } else if (field.type == pdf::PdfFormFieldType::ComboBox) {
         openPopup(target);
     }
+    // A list box is a list in place (QA #8): rows are picked by pointer
+    // (pressList) and arrow keys (stepList), never through a popup.
+}
+
+void FormController::pressList(const Target& target, core::Point display) {
+    DocumentTab* tab = activeTab();
+    if (tab == nullptr) return;
+    const pdf::PdfFormInfoPtr info = formOf(*tab);
+    if (info == nullptr || target.field >= info->fields.size()) return;
+    const pdf::PdfFormField& field = info->fields[target.field];
+    const auto current = tab->session()->forms().currentValue(target.field);
+    const std::vector<std::uint32_t> selected = current.has_value() ? current->selected : std::vector<std::uint32_t>{};
+    const ListRows rows = listRows(field, target.displayRect, selected);
+    const double offset = display.y - target.displayRect.minY();
+    if (offset < 0.0) return;
+    const std::size_t option = rows.first + static_cast<std::size_t>(offset / rows.rowHeight);
+    if (option >= field.options.size()) return; // below the last row
+    const auto index = static_cast<std::uint32_t>(option);
+    if (field.multiSelect) {
+        std::vector<std::uint32_t> next;
+        bool removed = false;
+        for (const std::uint32_t i : selected) {
+            if (i == index) removed = true;
+            else next.push_back(i);
+        }
+        if (!removed) {
+            next.push_back(index);
+            std::sort(next.begin(), next.end());
+        }
+        setValue(target, pdf::PdfFormValue::ofChoice(std::move(next)));
+        return;
+    }
+    if (selected.size() == 1 && selected.front() == index) return;
+    setValue(target, pdf::PdfFormValue::ofChoice({index}));
+}
+
+bool FormController::stepList(const Target& target, int delta) {
+    DocumentTab* tab = activeTab();
+    if (tab == nullptr) return false;
+    const pdf::PdfFormInfoPtr info = formOf(*tab);
+    if (info == nullptr || target.field >= info->fields.size()) return false;
+    const pdf::PdfFormField& field = info->fields[target.field];
+    if (field.options.empty()) return true;
+    const auto current = tab->session()->forms().currentValue(target.field);
+    const std::size_t last = field.options.size() - 1;
+    std::size_t next = 0;
+    if (current.has_value() && !current->selected.empty()) {
+        const std::size_t at = delta < 0 ? current->selected.front() : current->selected.back();
+        next = delta < 0 ? (at > 0 ? at - 1 : 0) : std::min(at + 1, last);
+    } else {
+        next = delta < 0 ? last : 0;
+    }
+    // Like a native list: the arrow selects exactly the next row.
+    const pdf::PdfFormValue value = pdf::PdfFormValue::ofChoice({static_cast<std::uint32_t>(next)});
+    if (current.has_value() && *current == value) return true;
+    setValue(target, value);
+    return true;
 }
 
 bool FormController::setValue(const Target& target, pdf::PdfFormValue value) {
@@ -515,7 +590,11 @@ bool FormController::press(std::size_t page, core::Point display) {
         if (!commitEditor()) return true;
     }
     focusOn(*target);
-    activate(*target);
+    if (field.type == pdf::PdfFormFieldType::ListBox) {
+        pressList(*target, display);
+    } else {
+        activate(*target);
+    }
     return true;
 }
 
@@ -586,6 +665,14 @@ bool FormController::key(const ui::KeyEvent& event) {
     if (!target.has_value()) {
         clearFocus();
         return false;
+    }
+    if (DocumentTab* tab = activeTab(); tab != nullptr) {
+        const pdf::PdfFormInfoPtr info = formOf(*tab);
+        if (info != nullptr && target->field < info->fields.size() &&
+            info->fields[target->field].type == pdf::PdfFormFieldType::ListBox &&
+            (event.key == ui::Key::Up || event.key == ui::Key::Down)) {
+            return stepList(*target, event.key == ui::Key::Up ? -1 : 1);
+        }
     }
     switch (event.key) {
     case ui::Key::Space:
@@ -702,11 +789,13 @@ void FormController::paintWidgets(std::size_t page, const core::Rect& pageRect, 
                     }
                 } else if (field.type == pdf::PdfFormFieldType::ListBox) {
                     const double size = formFontSize(field, view.displayRect, {}, {});
-                    const double rowHeight = std::max(1.0, size * kFormLineFactor);
+                    const ListRows rows = listRows(field, view.displayRect, value->selected);
+                    const double rowHeight = rows.rowHeight;
                     context.pushClip(rect);
-                    for (std::size_t i = 0; i < field.options.size(); ++i) {
+                    for (std::size_t i = rows.first; i < field.options.size(); ++i) {
                         const core::Rect row{view.displayRect.origin.x,
-                                             view.displayRect.origin.y + rowHeight * static_cast<double>(i),
+                                             view.displayRect.origin.y +
+                                                 rowHeight * static_cast<double>(i - rows.first),
                                              view.displayRect.size.width, rowHeight};
                         if (row.minY() > view.displayRect.maxY()) break;
                         const bool on = std::find(value->selected.begin(), value->selected.end(),

@@ -32,7 +32,8 @@ namespace rivet::app {
 //     tool): a press on a fillable widget focuses it - text fields open the
 //     inline editor (a TextField, masked for passwords, or a TextArea for
 //     multiline fields) sized to the widget, check boxes and radio buttons
-//     toggle, combo and list boxes open a choice popup drawn by the layer;
+//     toggle, combo boxes open a choice popup drawn by the layer, list
+//     boxes select the clicked row in place (Up/Down move the selection);
 //   - Tab / Shift+Tab traverse the fillable widgets in page, then /Annots
 //     order; Space toggles or opens the popup, Enter commits single-line
 //     text (Cmd+Enter multiline), Esc cancels the editor / closes the popup /
@@ -158,6 +159,10 @@ private:
     void openEditor(const Target& target);
     void hideEditor();
     void openPopup(const Target& target);
+    // List boxes select in place: a press picks (or, multi-select, toggles)
+    // the row under `display`; Up/Down select the previous/next row.
+    void pressList(const Target& target, core::Point display);
+    bool stepList(const Target& target, int delta);
     void closePopup();
     void choose(std::size_t option);
     void traverse(bool backwards);

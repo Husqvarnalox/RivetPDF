@@ -174,6 +174,7 @@ public:
     void openOverflowMenu();
     void openZoomMenu(const core::Rect& anchor);
     FileController& fileController() { return *fileLifecycle_; }
+    FormController& forms() { return *forms_; }
     MarkdownExportController& markdownExport() { return *markdownExport_; }
 
     // Tab close request (tab strip / Cmd+W): runs the dirty-document prompt
