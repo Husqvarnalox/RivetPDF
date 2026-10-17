@@ -1216,3 +1216,42 @@ RIVET_TEST(hostPageCountAndPageAtMapViewportPointsToPageDisplayPoints) {
     // Consistent with pageRectInViewport.
     CHECK(Rect::nearlyEqual(*f.viewport.pageRectInViewport(1), Rect{60.0, 264.0, 800.0, 800.0}, 1e-9));
 }
+
+// QA #18: tile destinations are snapped to the device-pixel grid, so
+// neighbouring tiles meet on one whole device pixel at any zoom and scroll
+// (fractional edges blended with the background and drew thin seams).
+RIVET_TEST(tileDestinationsMeetOnWholeDevicePixels) {
+    Fixture f;
+    CHECK(f.viewport.zoom().setZoom(1.37));
+    f.viewport.setScrollOffsetPoints(Point{13.3, 7.7});
+    FakePaintContext context;
+    context.backingScaleValue = 2.0;
+    f.viewport.paint(context); // nothing cached: every tile paints a placeholder
+
+    std::vector<Rect> tiles;
+    for (const auto& fill : context.fills) {
+        if (fill.color == rivet::ui::colors().pagePlaceholder) tiles.push_back(fill.rect);
+    }
+    CHECK(tiles.size() >= 4);
+    const auto onGrid = [](double v) { return std::abs(v * 2.0 - std::round(v * 2.0)) < 1e-6; };
+    std::size_t sharedEdges = 0;
+    for (const Rect& a : tiles) {
+        CHECK(onGrid(a.minX()) && onGrid(a.minY()) && onGrid(a.maxX()) && onGrid(a.maxY()));
+        for (const Rect& b : tiles) {
+            const bool sameRow = std::abs(a.minY() - b.minY()) < 1e-9;
+            const bool sameColumn = std::abs(a.minX() - b.minX()) < 1e-9;
+            if (sameRow && b.minX() > a.minX() && b.minX() < a.maxX() + 1.0) {
+                CHECK_NEAR(b.minX(), a.maxX(), 1e-9); // no gap, no overlap
+                ++sharedEdges;
+            }
+            if (sameColumn && b.minY() > a.minY() && b.minY() < a.maxY() + 1.0) {
+                CHECK_NEAR(b.minY(), a.maxY(), 1e-9);
+                ++sharedEdges;
+            }
+        }
+    }
+    CHECK(sharedEdges >= 2);
+
+    const Rect snapped = PdfViewport::snapToDevicePixels(Rect{10.3, 20.26, 100.1, 50.0}, 2.0);
+    CHECK(Rect::nearlyEqual(snapped, Rect{10.5, 20.5, 100.0, 50.0}, 1e-9));
+}

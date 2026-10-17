@@ -275,6 +275,10 @@ void MacosPaintContext::drawBitmap(const core::Bitmap& bitmap, const core::Rect&
 
     if (image != nullptr) {
         CGContextSaveGState(context_);
+        // Aliased edges: adjacent page tiles (rects snapped to device pixels
+        // by the viewport) must not blend with what lies below at their
+        // shared edge, or thin seams show through solid fills (QA #18).
+        CGContextSetShouldAntialias(context_, false);
         // CGImage renders bottom-up; flip around the destination so the first
         // bitmap row lands on the rect's top edge instead of the bottom.
         CGContextTranslateCTM(context_, destLogicalRect.minX(), destLogicalRect.maxY());

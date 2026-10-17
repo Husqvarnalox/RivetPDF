@@ -169,6 +169,10 @@ public:
     void removeLayer(ViewportLayer* layer);
     std::size_t layerCount() const { return layers_.size(); }
 
+    // `rect` (logical points) with every edge rounded to the device-pixel
+    // grid of `backingScale`: page tiles meet on whole device pixels.
+    static core::Rect snapToDevicePixels(const core::Rect& rect, double backingScale);
+
     // ViewportToolHost
     std::optional<core::Rect> pageRectInViewport(std::size_t pageIndex) const override;
     std::size_t pageCount() const override;

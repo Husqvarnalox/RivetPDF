@@ -300,7 +300,13 @@ void WindowsPaintContext::drawBitmap(const core::Bitmap& bitmap, const core::Rec
     }
     if (!d2dBitmap) return;
     const D2D1_RECT_F dest = toRect(destLogicalRect);
+    // Aliased edges: adjacent page tiles (rects snapped to device pixels by
+    // the viewport) must not blend with what lies below at their shared
+    // edge, or thin seams show through solid fills (QA #18).
+    const D2D1_ANTIALIAS_MODE previous = target_->GetAntialiasMode();
+    target_->SetAntialiasMode(D2D1_ANTIALIAS_MODE_ALIASED);
     target_->DrawBitmap(d2dBitmap.get(), &dest, 1.0F, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR, nullptr);
+    target_->SetAntialiasMode(previous);
 }
 
 core::Size WindowsPaintContext::measureText(std::string_view text, const ui::Font& font) const {

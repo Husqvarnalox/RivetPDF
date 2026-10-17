@@ -907,6 +907,19 @@ void PdfViewport::requestTileWithPriority(const render::TileKey& key,
                            });
 }
 
+core::Rect PdfViewport::snapToDevicePixels(const core::Rect& rect, double backingScale) {
+    const double scale = backingScale > 0.0 && std::isfinite(backingScale) ? backingScale : 1.0;
+    // Edges are rounded independently: two tiles sharing an edge compute it
+    // from the same value, so they meet exactly on one device-pixel line -
+    // no gap, no overlap, no half-covered pixel blending with the background
+    // (QA #18 tile seams).
+    const double left = std::round(rect.minX() * scale) / scale;
+    const double top = std::round(rect.minY() * scale) / scale;
+    const double right = std::round(rect.maxX() * scale) / scale;
+    const double bottom = std::round(rect.maxY() * scale) / scale;
+    return core::Rect{left, top, std::max(0.0, right - left), std::max(0.0, bottom - top)};
+}
+
 // Overlay pass (selection highlights, search matches): rects arrive in page
 // display space from the bridge and map to viewport space exactly like tile
 // destinations. Painted AFTER the tiles, never baked into them.
@@ -1000,8 +1013,10 @@ void PdfViewport::paintPageTiles(std::size_t pageIndex, const core::Rect& pageFr
             if (clipped.isEmpty()) continue;
 
             const render::TileKey key{documentId_, info.id, physicalKey, tx, ty, info.contentRevision};
-            const core::Rect dest{pageInViewport.origin + clipped.origin * state_->zoom().zoom(),
-                                  clipped.size * state_->zoom().zoom()};
+            const core::Rect dest = snapToDevicePixels(
+                core::Rect{pageInViewport.origin + clipped.origin * state_->zoom().zoom(),
+                           clipped.size * state_->zoom().zoom()},
+                context.backingScale());
             if (const std::shared_ptr<const core::Bitmap> tile = source_->cachedTile(key, revision)) {
                 context.drawBitmap(*tile, dest);
             } else {
