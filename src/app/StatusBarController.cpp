@@ -121,11 +121,15 @@ const std::string& StatusBarController::pageCountText() const { return pageCount
 void StatusBarController::updatePageIndicator() {
     if (DocumentTab* tab = context_.workspace.activeTab(); tab != nullptr && tab->session() != nullptr) {
         pageCountLabel_->setText(std::format("/ {}", tab->session()->pageCount()));
+        pageField_->setPlaceholder("1");
         // Do not fight a focused field: the user is editing the page number.
         if (!pageField_->isFocused()) pageField_->setText(pageFieldText(tab->currentPage()));
         return;
     }
-    pageCountLabel_->setText("/ 0");
+    // No pages (no document, still loading, locked behind a password): an
+    // empty indicator rather than a misleading "1 / 0" (QA #12).
+    pageCountLabel_->setText("");
+    pageField_->setPlaceholder("");
     pageField_->setText("");
 }
 

@@ -130,6 +130,10 @@ public:
         std::function<void(std::size_t pageIndex, const core::Rect& pageRect, double zoom, PaintContext& context)>;
     void setPageOverlayPainter(PageOverlayPainter painter) { pageOverlay_ = std::move(painter); }
 
+    // Text shown while no document is bound (default "No document open").
+    void setEmptyText(std::string text);
+    const std::string& emptyText() const { return emptyText_; }
+
     // The bound layout changed in place (page model edit): rebuilds the row
     // geometry, keeps the scroll offset (clamped) and cancels a drag. The
     // current row and page selection are left to the owner to re-push.
@@ -201,6 +205,7 @@ private:
     std::function<void(std::size_t)> onMoveRequested_;
     std::function<void()> onFocusRequested_;
     PageOverlayPainter pageOverlay_;
+    std::string emptyText_ = "No document open";
 
     // Press / drag state.
     std::optional<std::size_t> pressedRow_;

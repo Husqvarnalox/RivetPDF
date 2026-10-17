@@ -23,6 +23,12 @@ constexpr double kStrokeWidth = 1.0;
 
 TextField::TextField(std::string placeholder) : placeholder_(std::move(placeholder)) {}
 
+void TextField::setPlaceholder(std::string placeholder) {
+    if (placeholder == placeholder_) return;
+    placeholder_ = std::move(placeholder);
+    invalidate();
+}
+
 void TextField::setText(std::string text) {
     text_ = std::move(text);
     caret_ = text_.size();

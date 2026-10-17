@@ -152,6 +152,13 @@ SidebarController::SidebarController(ShellContext& context, ui::Widget& parent) 
 
 void SidebarController::bindTab(DocumentTab* tab) {
     if (tab == nullptr || tab->state() != DocumentTab::State::Ready) {
+        // Say why there are no pages (QA #12: "No document open" next to a
+        // password prompt read as a broken open).
+        const DocumentTab::State state = tab != nullptr ? tab->state() : DocumentTab::State::Ready;
+        thumbnails_->setEmptyText(tab == nullptr                                 ? "No document open"
+                                  : state == DocumentTab::State::NeedsPassword ? "Locked document"
+                                  : state == DocumentTab::State::Loading       ? "Loading…"
+                                                                               : "No pages");
         thumbnails_->clearDocument();
         clearOutline();
         signatures_ = SignatureRows{};

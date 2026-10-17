@@ -999,7 +999,7 @@ void ShellController::bindActiveTab() {
 
     if (tab == nullptr || tab->state() != DocumentTab::State::Ready) {
         viewport_->clearDocument();
-        sidebar_->bindTab(nullptr);
+        sidebar_->bindTab(tab); // shows why there are no pages
         pageEditing_->bindTab(nullptr);
         annotations_->bindTab(nullptr);
         content_->bindTab(nullptr);

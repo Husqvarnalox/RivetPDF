@@ -51,6 +51,7 @@ public:
     std::size_t caret() const { return caret_; } // byte offset on a code-point boundary
     Selection selection() const;
     const std::string& placeholder() const { return placeholder_; }
+    void setPlaceholder(std::string placeholder);
 
     // Echo character for password fields (e.g. U+2022 "•"): paint replaces
     // every typed code point with it; text()/caret()/selection() keep the

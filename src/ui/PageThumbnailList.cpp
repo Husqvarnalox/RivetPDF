@@ -19,7 +19,6 @@ namespace {
 
 constexpr double kInsertionThickness = 3.0;
 constexpr Font kLabelFont{11.0, Font::Weight::Regular};
-constexpr const char* kEmptyStateText = "No document open";
 constexpr Font kEmptyStateFont{13.0, Font::Weight::Regular};
 
 double thumbnailAspectHeight(const render::PageLayout::PageInfo& page) {
@@ -440,12 +439,18 @@ void PageThumbnailList::layout() {
     syncScrollbar();
 }
 
+void PageThumbnailList::setEmptyText(std::string text) {
+    if (text == emptyText_) return;
+    emptyText_ = std::move(text);
+    invalidate();
+}
+
 void PageThumbnailList::paintSelf(PaintContext& context) const {
     context.fillRect(bounds(), colors().chromeBackground);
     context.pushClip(bounds());
 
     if (layout_ == nullptr || source_ == nullptr || rowCount() == 0) {
-        context.drawText(kEmptyStateText, bounds(), kEmptyStateFont, colors().textSecondary,
+        context.drawText(emptyText_, bounds(), kEmptyStateFont, colors().textSecondary,
                          TextAlign::Center);
         context.popClip();
         return;

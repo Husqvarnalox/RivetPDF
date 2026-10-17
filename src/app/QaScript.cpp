@@ -1020,6 +1020,10 @@ struct QaSession::Impl {
         }
         out << " tool=" << static_cast<int>(shell->toolMode());
         out << " formpopup=" << (shell->forms().popupOpen() ? "open" : "closed");
+        out << " pagecount='" << shell->statusBar().pageCountText() << "'";
+        if (PasswordPromptController& prompt = shell->passwordPrompt(); prompt.visible()) {
+            out << " password='" << prompt.messageText() << "' passworderror='" << prompt.errorText() << "'";
+        }
         const core::Size size = shell->rootWidget().frame().size;
         out << std::format(" root={:.0f}x{:.0f}", size.width, size.height);
         out << " status='" << shell->statusText() << "'";

@@ -5,6 +5,10 @@
 
 #include "core/geometry/Rect.hpp"
 
+#include <cstddef>
+#include <string>
+#include <string_view>
+
 namespace rivet::ui {
 class Container;
 class TextField;
@@ -43,12 +47,22 @@ public:
     void submit();
 
     ui::TextField& field() { return *field_; }
+    // Shown texts (tests, QA harness): the sentence naming the file and the
+    // wrong-password feedback ("" when none).
+    const std::string& messageText() const;
+    const std::string& errorText() const;
+
+    // `name` shortened in the middle with an ellipsis to at most
+    // `maxCodePoints` code points (UTF-8 safe).
+    static std::string shortenName(std::string_view name, std::size_t maxCodePoints);
 
 private:
     ShellContext& context_;
     // Raw pointers into widgets owned by the parent's tree.
     ui::Container* panel_ = nullptr;
+    TextLabel* title_ = nullptr;
     TextLabel* message_ = nullptr;
+    TextLabel* error_ = nullptr;
     ui::TextField* field_ = nullptr;
     bool visible_ = false;
     core::Rect viewportFrame_;

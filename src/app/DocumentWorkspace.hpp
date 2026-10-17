@@ -127,7 +127,12 @@ public:
     // Password-required outcome: the tab stays open and asks for a password.
     void markNeedsPassword(std::string message);
     // Begin the password retry (state -> Loading). Workspace only.
-    void beginPasswordRetry() { state_ = State::Loading; }
+    void beginPasswordRetry() {
+        state_ = State::Loading;
+        ++passwordRetries_;
+    }
+    // NeedsPassword again after a retry: the last password was wrong.
+    bool passwordRejected() const { return state_ == State::NeedsPassword && passwordRetries_ > 0; }
 
     // Identity of the latest open request issued for this tab. A completion
     // is applied only when it carries the tab's CURRENT request (a retry
@@ -142,6 +147,7 @@ private:
     TabId id_;
     DocumentKind kind_ = DocumentKind::Pdf;
     std::uint64_t openRequest_ = 0;
+    std::uint32_t passwordRetries_ = 0; // password retries issued (never the passwords)
     std::filesystem::path path_;
     std::filesystem::path dedupKey_;
     std::string title_;
