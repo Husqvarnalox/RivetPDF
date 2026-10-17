@@ -8,12 +8,13 @@ add_executable(rivet_pdf_sign_tests
     TestPdfSign.cpp
     TestPdfSignHostile.cpp
     TestPdfSignInterop.cpp
+    TestPdfSignTimestamp.cpp
 )
 add_executable(rivet_pdf_sign_perf_tests TestPdfSignPerf.cpp)
 
 foreach(_target IN ITEMS rivet_pdf_sign_tests rivet_pdf_sign_perf_tests)
     target_include_directories(${_target} PRIVATE ${CMAKE_SOURCE_DIR}/tests/crypto)
-    target_link_libraries(${_target} PRIVATE rivet::test_harness rivet::pdf_sign OpenSSL::Crypto)
+    target_link_libraries(${_target} PRIVATE rivet::test_harness rivet::pdf_sign rivet::timestamp rivet::net OpenSSL::Crypto)
     rivet_set_target_warnings(${_target})
     rivet_set_target_sanitizers(${_target})
 endforeach()

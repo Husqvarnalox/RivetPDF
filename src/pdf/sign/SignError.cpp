@@ -15,6 +15,8 @@ std::string_view toString(SignErrorCode code) {
     case SignErrorCode::CertificationNotAllowed: return "certification signature not allowed";
     case SignErrorCode::ViolatesCertification: return "document certified, no changes permitted";
     case SignErrorCode::SignatureTooLarge: return "signature too large";
+    case SignErrorCode::ContentsPlaceholderTooSmall: return "contents placeholder too small";
+    case SignErrorCode::TimestampFailed: return "timestamp failed";
     case SignErrorCode::SelfVerifyFailed: return "self-verification failed";
     case SignErrorCode::Crypto: return "crypto error";
     case SignErrorCode::Io: return "I/O error";

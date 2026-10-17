@@ -16,6 +16,7 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace rivet::pdf::sign {
@@ -34,10 +35,20 @@ inline constexpr std::size_t kMaxSignatureContentsBytes = std::size_t{8} << 20; 
 
 struct VerifyOptions {
     const crypto::TrustAnchorSet* anchors = nullptr;
+    // Trust anchors for TSA chains (signature time-stamps and document
+    // time-stamps). nullptr: the same set as `anchors`. The OS store is never used.
+    const crypto::TrustAnchorSet* timestampAnchors = nullptr;
     std::chrono::system_clock::time_point validationTime = std::chrono::system_clock::now();
     std::vector<crypto::Bytes> extraCertificates;
     crypto::CancelToken cancel;
 };
+
+// An ordinary signature, or an RFC 3161 document time-stamp (/DocTimeStamp,
+// SubFilter ETSI.RFC3161), which is reported separately and never counts as a signature
+// by a person.
+enum class SignatureKind : std::uint8_t { Signature, DocumentTimestamp };
+
+std::string_view toString(SignatureKind kind);
 
 struct PdfSignatureInfo {
     std::size_t index = 0;            // order of discovery (field tree order)
@@ -45,6 +56,7 @@ struct PdfSignatureInfo {
     std::optional<PdfRef> signatureRef; // the signature dictionary, when indirect
     std::string subFilter;
     std::string type;                 // "Sig" or "DocTimeStamp"
+    SignatureKind kind = SignatureKind::Signature;
     std::vector<std::int64_t> byteRange;
     bool byteRangeValid = false;
     bool coversWholeFile = false;     // the signed bytes reach the end of the file
@@ -60,6 +72,13 @@ struct PdfSignatureInfo {
     // EN 319 142-1 (ETSI.CAdES.detached, ESS signing-certificate-v2, no
     // signing-time attribute, non-weak digest). It says nothing about trust.
     bool padesBaselineB = false;
+    // B-B container plus a signature time-stamp that verified (trusted TSA,
+    // imprint over this signature value): PAdES Baseline B-T. Needs TSA anchors.
+    bool padesBaselineT = false;
+    // Embedded signature time-stamp (kind == Signature), or the token of a
+    // document time-stamp (kind == DocumentTimestamp): genTime, TSA subject,
+    // failure reason and status.
+    std::optional<crypto::SignatureTimestampInfo> timestamp;
     crypto::ValidationResult validation;
 };
 

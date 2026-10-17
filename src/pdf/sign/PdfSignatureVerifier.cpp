@@ -1,8 +1,12 @@
 // SPDX-License-Identifier: MPL-2.0
 #include "pdf/sign/PdfSignatureVerifier.hpp"
 
+#include "crypto/timestamp/TimeStamp.hpp"
+
 #include <algorithm>
+#include <cstdio>
 #include <cstring>
+#include <ctime>
 #include <set>
 #include <sstream>
 
@@ -157,7 +161,11 @@ enum ChangeClass : unsigned { kDss = 1, kSign = 2, kForm = 4, kAnnot = 8 };
 
 class ModificationAnalyzer {
 public:
-    ModificationAnalyzer(PdfFile& file, std::size_t view, FieldLock lock) : f_(file), k_(view), lock_(std::move(lock)) {}
+    // `docTsOnly`: every signature added after this revision is a document
+    // time-stamp. Adding one is then not a change to the content, so it is
+    // allowed under any DocMDP level and reads as "no modification".
+    ModificationAnalyzer(PdfFile& file, std::size_t view, FieldLock lock, bool docTsOnly = false)
+        : f_(file), k_(view), lock_(std::move(lock)), docTsOnly_(docTsOnly) {}
 
     struct Outcome {
         ModificationStatus status = ModificationStatus::None;
@@ -189,7 +197,7 @@ public:
         const bool certified = dm;
         const unsigned lv = level ? static_cast<unsigned>(*level) : 0U;
         // P=1 forbids even signing; with no DocMDP, signing is the one permitted class.
-        const bool allowSign = !certified || lv >= 2;
+        const bool allowSign = !certified || lv >= 2 || docTsOnly_;
         const bool allowForm = certified && lv >= 2;
         const bool allowAnnot = certified && lv >= 3;
         if ((classes_ & kSign) && !allowSign) disallow("signature added to a document certified for no changes");
@@ -199,8 +207,16 @@ public:
         out.notes = std::move(notes_);
         if (disallowed_) out.status = ModificationStatus::Disallowed;
         else if (unknown_) out.status = ModificationStatus::Unknown;
-        else if (classes_ != 0) out.status = ModificationStatus::Permitted;
-        else out.status = ModificationStatus::None;
+        else if (classes_ != 0) {
+            if (docTsOnly_ && (classes_ & ~(kSign | kDss)) == 0) {
+                out.status = ModificationStatus::None;
+                out.notes.push_back("followed only by a document time-stamp revision");
+            } else {
+                out.status = ModificationStatus::Permitted;
+            }
+        } else {
+            out.status = ModificationStatus::None;
+        }
         return out;
     }
 
@@ -556,6 +572,7 @@ private:
     PdfFile& f_;
     std::size_t k_;
     FieldLock lock_;
+    bool docTsOnly_ = false;
     std::uint32_t catalogNum_ = 0, acroformNum_ = 0, fieldsArrayNum_ = 0;
     std::set<std::uint32_t> fieldObjs_, sigFieldObjs_, signedFieldObjs_, sigDictObjs_, apStreams_;
     std::set<std::uint32_t> pageNums_, pageTreeNodes_, annotsArrays_, annotObjs_;
@@ -587,6 +604,46 @@ std::optional<std::size_t> derTotalLength(const Bytes& data) {
     const std::uint64_t total = len + header;
     if (total > data.size()) return std::nullopt;
     return static_cast<std::size_t>(total);
+}
+
+// Token DER inside a hex /Contents value: the leading DER SEQUENCE, zero padding stripped.
+// Returns false when non-zero bytes follow the structure.
+bool trimContentsDer(Bytes& der, std::string& why) {
+    if (const auto total = derTotalLength(der)) {
+        const bool paddingZero = std::all_of(der.begin() + static_cast<std::ptrdiff_t>(*total), der.end(),
+                                             [](std::uint8_t b) { return b == 0; });
+        if (!paddingZero) {
+            why = "non-zero bytes after the CMS structure";
+            return false;
+        }
+        der.resize(*total);
+    } else {
+        while (!der.empty() && der.back() == 0) der.pop_back();
+    }
+    return true;
+}
+
+// What the verifier learns about a signature dictionary before any crypto: needed to
+// decide, for an earlier signature, whether only document time-stamps follow it.
+struct Shape {
+    bool docTimestamp = false;
+    std::uint64_t end = 0; // end of the second ByteRange segment; 0 when unreadable
+};
+
+Shape shapeOf(ByteView pdf, PdfFile& f, const PdfRef& ref) {
+    Shape out;
+    const auto entry = f.lookup(ref.num, 0);
+    if (!entry || entry->type != XrefEntry::Type::InUse) return out;
+    auto ind = parseIndirectObjectAt(pdf, entry->a);
+    if (!ind || !ind->value.isDict() || ind->isStream) return out;
+    const PdfDict& sd = *ind->value.dict;
+    out.docTimestamp = nameOf(sd, "Type") == "DocTimeStamp" || nameOf(sd, "SubFilter") == "ETSI.RFC3161";
+    if (const PdfObject* br = sd.find("ByteRange"); br && br->isArray() && br->array->size() == 4) {
+        const auto& a = *br->array;
+        if (a[2].isInt() && a[3].isInt() && a[2].integer >= 0 && a[3].integer > 0)
+            out.end = static_cast<std::uint64_t>(a[2].integer) + static_cast<std::uint64_t>(a[3].integer);
+    }
+    return out;
 }
 
 struct Found {
@@ -657,6 +714,9 @@ SignResult<std::vector<PdfSignatureInfo>> verifyPdfSignatures(ByteView pdf, cryp
     std::vector<PdfSignatureInfo> results;
     results.reserve(found.size());
     const std::uint64_t fileSize = pdf.size();
+    std::vector<Shape> shapes;
+    shapes.reserve(found.size());
+    for (const Found& fd : found) shapes.push_back(shapeOf(pdf, f, fd.ref));
 
     for (std::size_t idx = 0; idx < found.size(); ++idx) {
         const Found& fd = found[idx];
@@ -696,6 +756,7 @@ SignResult<std::vector<PdfSignatureInfo>> verifyPdfSignatures(ByteView pdf, cryp
         }
         info.type = nameOf(sd, "Type");
         info.subFilter = nameOf(sd, "SubFilter");
+        if (info.subFilter == "ETSI.RFC3161" || info.type == "DocTimeStamp") info.kind = SignatureKind::DocumentTimestamp;
         info.reason = textOf(sd, "Reason");
         info.location = textOf(sd, "Location");
         info.signerName = textOf(sd, "Name");
@@ -765,78 +826,9 @@ SignResult<std::vector<PdfSignatureInfo>> verifyPdfSignatures(ByteView pdf, cryp
             info.coversWholeFile = onlyWhitespace;
         }
 
-        if (info.subFilter == "ETSI.RFC3161" || info.type == "DocTimeStamp") {
-            v.crypto = CryptoCheck::Unsupported;
-            v.integrity = IntegrityStatus::Unknown;
-            v.notes.push_back("document timestamp signatures are not validated in this release");
-            v.state = crypto::foldState(v);
-            results.push_back(std::move(info));
-            continue;
-        }
-        if (info.subFilter != "adbe.pkcs7.detached" && info.subFilter != "ETSI.CAdES.detached") {
-            v.crypto = CryptoCheck::Unsupported;
-            v.integrity = IntegrityStatus::Unknown;
-            v.notes.push_back("unsupported /SubFilter " + (info.subFilter.empty() ? std::string("(none)") : info.subFilter));
-            v.state = crypto::foldState(v);
-            results.push_back(std::move(info));
-            continue;
-        }
-
-        // ---- CMS
-        crypto::Bytes der(contents->text.begin(), contents->text.end());
-        if (const auto total = derTotalLength(der)) {
-            const bool paddingZero = std::all_of(der.begin() + static_cast<std::ptrdiff_t>(*total), der.end(),
-                                                 [](std::uint8_t b) { return b == 0; });
-            if (!paddingZero) {
-                finishBad("non-zero bytes after the CMS structure");
-                continue;
-            }
-            der.resize(*total);
-        } else {
-            while (!der.empty() && der.back() == 0) der.pop_back();
-        }
-        auto model = crypto::parseCms(der);
-        if (!model) {
-            finishBad("malformed CMS: " + model.error().message);
-            continue;
-        }
-        if (model->signers.size() != 1 || !model->isDetached()) {
-            finishBad("CMS must be detached with exactly one signer");
-            continue;
-        }
-        const crypto::ContentSource content = crypto::ContentSource::fromSpans(
-            {ByteView(pdf.data(), static_cast<std::size_t>(l1)),
-             ByteView(pdf.data() + o2, static_cast<std::size_t>(l2))});
-        crypto::CmsVerifyOptions vo;
-        vo.anchors = options.anchors;
-        vo.validationTime = options.validationTime;
-        vo.extraCertificates = options.extraCertificates;
-        vo.cancel = options.cancel;
-        auto sv = crypto::verifyCms(*model, provider, &content, vo);
-        if (!sv) return failCrypto(sv.error());
-        if (sv->empty()) {
-            finishBad("CMS has no signer");
-            continue;
-        }
-        const crypto::SignerVerification& s0 = (*sv)[0];
-        info.signer = s0.signer;
-        info.digest = s0.digest;
-        info.hasTimestampToken = s0.hasTimestampToken;
-        v = s0.validation;
-
-        const crypto::CmsSignerInfo& si = model->signers[0];
-        if (info.subFilter == "ETSI.CAdES.detached") {
-            const bool essV2 = si.findSigned(crypto::oid::kSigningCertificateV2) != nullptr;
-            const bool hasTime = si.findSigned(crypto::oid::kSigningTime) != nullptr;
-            if (!essV2) v.notes.push_back("CAdES signature without signing-certificate-v2");
-            if (hasTime) v.notes.push_back("signing-time attribute present: not PAdES B-B (EN 319 142-1)");
-            info.padesBaselineB = essV2 && !hasTime && si.hasSignedAttrs() &&
-                                  si.findSigned(crypto::oid::kMessageDigest) && si.findSigned(crypto::oid::kContentType) &&
-                                  s0.digest && !crypto::isLegacy(*s0.digest) && v.crypto == CryptoCheck::Valid;
-        }
-
-        // ---- modification analysis of later revisions
-        if (v.crypto == CryptoCheck::Valid && v.integrity == IntegrityStatus::Intact) {
+        // ---- modification analysis of later revisions (signatures and document time-stamps)
+        auto analyseModifications = [&]() {
+            if (v.crypto != CryptoCheck::Valid || v.integrity != IntegrityStatus::Intact) return;
             std::size_t k = f.sectionCount();
             for (std::size_t i = 0; i < f.sectionCount(); ++i) {
                 const std::uint64_t eof = f.section(i).eofEnd;
@@ -856,16 +848,178 @@ SignResult<std::vector<PdfSignatureInfo>> verifyPdfSignatures(ByteView pdf, cryp
             } else {
                 FieldLock lock = fd.fieldLock.value_or(FieldLock{});
                 if (info.fieldMdp) lock = *info.fieldMdp;
-                ModificationAnalyzer an(f, k, std::move(lock));
+                // Only document time-stamps after this signature?
+                bool later = false, onlyDocTs = true;
+                for (std::size_t j = 0; j < shapes.size(); ++j) {
+                    if (j == idx || shapes[j].end <= end) continue;
+                    later = true;
+                    if (!shapes[j].docTimestamp) onlyDocTs = false;
+                }
+                ModificationAnalyzer an(f, k, std::move(lock), later && onlyDocTs);
                 auto r = an.run();
                 v.modification = r.status;
                 for (auto& n : r.notes) v.notes.push_back(std::move(n));
-                if (r.status == ModificationStatus::None && !info.coversWholeFile) {
+                if (r.status == ModificationStatus::None && !info.coversWholeFile && !(later && onlyDocTs)) {
                     v.modification = ModificationStatus::Unknown;
                     v.notes.push_back("data follows the last revision");
                 }
             }
+        };
+
+        if (info.kind == SignatureKind::DocumentTimestamp) {
+            // ETSI EN 319 142-1 5.4.3: /Contents is the TimeStampToken itself, its imprint is the hash of the ByteRange bytes.
+            crypto::Bytes token(contents->text.begin(), contents->text.end());
+            std::string why;
+            if (!trimContentsDer(token, why)) {
+                finishBad(why);
+                continue;
+            }
+            auto model = crypto::parseCms(token);
+            std::optional<crypto::TstInfo> tst;
+            if (model && model->content) {
+                if (auto t = crypto::parseTstInfo(*model->content)) tst = std::move(*t);
+            }
+            if (!model || !tst) {
+                finishBad("malformed document time-stamp token");
+                continue;
+            }
+            info.hasTimestampToken = false;
+            crypto::SignatureTimestampInfo ti;
+            ti.genTime = tst->genTime;
+            ti.serialHex = tst->serialHex;
+            ti.policy = tst->policy;
+            if (!tst->imprintAlgorithm || !provider.supports(*tst->imprintAlgorithm)) {
+                v.crypto = CryptoCheck::Unsupported;
+                v.integrity = IntegrityStatus::Unknown;
+                v.notes.push_back("the document time-stamp imprint algorithm cannot be verified");
+                ti.failure = crypto::TimestampFailure::UnsupportedAlgorithm;
+                ti.status = crypto::TimestampStatus::PresentUnverified;
+                info.timestamp = std::move(ti);
+                v.state = crypto::foldState(v);
+                results.push_back(std::move(info));
+                continue;
+            }
+            info.digest = tst->imprintAlgorithm;
+            const crypto::ContentSource content = crypto::ContentSource::fromSpans(
+                {ByteView(pdf.data(), static_cast<std::size_t>(l1)), ByteView(pdf.data() + o2, static_cast<std::size_t>(l2))});
+            auto covered = content.digest(provider, *tst->imprintAlgorithm, options.cancel);
+            if (!covered) return failCrypto(covered.error());
+            crypto::TimeStampExpectation expected;
+            expected.algorithm = *tst->imprintAlgorithm;
+            expected.digest = std::move(*covered);
+            crypto::TimeStampVerifyOptions tvo;
+            tvo.anchors = options.timestampAnchors ? options.timestampAnchors : options.anchors;
+            tvo.extraCertificates = options.extraCertificates;
+            tvo.cancel = options.cancel;
+            auto tv = crypto::verifyTimeStampToken(token, provider, expected, tvo);
+            if (!tv) return failCrypto(tv.error());
+
+            info.signer = tv->tsaCertificate;
+            ti.failure = tv->failure;
+            ti.notes = tv->validation.notes;
+            if (tv->tsaCertificate) ti.tsaSubject = tv->tsaCertificate->subject;
+            v.certificate = tv->validation.certificate;
+            v.trust = tv->validation.trust;
+            v.notes = tv->validation.notes;
+            switch (tv->failure) {
+            case crypto::TimestampFailure::None:
+            case crypto::TimestampFailure::UntrustedTsa:
+            case crypto::TimestampFailure::GenTimeOutsideCertValidity:
+                v.crypto = CryptoCheck::Valid;
+                v.integrity = IntegrityStatus::Intact;
+                break;
+            case crypto::TimestampFailure::ImprintMismatch:
+                // The token is for other bytes: the covered bytes changed (or the token was swapped).
+                v.crypto = CryptoCheck::Valid;
+                v.integrity = IntegrityStatus::Modified;
+                break;
+            case crypto::TimestampFailure::UnsupportedAlgorithm:
+                v.crypto = CryptoCheck::Unsupported;
+                v.integrity = IntegrityStatus::Unknown;
+                break;
+            default:
+                v.crypto = CryptoCheck::Invalid;
+                v.integrity = IntegrityStatus::Unknown;
+                break;
+            }
+            ti.status = tv->ok() ? crypto::TimestampStatus::Valid : tv->validation.timestamp;
+            ti.verified = tv->ok();
+            info.timestamp = std::move(ti);
+            // The TSA chain is judged at genTime; an expired TSA certificate "now" is not a defect of the stamp.
+            if (v.crypto == CryptoCheck::Valid && v.integrity == IntegrityStatus::Intact &&
+                tv->failure == crypto::TimestampFailure::GenTimeOutsideCertValidity)
+                v.integrity = IntegrityStatus::Unknown;
+            analyseModifications();
+            v.state = crypto::foldState(v);
+            if (v.modification == ModificationStatus::Unknown &&
+                (v.state == crypto::SignatureState::ValidTrusted || v.state == crypto::SignatureState::ValidUntrusted ||
+                 v.state == crypto::SignatureState::ValidExpiredNow))
+                v.state = crypto::SignatureState::UnableToValidate;
+            results.push_back(std::move(info));
+            continue;
         }
+        if (info.subFilter != "adbe.pkcs7.detached" && info.subFilter != "ETSI.CAdES.detached") {
+            v.crypto = CryptoCheck::Unsupported;
+            v.integrity = IntegrityStatus::Unknown;
+            v.notes.push_back("unsupported /SubFilter " + (info.subFilter.empty() ? std::string("(none)") : info.subFilter));
+            v.state = crypto::foldState(v);
+            results.push_back(std::move(info));
+            continue;
+        }
+
+        // ---- CMS
+        crypto::Bytes der(contents->text.begin(), contents->text.end());
+        {
+            std::string why;
+            if (!trimContentsDer(der, why)) {
+                finishBad(why);
+                continue;
+            }
+        }
+        auto model = crypto::parseCms(der);
+        if (!model) {
+            finishBad("malformed CMS: " + model.error().message);
+            continue;
+        }
+        if (model->signers.size() != 1 || !model->isDetached()) {
+            finishBad("CMS must be detached with exactly one signer");
+            continue;
+        }
+        const crypto::ContentSource content = crypto::ContentSource::fromSpans(
+            {ByteView(pdf.data(), static_cast<std::size_t>(l1)),
+             ByteView(pdf.data() + o2, static_cast<std::size_t>(l2))});
+        crypto::CmsVerifyOptions vo;
+        vo.anchors = options.anchors;
+        vo.validationTime = options.validationTime;
+        vo.timestampAnchors = options.timestampAnchors;
+        vo.extraCertificates = options.extraCertificates;
+        vo.cancel = options.cancel;
+        auto sv = crypto::verifyCms(*model, provider, &content, vo);
+        if (!sv) return failCrypto(sv.error());
+        if (sv->empty()) {
+            finishBad("CMS has no signer");
+            continue;
+        }
+        const crypto::SignerVerification& s0 = (*sv)[0];
+        info.signer = s0.signer;
+        info.digest = s0.digest;
+        info.hasTimestampToken = s0.hasTimestampToken;
+        info.timestamp = s0.timestamp;
+        v = s0.validation;
+
+        const crypto::CmsSignerInfo& si = model->signers[0];
+        if (info.subFilter == "ETSI.CAdES.detached") {
+            const bool essV2 = si.findSigned(crypto::oid::kSigningCertificateV2) != nullptr;
+            const bool hasTime = si.findSigned(crypto::oid::kSigningTime) != nullptr;
+            if (!essV2) v.notes.push_back("CAdES signature without signing-certificate-v2");
+            if (hasTime) v.notes.push_back("signing-time attribute present: not PAdES B-B (EN 319 142-1)");
+            info.padesBaselineB = essV2 && !hasTime && si.hasSignedAttrs() &&
+                                  si.findSigned(crypto::oid::kMessageDigest) && si.findSigned(crypto::oid::kContentType) &&
+                                  s0.digest && !crypto::isLegacy(*s0.digest) && v.crypto == CryptoCheck::Valid;
+            info.padesBaselineT = info.padesBaselineB && s0.timestamp && s0.timestamp->verified;
+        }
+
+        analyseModifications();
         v.state = crypto::foldState(v);
         // An unclassifiable later change must never read as a plain valid signature.
         if (v.modification == ModificationStatus::Unknown &&
@@ -878,9 +1032,13 @@ SignResult<std::vector<PdfSignatureInfo>> verifyPdfSignatures(ByteView pdf, cryp
     return results;
 }
 
+std::string_view toString(SignatureKind kind) {
+    return kind == SignatureKind::DocumentTimestamp ? "document time-stamp" : "signature";
+}
+
 std::string describeSignature(const PdfSignatureInfo& s) {
     std::ostringstream out;
-    out << "signature " << s.index << ": field=" << (s.fieldName.empty() ? "(none)" : s.fieldName)
+    out << toString(s.kind) << " " << s.index << ": field=" << (s.fieldName.empty() ? "(none)" : s.fieldName)
         << " subfilter=" << (s.subFilter.empty() ? "(none)" : s.subFilter) << "\n";
     out << "  state: " << crypto::toString(s.validation.state) << "\n";
     out << "  crypto=" << crypto::toString(s.validation.crypto)
@@ -900,7 +1058,31 @@ std::string describeSignature(const PdfSignatureInfo& s) {
     if (!s.signingTimeText.empty()) out << "  /M: " << s.signingTimeText << "\n";
     if (!s.reason.empty()) out << "  reason: " << s.reason << "\n";
     if (!s.location.empty()) out << "  location: " << s.location << "\n";
-    if (s.subFilter == "ETSI.CAdES.detached") out << "  PAdES B-B container: " << (s.padesBaselineB ? "yes" : "no") << "\n";
+    if (s.subFilter == "ETSI.CAdES.detached") {
+        out << "  PAdES B-B container: " << (s.padesBaselineB ? "yes" : "no") << "\n";
+        if (s.hasTimestampToken) out << "  PAdES B-T (verified signature time-stamp): " << (s.padesBaselineT ? "yes" : "no") << "\n";
+    }
+    if (s.timestamp) {
+        const crypto::SignatureTimestampInfo& t = *s.timestamp;
+        out << (s.kind == SignatureKind::DocumentTimestamp ? "  document time-stamp: " : "  signature time-stamp: ")
+            << crypto::toString(t.status);
+        if (t.failure != crypto::TimestampFailure::None) out << " (" << crypto::toString(t.failure) << ")";
+        out << "\n";
+        if (t.genTime) {
+            const std::time_t tt = std::chrono::system_clock::to_time_t(*t.genTime);
+            std::tm tmv{};
+#if defined(_WIN32)
+            gmtime_s(&tmv, &tt);
+#else
+            gmtime_r(&tt, &tmv);
+#endif
+            char buf[40];
+            std::snprintf(buf, sizeof buf, "%04d-%02d-%02d %02d:%02d:%02d UTC", tmv.tm_year + 1900, tmv.tm_mon + 1, tmv.tm_mday,
+                          tmv.tm_hour, tmv.tm_min, tmv.tm_sec);
+            out << "  time-stamp genTime: " << buf << "\n";
+        }
+        if (!t.tsaSubject.empty()) out << "  TSA: " << t.tsaSubject << "\n";
+    }
     for (const std::string& n : s.validation.notes) out << "  note: " << n << "\n";
     return out.str();
 }

@@ -141,6 +141,7 @@ struct Plan {
     std::string fieldName;
     bool pades = false;
     bool certify = false;
+    bool docTs = false; // /Type /DocTimeStamp, /SubFilter /ETSI.RFC3161
 };
 
 SignOk requireNotStream(PdfFile& f, std::uint32_t num) {
@@ -182,9 +183,11 @@ std::string appearanceStream(double w, double h, const std::vector<std::string>&
     return s;
 }
 
-SignResult<Plan> makePlan(PdfFile& f, const SignRequest& req, crypto::SigningIdentity& identity) {
+// `identity` is only needed for the text of a visible appearance (null for a document time-stamp).
+SignResult<Plan> makePlan(PdfFile& f, const SignRequest& req, crypto::SigningIdentity* identity, bool docTs = false) {
     Plan plan;
-    plan.pades = req.profile == SignatureProfile::PadesBaselineB;
+    plan.docTs = docTs;
+    plan.pades = docTs || req.profile == SignatureProfile::PadesBaselineB;
     plan.certify = req.certification != DocMdpLevel::None;
     if (f.isEncrypted())
         return fail(SignErrorCode::EncryptedDocument,
@@ -238,7 +241,8 @@ SignResult<Plan> makePlan(PdfFile& f, const SignRequest& req, crypto::SigningIde
             }
         }
     }
-    if (certPresent && (!certLevel || *certLevel == DocMdpLevel::NoChanges))
+    // A document time-stamp is not a change to the content: it stays allowed under every DocMDP level.
+    if (!docTs && certPresent && (!certLevel || *certLevel == DocMdpLevel::NoChanges))
         return fail(SignErrorCode::ViolatesCertification,
                     "the document is certified for no changes; a signature cannot be added");
     if (plan.certify && (priorSignature || certPresent))
@@ -338,8 +342,9 @@ SignResult<Plan> makePlan(PdfFile& f, const SignRequest& req, crypto::SigningIde
             std::vector<std::string> lines = req.appearanceLines;
             if (lines.empty()) {
                 const std::string who = !req.signerName.empty() ? req.signerName
-                                        : identity.certificate().commonName ? *identity.certificate().commonName
-                                                                           : identity.certificate().subject;
+                                        : !identity                 ? std::string("the signer")
+                                        : identity->certificate().commonName ? *identity->certificate().commonName
+                                                                            : identity->certificate().subject;
                 lines.push_back("Digitally signed by " + who);
                 lines.push_back("Date: " + humanDate(req.signingTime));
                 if (!req.reason.empty()) lines.push_back("Reason: " + req.reason);
@@ -517,8 +522,9 @@ SignResult<Layout> layoutRevision(const Plan& plan, const SignRequest& req, std:
 
     // Signature dictionary with placeholders.
     offsets[plan.sigNum] = {baseSize + rev.size(), 0};
-    rev += std::to_string(plan.sigNum) + " 0 obj\n<<\n/Type /Sig\n/Filter /Adobe.PPKLite\n/SubFilter ";
-    rev += plan.pades ? "/ETSI.CAdES.detached" : "/adbe.pkcs7.detached";
+    rev += std::to_string(plan.sigNum) + " 0 obj\n<<\n/Type /" + (plan.docTs ? "DocTimeStamp" : "Sig") +
+           "\n/Filter /Adobe.PPKLite\n/SubFilter ";
+    rev += plan.docTs ? "/ETSI.RFC3161" : plan.pades ? "/ETSI.CAdES.detached" : "/adbe.pkcs7.detached";
     rev += "\n/ByteRange [0 ";
     L.brField = rev.size();
     rev += std::string(10, ' ') + " " + std::string(10, ' ') + " " + std::string(10, ' ') + "]\n/Contents ";
@@ -527,6 +533,9 @@ SignResult<Layout> layoutRevision(const Plan& plan, const SignRequest& req, std:
     rev.append(reserve * 2, '0');
     rev.push_back('>');
     L.contentsEnd = rev.size();
+    if (plan.docTs) {
+        rev += "\n>>\nendobj\n";
+    } else {
     rev += "\n/M ";
     appendLiteralString(rev, pdfDate(req.signingTime));
     auto optionalText = [&](const char* key, const std::string& v) {
@@ -555,6 +564,7 @@ SignResult<Layout> layoutRevision(const Plan& plan, const SignRequest& req, std:
         rev += "]";
     }
     rev += "\n>>\nendobj\n";
+    }
 
     // Cross-reference section.
     const std::uint64_t xrefOffset = baseSize + rev.size();
@@ -622,10 +632,88 @@ SignResult<Layout> layoutRevision(const Plan& plan, const SignRequest& req, std:
 
 } // namespace
 
+namespace {
+
+struct TimestampOutcome {
+    bool attached = false;
+    std::string skippedReason;
+    std::size_t tokenBytes = 0;
+};
+
+std::string joinNotes(const std::vector<std::string>& notes) {
+    std::string out;
+    for (const std::string& n : notes) {
+        if (!out.empty()) out += "; ";
+        out += n;
+    }
+    return out;
+}
+
+// Requests the signature time-stamp for signer 0 and attaches it. A TSA
+// failure is either fatal (TimestampFailed) or, when the request allows it,
+// reported through `skippedReason` with the CMS left untouched.
+SignResult<TimestampOutcome> applySignatureTimestamp(crypto::CmsSignedData& cms, const SignatureTimestampOptions& opt,
+                                                     crypto::CryptoProvider& provider, const crypto::CancelToken& cancel) {
+    if (cms.signers.empty()) return fail(SignErrorCode::Internal, "the CMS has no signer to time-stamp");
+    auto imprint = crypto::signatureTimestampImprint(provider, cms.signers[0], opt.digest);
+    if (!imprint) return failCrypto(imprint.error());
+    auto fetched = opt.fetch(opt.digest, *imprint, cancel);
+    std::string why;
+    std::optional<crypto::CryptoErrorCode> code;
+    if (!fetched) {
+        if (fetched.error().code == crypto::CryptoErrorCode::Cancelled) return failCrypto(fetched.error());
+        why = "the time-stamp request failed: " + std::string(crypto::toString(fetched.error().code)) + ": " +
+              fetched.error().message;
+        code = fetched.error().code;
+    } else if (!fetched->ok()) {
+        why = "the time-stamp token was rejected (" + std::string(crypto::toString(fetched->failure)) + ")";
+        const std::string notes = joinNotes(fetched->validation.notes);
+        if (!notes.empty()) why += ": " + notes;
+    } else if (auto attached = crypto::attachSignatureTimestamp(cms, 0, fetched->tokenDer, provider); !attached) {
+        why = "the time-stamp token could not be attached: " + attached.error().message;
+        code = attached.error().code;
+    }
+    TimestampOutcome out;
+    if (why.empty()) {
+        out.attached = true;
+        out.tokenBytes = fetched->tokenDer.size();
+        return out;
+    }
+    if (opt.allowSignWithoutTimestamp) {
+        out.skippedReason = std::move(why);
+        return out;
+    }
+    return std::unexpected<SignError>(SignError{SignErrorCode::TimestampFailed, std::move(why), code});
+}
+
+std::size_t tokenReserve(std::size_t expected) { return expected != 0 ? expected : kDefaultTimestampTokenReserve; }
+
+void fillContents(Layout& L, const Bytes& der) {
+    static constexpr char kHex[] = "0123456789ABCDEF";
+    char* hex = L.rev.data() + L.contentsStart + 1;
+    for (std::size_t i = 0; i < der.size(); ++i) {
+        hex[2 * i] = kHex[der[i] >> 4];
+        hex[2 * i + 1] = kHex[der[i] & 0x0F];
+    }
+}
+
+} // namespace
+
+std::string_view toString(PadesLevel level) {
+    switch (level) {
+    case PadesLevel::NotPades: return "not PAdES";
+    case PadesLevel::BaselineB: return "PAdES B-B";
+    case PadesLevel::BaselineT: return "PAdES B-T";
+    }
+    return "?";
+}
+
 SignResult<SignedPdf> signPdf(Bytes pdf, const SignRequest& req, crypto::CryptoProvider& provider,
                               crypto::SigningIdentity& identity) {
     if (req.cancel.cancelled()) return fail(SignErrorCode::Cancelled, "cancelled");
     if (auto ok = crypto::checkCreationAllowed(req.digest); !ok) return failCrypto(ok.error());
+    if (req.timestamp.fetch)
+        if (auto ok = crypto::checkCreationAllowed(req.timestamp.digest); !ok) return failCrypto(ok.error());
     if (pdf.size() > kMaxSignableFileSize - (std::uint64_t{16} << 20))
         return fail(SignErrorCode::LimitExceeded, "file too large to sign (limit 2 GiB)");
 
@@ -636,12 +724,13 @@ SignResult<SignedPdf> signPdf(Bytes pdf, const SignRequest& req, crypto::CryptoP
     {
         auto opened = PdfFile::open(pdf);
         if (!opened) return std::unexpected(opened.error());
-        auto p = makePlan(*opened, req, identity);
+        auto p = makePlan(*opened, req, &identity);
         if (!p) return std::unexpected(p.error());
         plan = std::move(*p);
         dataRef = plan.catalogRef;
     }
 
+    const bool wantTimestamp = static_cast<bool>(req.timestamp.fetch);
     std::size_t reserve = req.initialReserveOverride;
     if (reserve == 0) {
         reserve = kDefaultReserveBase + req.extraReserveBytes;
@@ -650,7 +739,10 @@ SignResult<SignedPdf> signPdf(Bytes pdf, const SignRequest& req, crypto::CryptoP
         else
             reserve += identity.certificate().der.size();
         reserve += identity.certificate().der.size(); // ESS hash + issuer/serial headroom
+        if (wantTimestamp) reserve += tokenReserve(req.timestamp.expectedTokenBytes);
     }
+    // A timestamped attempt costs a TSA round trip: at most one rebuild, and only if the request allows it.
+    const std::size_t maxAttempts = wantTimestamp ? (req.timestamp.retryWithLargerReservation ? 2 : 1) : kMaxAttempts;
 
     crypto::CmsSignOptions co;
     co.digest = req.digest;
@@ -667,7 +759,7 @@ SignResult<SignedPdf> signPdf(Bytes pdf, const SignRequest& req, crypto::CryptoP
     out.fieldName = plan.fieldName;
     out.classicXref = plan.xrefNum == 0;
 
-    for (std::size_t attempt = 1; attempt <= kMaxAttempts; ++attempt) {
+    for (std::size_t attempt = 1; attempt <= maxAttempts; ++attempt) {
         if (req.cancel.cancelled()) return fail(SignErrorCode::Cancelled, "cancelled");
         if (reserve > kMaxReserve) return fail(SignErrorCode::SignatureTooLarge, "signature exceeds the size limit");
         auto layout = layoutRevision(plan, req, baseSize, needPad, reserve, dataRef);
@@ -686,23 +778,41 @@ SignResult<SignedPdf> signPdf(Bytes pdf, const SignRequest& req, crypto::CryptoP
         if (req.finalizeCms) {
             if (auto r = req.finalizeCms(*cms); !r) return failCrypto(r.error());
         }
+        TimestampOutcome stamp;
+        if (wantTimestamp) {
+            auto st = applySignatureTimestamp(*cms, req.timestamp, provider, req.cancel);
+            if (!st) return std::unexpected(st.error());
+            stamp = std::move(*st);
+        }
         auto der = crypto::encodeCms(*cms);
         if (!der) return failCrypto(der.error());
 
         if (der->size() > reserve) {
-            reserve = der->size() + 128 + attempt * 256; // never shift bytes after the digest: rebuild the revision
-            out.attempts = attempt + 1;
-            continue;
+            if (!wantTimestamp) {
+                reserve = der->size() + 128 + attempt * 256; // never shift bytes after the digest: rebuild the revision
+                out.attempts = attempt + 1;
+                continue;
+            }
+            if (attempt < maxAttempts) {
+                reserve = der->size() + 512; // the token size is known now (a re-issued token varies a little)
+                out.attempts = attempt + 1;
+                continue;
+            }
+            SignError e{SignErrorCode::ContentsPlaceholderTooSmall,
+                        "the signature with its time-stamp (" + std::to_string(der->size()) +
+                            " bytes) does not fit the reserved /Contents space (" + std::to_string(reserve) + " bytes)",
+                        std::nullopt};
+            e.requiredBytes = der->size();
+            return std::unexpected<SignError>(std::move(e));
         }
-        static constexpr char kHex[] = "0123456789ABCDEF";
-        char* hex = L.rev.data() + L.contentsStart + 1;
-        for (std::size_t i = 0; i < der->size(); ++i) {
-            hex[2 * i] = kHex[(*der)[i] >> 4];
-            hex[2 * i + 1] = kHex[(*der)[i] & 0x0F];
-        }
+        fillContents(L, *der);
         out.cmsBytes = der->size();
         out.reservedBytes = reserve;
         out.attempts = attempt;
+        out.timestamped = stamp.attached;
+        out.timestampTokenBytes = stamp.tokenBytes;
+        out.timestampSkippedReason = std::move(stamp.skippedReason);
+        out.level = !plan.pades ? PadesLevel::NotPades : stamp.attached ? PadesLevel::BaselineT : PadesLevel::BaselineB;
         pdf.insert(pdf.end(), L.rev.begin(), L.rev.end());
         out.data = std::move(pdf);
 
@@ -717,9 +827,115 @@ SignResult<SignedPdf> signPdf(Bytes pdf, const SignRequest& req, crypto::CryptoP
             return fail(SignErrorCode::SelfVerifyFailed, "the new signature did not verify");
         if (plan.pades && !mine->padesBaselineB)
             return fail(SignErrorCode::SelfVerifyFailed, "the new signature is not a PAdES B-B container");
+        if (out.timestamped) {
+            if (!mine->hasTimestampToken || !mine->timestamp || !mine->timestamp->genTime)
+                return fail(SignErrorCode::SelfVerifyFailed, "the embedded signature time-stamp is not readable");
+            out.timestampGenTime = mine->timestamp->genTime;
+            out.timestampTsaSubject = mine->timestamp->tsaSubject;
+        }
         return out;
     }
     return fail(SignErrorCode::SignatureTooLarge, "the CMS did not fit the reserved /Contents space");
+}
+
+SignResult<SignedPdf> timestampPdf(Bytes pdf, const DocTimestampRequest& req, crypto::CryptoProvider& provider) {
+    if (req.cancel.cancelled()) return fail(SignErrorCode::Cancelled, "cancelled");
+    if (!req.fetch) return fail(SignErrorCode::InvalidArgument, "no time-stamp source supplied");
+    if (auto ok = crypto::checkCreationAllowed(req.digest); !ok) return failCrypto(ok.error());
+    if (req.placement.kind == SignaturePlacement::Kind::NewVisible)
+        return fail(SignErrorCode::InvalidArgument, "a document time-stamp field is always invisible");
+    if (pdf.size() > kMaxSignableFileSize - (std::uint64_t{16} << 20))
+        return fail(SignErrorCode::LimitExceeded, "file too large to time-stamp (limit 2 GiB)");
+
+    const std::uint64_t baseSize = pdf.size();
+    const bool needPad = pdf.empty() || (pdf.back() != '\n' && pdf.back() != '\r');
+    SignRequest shape; // only the placement matters for the plan
+    shape.placement = req.placement;
+    Plan plan;
+    {
+        auto opened = PdfFile::open(pdf);
+        if (!opened) return std::unexpected(opened.error());
+        auto p = makePlan(*opened, shape, nullptr, /*docTs=*/true);
+        if (!p) return std::unexpected(p.error());
+        plan = std::move(*p);
+    }
+    std::size_t reserve = req.initialReserveOverride != 0 ? req.initialReserveOverride : tokenReserve(req.expectedTokenBytes);
+    const std::size_t maxAttempts = req.retryWithLargerReservation ? 2 : 1;
+
+    SignedPdf out;
+    out.inputSize = pdf.size();
+    out.signatureRef = PdfRef{plan.sigNum, 0};
+    out.fieldName = plan.fieldName;
+    out.classicXref = plan.xrefNum == 0;
+    out.level = PadesLevel::NotPades;
+
+    for (std::size_t attempt = 1; attempt <= maxAttempts; ++attempt) {
+        if (req.cancel.cancelled()) return fail(SignErrorCode::Cancelled, "cancelled");
+        if (reserve > kMaxReserve) return fail(SignErrorCode::SignatureTooLarge, "time-stamp token exceeds the size limit");
+        auto layout = layoutRevision(plan, shape, baseSize, needPad, reserve, plan.catalogRef);
+        if (!layout) return std::unexpected(layout.error());
+        Layout& L = *layout;
+
+        const ByteView prefix(pdf.data(), pdf.size());
+        const ByteView head(reinterpret_cast<const std::uint8_t*>(L.rev.data()), L.contentsStart);
+        const ByteView tail(reinterpret_cast<const std::uint8_t*>(L.rev.data()) + L.contentsEnd,
+                            L.rev.size() - L.contentsEnd);
+        const crypto::ContentSource content = crypto::ContentSource::fromSpans({prefix, head, tail});
+        auto digest = content.digest(provider, req.digest, req.cancel);
+        if (!digest) return failCrypto(digest.error());
+
+        auto fetched = req.fetch(req.digest, *digest, req.cancel);
+        if (!fetched) {
+            if (fetched.error().code == crypto::CryptoErrorCode::Cancelled) return failCrypto(fetched.error());
+            return std::unexpected<SignError>(
+                SignError{SignErrorCode::TimestampFailed,
+                          "the time-stamp request failed: " + std::string(crypto::toString(fetched.error().code)) + ": " +
+                              fetched.error().message,
+                          fetched.error().code});
+        }
+        if (!fetched->ok()) {
+            std::string why = "the time-stamp token was rejected (" + std::string(crypto::toString(fetched->failure)) + ")";
+            const std::string notes = joinNotes(fetched->validation.notes);
+            if (!notes.empty()) why += ": " + notes;
+            return fail(SignErrorCode::TimestampFailed, std::move(why));
+        }
+        const Bytes& token = fetched->tokenDer;
+        if (token.size() > reserve) {
+            if (attempt < maxAttempts) {
+                reserve = token.size() + 512;
+                out.attempts = attempt + 1;
+                continue;
+            }
+            SignError e{SignErrorCode::ContentsPlaceholderTooSmall,
+                        "the time-stamp token (" + std::to_string(token.size()) +
+                            " bytes) does not fit the reserved /Contents space (" + std::to_string(reserve) + " bytes)",
+                        std::nullopt};
+            e.requiredBytes = token.size();
+            return std::unexpected<SignError>(std::move(e));
+        }
+        fillContents(L, token);
+        out.cmsBytes = out.timestampTokenBytes = token.size();
+        out.reservedBytes = reserve;
+        out.attempts = attempt;
+        out.timestamped = true;
+        pdf.insert(pdf.end(), L.rev.begin(), L.rev.end());
+        out.data = std::move(pdf);
+
+        auto verified = verifyPdfSignatures(out.data, provider);
+        if (!verified) return fail(SignErrorCode::SelfVerifyFailed, "time-stamped file is unreadable: " + verified.error().message);
+        const PdfSignatureInfo* mine = nullptr;
+        for (const PdfSignatureInfo& s : *verified)
+            if (s.signatureRef && *s.signatureRef == out.signatureRef) mine = &s;
+        if (!mine || mine->kind != SignatureKind::DocumentTimestamp || !mine->byteRangeValid ||
+            mine->validation.crypto != crypto::CryptoCheck::Valid ||
+            mine->validation.integrity != crypto::IntegrityStatus::Intact || !mine->coversWholeFile || !mine->timestamp ||
+            !mine->timestamp->genTime)
+            return fail(SignErrorCode::SelfVerifyFailed, "the new document time-stamp did not verify");
+        out.timestampGenTime = mine->timestamp->genTime;
+        out.timestampTsaSubject = mine->timestamp->tsaSubject;
+        return out;
+    }
+    return fail(SignErrorCode::SignatureTooLarge, "the time-stamp token did not fit the reserved /Contents space");
 }
 
 namespace {
@@ -739,16 +955,21 @@ SignResult<Bytes> readWhole(const std::filesystem::path& path) {
 
 } // namespace
 
-SignResult<SignedPdf> signPdfFile(const std::filesystem::path& input, const std::filesystem::path& output,
-                                  const SignRequest& req, crypto::CryptoProvider& provider,
-                                  crypto::SigningIdentity& identity) {
+namespace {
+
+// Reads `input`, lets `produce` build the new file, writes it to a temporary
+// file next to `output`, reads it back, checks that the input bytes are an
+// exact prefix and that the new signature verifies, then renames atomically.
+SignResult<SignedPdf> transactionalFile(const std::filesystem::path& input, const std::filesystem::path& output,
+                                        crypto::CryptoProvider& provider,
+                                        const std::function<SignResult<SignedPdf>(Bytes)>& produce) {
     auto source = readWhole(input);
     if (!source) return std::unexpected(source.error());
     const std::size_t inputSize = source->size();
     auto before = provider.digest(crypto::DigestAlgorithm::Sha256, *source);
     if (!before) return failCrypto(before.error());
 
-    auto signedPdf = signPdf(std::move(*source), req, provider, identity);
+    auto signedPdf = produce(std::move(*source));
     if (!signedPdf) return std::unexpected(signedPdf.error());
 
     auto writer = core::io::AtomicFileWriter::begin(output);
@@ -784,6 +1005,22 @@ SignResult<SignedPdf> signPdfFile(const std::filesystem::path& input, const std:
         return abort(SignError{SignErrorCode::Io, "cannot commit the output file: " + c.error().message, std::nullopt});
     signedPdf->inputSize = inputSize;
     return signedPdf;
+}
+
+
+} // namespace
+
+SignResult<SignedPdf> signPdfFile(const std::filesystem::path& input, const std::filesystem::path& output,
+                                  const SignRequest& req, crypto::CryptoProvider& provider,
+                                  crypto::SigningIdentity& identity) {
+    return transactionalFile(input, output, provider,
+                             [&](Bytes data) { return signPdf(std::move(data), req, provider, identity); });
+}
+
+SignResult<SignedPdf> timestampPdfFile(const std::filesystem::path& input, const std::filesystem::path& output,
+                                       const DocTimestampRequest& req, crypto::CryptoProvider& provider) {
+    return transactionalFile(input, output, provider,
+                             [&](Bytes data) { return timestampPdf(std::move(data), req, provider); });
 }
 
 } // namespace rivet::pdf::sign

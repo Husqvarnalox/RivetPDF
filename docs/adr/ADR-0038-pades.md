@@ -35,7 +35,52 @@ confirmed before external claims of conformance.
 
 ## Not in scope
 
-B-T (signature timestamp), B-LT (`/DSS` with validation data), B-LTA (document
-timestamp). The API supports them through `finalizeCms`, `extraReserveBytes`
-and appending further incremental revisions. DocTimeStamp signatures are
-reported unsupported by the verifier for now.
+B-LT (`/DSS` with validation data) and B-LTA (an archive time-stamp over the
+DSS). B-T and plain document time-stamps are described in "Timestamps" below.
+
+## Timestamps
+
+**B-T.** `signPdf` takes an optional `SignatureTimestampOptions` with an
+injectable `TimestampFetcher` (the PDF layer stays network-free; tests and the
+CLI adapt `crypto::TimeStampClient`, which goes through `rivet::net`, ADR-0043).
+After the CMS is signed, the hash of the signerInfo signature value is sent to
+the TSA and the verified token is attached as the `id-aa-signatureTimeStampToken`
+unsigned attribute, then the final CMS is written into the reserved `/Contents`.
+The reservation is sized up front with a token estimate (default 8 KiB); if the
+DER does not fit, signing returns `ContentsPlaceholderTooSmall` (with
+`requiredBytes`) and nothing is written, after one automatic retry with a larger
+reservation. If the TSA fails, signing fails with `TimestampFailed` and no file
+is produced, unless `allowSignWithoutTimestamp` is set: the result is then B-B
+and `timestampSkippedReason` says why. `SignedPdf::level` reports B-B or B-T.
+B-T here means: ETSI.CAdES.detached container meeting B-B plus a signature
+time-stamp whose imprint matches and whose TSA chain verifies against the
+caller's anchors (`VerifyOptions::timestampAnchors`, falling back to `anchors`);
+`PdfSignatureInfo::padesBaselineT` is set only then, and the state is
+`ValidTimestamped`. A TSA certificate is never trusted from the OS store.
+
+**DocTimeStamp.** `timestampPdf` appends an incremental revision with a
+`/Type /DocTimeStamp /Filter /Adobe.PPKLite /SubFilter /ETSI.RFC3161` dictionary
+whose `/Contents` is the raw token DER (hex, zero padded) and whose `/ByteRange`
+covers the whole file; the TSA imprint is the hash of the ByteRange bytes. It
+reuses the signer's placeholder and `ByteRange` machinery and the same
+restrictions (xref table or uncompressed xref stream, 2 GiB limit, encrypted
+files refused). It may follow any signature; a certification signature must
+stay first, so none can be added after a DocTimeStamp. The verifier reports it as
+`SignatureKind::DocumentTimestamp` with genTime and TSA subject, never as a
+signature by a person. A DocTimeStamp-only later revision is not tampering for
+earlier signatures (reads as no modification, even under DocMDP).
+
+**Interop (recorded run, poppler 26.07 / OpenSSL 4.0.3).** `pdfsig` validates
+the B-T signature as "Signature is Valid" and lists the DocTimeStamp as
+Signature #2 with correct signed ranges but cannot interpret it ("Signature has
+not yet been verified", type unknown); it does not report signature
+time-stamps. `openssl ts -verify -token_in` accepts the extracted DocTimeStamp
+token against the ByteRange digest and rejects a wrong digest.
+
+**CLI.** `rivet-pdf-sign --timestamp-url U --timestamp-anchor F` (B-T) and
+`rivet-pdf-sign timestamp ...` (DocTimeStamp) use `NetworkClient` with the
+online-validation gate On: passing the URL is the user's consent. Without a
+network transport the command reports `BackendUnavailable`.
+
+**Not done (later step):** LTV / `/DSS`, B-LT and B-LTA. A DocTimeStamp is a
+building block for B-LTA but is not by itself B-LTA.

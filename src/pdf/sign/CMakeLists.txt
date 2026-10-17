@@ -27,6 +27,6 @@ rivet_set_target_sanitizers(rivet-pdf-signature-inspect)
 # Dev/test tool: signs a PDF with a PKCS#12 identity and creates throwaway TEST
 # identities. The password comes from RIVET_P12_PASSWORD or stdin, never argv.
 add_executable(rivet-pdf-sign tools/PdfSignMain.cpp)
-target_link_libraries(rivet-pdf-sign PRIVATE rivet::pdf_sign)
+target_link_libraries(rivet-pdf-sign PRIVATE rivet::pdf_sign rivet::timestamp rivet::net)
 rivet_set_target_warnings(rivet-pdf-sign)
 rivet_set_target_sanitizers(rivet-pdf-sign)

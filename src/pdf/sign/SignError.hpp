@@ -6,6 +6,7 @@
 
 #include "crypto/Error.hpp"
 
+#include <cstddef>
 #include <cstdint>
 #include <expected>
 #include <optional>
@@ -26,6 +27,8 @@ enum class SignErrorCode : std::uint8_t {
     CertificationNotAllowed, // a certification (DocMDP) signature must be the first signature
     ViolatesCertification,   // the document is certified with "no changes" (P=1)
     SignatureTooLarge,       // CMS did not fit even after the retry budget
+    ContentsPlaceholderTooSmall, // the final CMS / time-stamp token does not fit the reserved /Contents (timestamped signing); SignError::requiredBytes says how much
+    TimestampFailed,         // the RFC 3161 step failed and the request does not allow signing without it
     SelfVerifyFailed,
     Crypto,
     Io,
@@ -39,6 +42,7 @@ struct SignError {
     SignErrorCode code = SignErrorCode::Internal;
     std::string message;
     std::optional<crypto::CryptoErrorCode> cryptoCode;
+    std::size_t requiredBytes = 0; // ContentsPlaceholderTooSmall: the /Contents capacity that would have been needed
 };
 
 template <typename T>
