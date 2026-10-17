@@ -5,6 +5,7 @@ target_sources(rivet_crypto_providers PRIVATE
     Pkcs11IdentityStore.cpp
 )
 if(RIVET_ENABLE_PKCS11)
+    target_sources(rivet_crypto_providers PRIVATE Pkcs11Module.cpp)
     target_compile_definitions(rivet_crypto_providers PUBLIC RIVET_CRYPTO_PKCS11=1)
     target_link_libraries(rivet_crypto_providers PRIVATE ${CMAKE_DL_LIBS})
 endif()
