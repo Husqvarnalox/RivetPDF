@@ -10,6 +10,7 @@ add_library(rivet_revocation STATIC
     Ocsp.cpp
     Crl.cpp
     RevocationChecker.cpp
+    AiaFetcher.cpp
 )
 add_library(rivet::revocation ALIAS rivet_revocation)
 

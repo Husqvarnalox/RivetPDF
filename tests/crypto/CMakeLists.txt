@@ -13,6 +13,7 @@ if(RIVET_ENABLE_CRYPTO)
         TestCertificates.cpp
         TestCms.cpp
         TestInterop.cpp
+        TestPathBuilder.cpp
         TestPkcs12.cpp
         TestTimeStamp.cpp
     )

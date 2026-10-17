@@ -69,6 +69,8 @@ struct CertSpec {
     std::string email;
     const TestKey* issuer = nullptr; // null: self-signed
     std::string extKeyUsage;         // X509V3 conf value for extendedKeyUsage, e.g. "critical,timeStamping"; empty: none
+    std::string basicConstraints;    // X509V3 conf value replacing the default basicConstraints (e.g. "critical,CA:TRUE,pathlen:0")
+    std::string keyUsage;            // X509V3 conf value replacing the default keyUsage
     std::vector<std::pair<int, std::string>> extraExt; // additional extensions: (NID, X509V3 conf value)
 };
 
@@ -104,13 +106,14 @@ inline TestKey makeCert(const CertSpec& spec) {
     X509_set_issuer_name(c, X509_get_subject_name(issuerCert));
     X509_NAME_free(name);
     addExt(c, issuerCert == c ? nullptr : issuerCert, NID_subject_key_identifier, "hash");
-    if (spec.ca) {
-        addExt(c, issuerCert == c ? nullptr : issuerCert, NID_basic_constraints, "critical,CA:TRUE");
-        addExt(c, issuerCert == c ? nullptr : issuerCert, NID_key_usage, "critical,keyCertSign,cRLSign");
-    } else {
-        addExt(c, issuerCert == c ? nullptr : issuerCert, NID_basic_constraints, "critical,CA:FALSE");
-        addExt(c, issuerCert == c ? nullptr : issuerCert, NID_key_usage, "critical,digitalSignature,nonRepudiation");
-    }
+    const std::string bc = !spec.basicConstraints.empty() ? spec.basicConstraints
+                           : spec.ca                      ? std::string("critical,CA:TRUE")
+                                                          : std::string("critical,CA:FALSE");
+    const std::string ku = !spec.keyUsage.empty() ? spec.keyUsage
+                           : spec.ca              ? std::string("critical,keyCertSign,cRLSign")
+                                                  : std::string("critical,digitalSignature,nonRepudiation");
+    addExt(c, issuerCert == c ? nullptr : issuerCert, NID_basic_constraints, bc.c_str());
+    addExt(c, issuerCert == c ? nullptr : issuerCert, NID_key_usage, ku.c_str());
     if (!spec.extKeyUsage.empty())
         addExt(c, issuerCert == c ? nullptr : issuerCert, NID_ext_key_usage, spec.extKeyUsage.c_str());
     for (const auto& [nid, value] : spec.extraExt) addExt(c, issuerCert == c ? nullptr : issuerCert, nid, value.c_str());
