@@ -1,0 +1,3 @@
+target_os = "win"
+# PDFium's own Chromium clang-cl toolchain is used (is_clang default); the
+# result is a static pdfium.lib compiled against the MSVC STL and the static CRT.
