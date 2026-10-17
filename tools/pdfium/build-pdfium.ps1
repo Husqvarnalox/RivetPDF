@@ -111,6 +111,15 @@ foreach ($f in "build\vs_toolchain.py", "build\toolchain\win\setup_toolchain.py"
     $new = [regex]::Replace($text, "(?m)^SDK_VERSION = '[0-9.]+'", "SDK_VERSION = '$sdkVer'")
     if ($new -ne $text) { [System.IO.File]::WriteAllText($path, $new, (New-Object System.Text.UTF8Encoding($false))) }
 }
+# The pinned tree also targets NTDDI_WIN11_BR, which only SDK >= 10.0.28000 defines; an older SDK
+# silently treats the unknown macro as 0 and hides APIs (FILE_INFO_BY_HANDLE_CLASS). Use the
+# newest NTDDI level that SDK knows (26100 = Windows 11 24H2 = NTDDI_WIN11_GE).
+if ([int]($sdkVer.Split('.')[2]) -lt 28000) {
+    $bg = Join-Path $src "build\config\win\BUILD.gn"
+    $t = [System.IO.File]::ReadAllText($bg)
+    $n = $t.Replace("NTDDI_VERSION=NTDDI_WIN11_BR", "NTDDI_VERSION=NTDDI_WIN11_GE")
+    if ($n -ne $t) { [System.IO.File]::WriteAllText($bg, $n, (New-Object System.Text.UTF8Encoding($false))) }
+}
 Write-Host "building against Windows SDK $sdkVer"
 
 # --- gn args + build -----------------------------------------------------------
