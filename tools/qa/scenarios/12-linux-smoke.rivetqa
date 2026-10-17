@@ -1,0 +1,44 @@
+# Scenario 12: smoke pass for builds without PDFium (Linux/Windows CI
+# configuration): welcome view, a PDF open failing cleanly, Markdown
+# rendering/modes/editing, dark theme, window sizes.
+resize 1280 850
+theme light
+shot 12-welcome.png
+# Without PDFium the open must fail with a message, not crash.
+open ${QA_FIX}/sample.pdf
+log-state
+shot 12-pdf-without-engine.png
+key cmd+w
+open ${QA_ROOT}/README.md
+log-state
+shot 12-readme-rendered.png
+key cmd+2
+shot 12-readme-source.png
+key cmd+3
+shot 12-readme-split.png
+key cmd+1
+theme dark
+shot 12-readme-dark.png
+theme light
+key cmd+w
+open ${QA_FIX}/graphics.md
+shot 12-graphics.png
+theme dark
+shot 12-graphics-dark.png
+theme light
+resize 940 600
+shot 12-graphics-940x600.png
+resize 1280 850
+key cmd+w
+open ${QA_FIX}/edit.md
+click 900 194
+type  more words
+key cmd+b
+type bold
+shot 12-edit.png
+key cmd+2
+shot 12-edit-source.png
+answer savechanges dontsave
+key cmd+w
+assert-tabs 0
+quit
