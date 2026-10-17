@@ -165,6 +165,7 @@ const std::map<std::string, Spec, std::less<>>& specs() {
         {"assert-clipboard", {StepKind::AssertClipboard, 0, false, true, false}},
         {"assert-pages", {StepKind::AssertPages, 1, false, false, false}},
         {"assert-tabs", {StepKind::AssertTabs, 1, false, false, false}},
+        {"assert-state", {StepKind::AssertState, 0, false, true, false}},
         {"log-state", {StepKind::LogState, 0, false, false, false}},
         {"log", {StepKind::Log, 0, false, true, false}},
         {"quit", {StepKind::Quit, 0, false, false, false}},
@@ -981,6 +982,12 @@ struct QaSession::Impl {
             const std::size_t count = shell->workspace().tabCount();
             if (static_cast<double>(count) == step.numbers[0]) ok(step);
             else fail(step, std::format("tab count is {}", count));
+            return;
+        }
+        case StepKind::AssertState: {
+            const std::string state = describeState();
+            if (state.find(step.text) != std::string::npos) ok(step);
+            else fail(step, std::format("state is {}", state));
             return;
         }
         case StepKind::LogState:
