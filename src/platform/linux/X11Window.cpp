@@ -307,7 +307,9 @@ void X11Connection::pump(Mode mode, X11Window* modalWindow, int extraFd, int tim
         fds[count++] = pollfd{ConnectionNumber(display_), POLLIN, 0};
         fds[count++] = pollfd{dispatcher_.wakeFd(), POLLIN, 0};
         if (extraFd >= 0) fds[count++] = pollfd{extraFd, POLLIN, 0};
-        while (::poll(fds, count, timeoutMs) < 0 && errno == EINTR) {
+        // Main-thread timers (postDelayed) bound the wait in the normal loop.
+        const int waitMs = mode == Mode::Normal ? dispatcher_.pollTimeoutMs(timeoutMs) : timeoutMs;
+        while (::poll(fds, count, waitMs) < 0 && errno == EINTR) {
             if (gSignalQuit.load()) break;
         }
     }

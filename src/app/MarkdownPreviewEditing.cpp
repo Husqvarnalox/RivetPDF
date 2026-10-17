@@ -9,7 +9,6 @@
 
 #include <algorithm>
 #include <cmath>
-#include <thread>
 #include <utility>
 
 namespace rivet::app {
@@ -802,34 +801,24 @@ void MarkdownPreviewView::restartBlink() {
 }
 
 void MarkdownPreviewView::scheduleBlink() {
-    if (blinkPending_ || tuning_.caretBlink.count() <= 0 || env_.scheduler == nullptr || env_.dispatcher == nullptr ||
-        editState_ == nullptr || !isFocused()) {
+    if (blinkPending_ || tuning_.caretBlink.count() <= 0 || env_.dispatcher == nullptr || editState_ == nullptr ||
+        !isFocused()) {
         return;
     }
-    std::optional<core::AsyncScope::Token> token = scope_.enter();
-    if (!token) return;
-    blinkPending_ = true;
-    const auto shared = std::make_shared<core::AsyncScope::Token>(std::move(*token));
+    // A main-thread timer (QA bug 15: the blink used to sleep on the worker
+    // pool, keeping one pool thread busy while an editor was focused).
     const std::weak_ptr<int> alive = alive_;
-    core::IMainThreadDispatcher* dispatcher = env_.dispatcher;
     const auto delay = tuning_.caretBlink;
-    env_.scheduler->post([token = shared, alive, dispatcher, delay, this] {
-        const auto until = std::chrono::steady_clock::now() + delay;
-        while (std::chrono::steady_clock::now() < until && !token->cancelled()) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    blinkPending_ = env_.dispatcher->postDelayed(delay, [alive, this, delay] {
+        if (!alive.lock()) return;
+        blinkPending_ = false;
+        if (editState_ == nullptr || !isFocused()) {
+            caretVisible_ = true;
+            return;
         }
-        if (token->cancelled()) return;
-        dispatcher->post([alive, this, delay] {
-            if (!alive.lock()) return;
-            blinkPending_ = false;
-            if (editState_ == nullptr || !isFocused()) {
-                caretVisible_ = true;
-                return;
-            }
-            if (std::chrono::steady_clock::now() - caretMoved_ >= delay) caretVisible_ = !caretVisible_;
-            invalidate();
-            scheduleBlink();
-        });
+        if (std::chrono::steady_clock::now() - caretMoved_ >= delay) caretVisible_ = !caretVisible_;
+        invalidate();
+        scheduleBlink();
     });
 }
 

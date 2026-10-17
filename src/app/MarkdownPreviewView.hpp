@@ -203,8 +203,6 @@ public:
     // The caret box in view coordinates; nullopt when there is none to draw.
     std::optional<core::Rect> caretRect() const;
     bool caretBlinkOn() const { return caretVisible_; }
-    // A caret-blink delay is sleeping on the worker pool (QA idle detection).
-    bool caretBlinkPending() const { return blinkPending_; }
 
     // --- ISearchTarget ----------------------------------------------------
     void startSearch(std::string query) override;

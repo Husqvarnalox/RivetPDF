@@ -6,6 +6,7 @@
 add_subdirectory("${CMAKE_SOURCE_DIR}/src/core/async" rivet_async_module)
 
 add_executable(rivet_async_tests
+    TestDelayedTaskQueue.cpp
     TestSerialExecutor.cpp
     TestTaskScheduler.cpp
 )

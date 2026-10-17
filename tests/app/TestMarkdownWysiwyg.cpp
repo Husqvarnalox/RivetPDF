@@ -14,12 +14,15 @@
 #include "core/async/IMainThreadDispatcher.hpp"
 #include "platform/PlatformKit.hpp"
 
+#include <chrono>
 #include <cstdio>
 #include <deque>
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <thread>
 #include <string>
+#include <utility>
 #include <vector>
 
 using namespace rivet;
@@ -45,6 +48,13 @@ public:
         for (auto& task : run) task();
         return !run.empty();
     }
+    // Main-thread timers: recorded, fired only by the test.
+    bool postDelayed(std::chrono::milliseconds delay, std::function<void()> task) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        delayed.emplace_back(delay, std::move(task));
+        return true;
+    }
+    std::deque<std::pair<std::chrono::milliseconds, std::function<void()>>> delayed;
 
 private:
     std::mutex mutex_;
@@ -418,4 +428,25 @@ RIVET_TEST(wysiwygCaretIsDrawnAndBlinksOnlyWhenFocused) {
     ui::testing::FakePaintContext ctx2;
     f.host->paint(ctx2);
     for (const auto& fill : ctx2.fills) CHECK(std::abs(fill.rect.size.width - 1.5) > 0.01);
+}
+
+// QA bug 15: the caret blink is a main-thread timer (postDelayed), not a
+// worker sleeping on the pool.
+RIVET_TEST(wysiwygCaretBlinkUsesMainThreadTimers) {
+    Fixture f("Hello\n");
+    MarkdownPreviewView::Tuning tuning;
+    tuning.caretBlink = std::chrono::milliseconds(1);
+    f.preview()->setTuning(tuning);
+    f.dispatcher.delayed.clear();
+    f.type("x");
+    CHECK(f.dispatcher.delayed.size() == 1);
+    if (f.dispatcher.delayed.empty()) return;
+    CHECK(f.dispatcher.delayed.front().first == std::chrono::milliseconds(1));
+    CHECK(f.preview()->caretBlinkOn());
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    auto tick = std::move(f.dispatcher.delayed.front().second);
+    f.dispatcher.delayed.pop_front();
+    tick();
+    CHECK(!f.preview()->caretBlinkOn()); // toggled
+    CHECK(f.dispatcher.delayed.size() == 1); // and re-armed
 }
