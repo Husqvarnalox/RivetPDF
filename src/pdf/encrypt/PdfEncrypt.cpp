@@ -366,9 +366,10 @@ private:
             wantMajor = major_;
             wantMinor = minor_;
         }
-        char line[16];
-        std::snprintf(line, sizeof line, "%%PDF-%d.%d", wantMajor, wantMinor);
-        out.put(std::string_view(line));
+        // major_/minor_ are single digits (validated in readVersion), so build the line directly.
+        const char line[] = {'%', 'P', 'D', 'F', '-', static_cast<char>('0' + wantMajor % 10), '.',
+                             static_cast<char>('0' + wantMinor % 10)};
+        out.put(std::string_view(line, sizeof line));
         // Keep whatever followed the version on the first line and the binary-marker comment line.
         std::size_t p = 8;
         const std::size_t firstObj = objects_.empty() ? 8 : std::min<std::size_t>(objects_.front().offset, d_.size());
