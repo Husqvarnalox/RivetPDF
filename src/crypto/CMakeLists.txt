@@ -17,6 +17,7 @@ add_library(rivet_crypto STATIC
     Error.cpp
     NullProvider.cpp
     Providers.cpp
+    RemoteIdentity.cpp
     SecretBuffer.cpp
     Validation.cpp
     X509Parse.cpp
@@ -49,6 +50,8 @@ add_subdirectory(providers)
 add_subdirectory(timestamp)
 # OCSP / CRL clients, revocation evidence and policy (needs rivet::net).
 add_subdirectory(revocation)
+# Cloud / remote signing adapters (CryptoPro DSS, mock-verified only; needs rivet::net).
+add_subdirectory(remote)
 
 rivet_set_target_warnings(rivet_crypto)
 rivet_set_target_sanitizers(rivet_crypto)

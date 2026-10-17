@@ -34,6 +34,14 @@ enum class CryptoErrorCode : std::uint8_t {
     Io,
     Network,            // time-stamp / online request refused or failed in the network layer (gate, policy, transport)
     BadResponse,        // the remote answered, but not with an acceptable reply (HTTP status, content type)
+    // Remote / cloud signing (ADR-0047).
+    AuthFailed,           // the service rejected the credentials or the access token
+    ConfirmationRequired, // PIN / OTP confirmation is required and cannot be obtained (no prompt available)
+    ConfirmationRejected, // the PIN / OTP was wrong (attempts exhausted); PinLocked when the service locks it
+    RateLimited,          // quota exceeded / too many requests (HTTP 429)
+    ServerError,          // the service failed (HTTP 5xx) after the bounded retries
+    Timeout,              // network or confirmation-wait time limit exceeded
+    NotQualified,         // the service refused: the certificate / identity is not allowed for qualified signing
     Internal,
 };
 

@@ -10,11 +10,13 @@
 #include "crypto/Algorithms.hpp"
 #include "crypto/Certificate.hpp"
 #include "crypto/Error.hpp"
+#include "crypto/PinPrompt.hpp"
 #include "crypto/SecretBuffer.hpp"
 #include "crypto/Types.hpp"
 #include "crypto/Validation.hpp"
 
 #include <chrono>
+#include <cstdint>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -180,36 +182,61 @@ public:
                                                  const CancelToken& cancel) = 0;
 };
 
-// Remote / cloud signing (e.g. a qualified-signature service). Interface only.
-struct RemoteSession {
-    std::string id; // opaque provider session handle
+// Remote / cloud signing (ADR-0047). The service holds the private key and
+// signs a DIGEST; Rivet assembles the CMS (CAdES / PAdES) around the returned
+// signature value and certificate chain (RemoteSigningIdentity, RemoteIdentity.hpp,
+// adapts a provider to the SigningIdentity interface the PDF signer already uses).
+//
+// Privacy: HashOnly (default) sends nothing but the digest of the signed
+// attributes. WholeDocument additionally uploads the document bytes and is an
+// explicit opt-in confirmed with a consent text by the adapter.
+enum class RemotePrivacyMode : std::uint8_t {
+    HashOnly,
+    WholeDocument,
 };
+
 struct RemoteIdentityInfo {
-    std::string id;
+    std::string id; // opaque service-side handle
     std::string displayName;
-    CertificateInfo certificate;
+    std::vector<Bytes> chainDer; // leaf first, as supplied by the service
 };
-struct RemoteTransaction {
-    std::string id; // opaque transaction handle
+
+struct RemoteSignRequest {
+    std::string identityId;
+    SignatureAlgorithm algorithm = SignatureAlgorithm::RsaPkcs1Sha256;
+    Bytes digest; // digest of the data to be signed (digestOf(algorithm))
+    // The document being signed. Adapters send it ONLY in WholeDocument mode.
+    std::shared_ptr<const Bytes> document;
 };
+
+// Blocking calls (network, user confirmation): run through runCryptoAsync,
+// never on the main thread. Implementations are thread-safe, never hold a lock
+// while calling a PinPrompt, and keep secrets (token, PIN / OTP) in
+// SecretBuffer only.
 struct RemoteCredentials {
     std::string userId;
-    SecretBuffer secret; // password / PIN, zeroed on destruction
+    SecretBuffer secret; // password, zeroed on destruction
 };
 
 class RemoteSigningProvider {
 public:
     virtual ~RemoteSigningProvider() = default;
-    virtual CryptoResult<RemoteSession> authenticate(const RemoteCredentials& credentials, const CancelToken& cancel) = 0;
-    virtual CryptoResult<std::vector<RemoteIdentityInfo>> listIdentities(const RemoteSession& session,
-                                                                         const CancelToken& cancel) = 0;
-    virtual CryptoResult<RemoteTransaction> prepareTransaction(const RemoteSession& session, std::string_view identityId,
-                                                               SignatureAlgorithm algorithm, ByteView digest,
-                                                               const CancelToken& cancel) = 0;
-    // Blocks until the user confirmed on their device (or the token is cancelled).
-    virtual CryptoOk awaitConfirmation(const RemoteTransaction& transaction, const CancelToken& cancel) = 0;
-    virtual CryptoResult<Bytes> obtainSignature(const RemoteTransaction& transaction, const CancelToken& cancel) = 0;
-    virtual void cancel(const RemoteTransaction& transaction) = 0;
+
+    // Short stable id ("cryptopro-dss"); matched against classification inputs.
+    virtual std::string_view name() const = 0;
+    // The privacy mode this provider instance sends with.
+    virtual RemotePrivacyMode privacyMode() const = 0;
+    // Obtains the in-memory access token. Errors: AuthFailed, RateLimited,
+    // ServerError, Timeout, Network, Cancelled, InvalidArgument.
+    virtual CryptoOk authenticate(const RemoteCredentials& credentials, const CancelToken& cancel) = 0;
+    virtual CryptoResult<std::vector<RemoteIdentityInfo>> listIdentities(const CancelToken& cancel) = 0;
+    // Returns the raw signature value over request.digest. `prompt` supplies a
+    // PIN / OTP when the service asks for one (null: ConfirmationRequired).
+    // Asynchronous server-side confirmation (e.g. on the user's phone) is
+    // polled until done, cancelled or timed out; a cancelled operation tells
+    // the service best-effort and returns Cancelled, leaving nothing behind.
+    virtual CryptoResult<Bytes> signHash(const RemoteSignRequest& request, PinPrompt* prompt,
+                                         const CancelToken& cancel) = 0;
 };
 
 } // namespace rivet::crypto

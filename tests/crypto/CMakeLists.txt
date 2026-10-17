@@ -35,3 +35,4 @@ rivet_set_target_sanitizers(rivet_crypto_tests)
 
 add_subdirectory(providers)
 add_subdirectory(revocation)
+add_subdirectory(remote)

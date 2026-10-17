@@ -42,8 +42,11 @@ enum class ProviderAssurance : std::uint8_t {
     Software,            // exportable software keys (OpenSSL)
     PlatformKeystore,    // OS keystore, non-exportable
     HardwareToken,       // PKCS#11 token, non-exportable
-    CertifiedCspDeclared // a CSP family sold as a certified cryptographic means (CryptoPro CSP).
+    CertifiedCspDeclared, // a CSP family sold as a certified cryptographic means (CryptoPro CSP).
                          // Certification of the installed build / a valid licence is NOT verified by Rivet.
+    RemoteService        // key held by a remote / cloud signing service (ADR-0047). Custody, qualification
+                         // and certification of the service are NOT verified by Rivet; this value never
+                         // reaches QualifiedEvidence on its own.
 };
 
 struct IdentityDescriptor {
