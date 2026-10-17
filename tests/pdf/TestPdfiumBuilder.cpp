@@ -21,6 +21,7 @@
 #include <filesystem>
 #include <fstream>
 #include <memory>
+#include <optional>
 #include <string>
 #include <system_error>
 #include <utility>
@@ -400,4 +401,65 @@ RIVET_TEST(builderReportsSinkFailures) {
     FailingSink lastWrite(measure.bytes().size() - 1);
     const core::Status status = engine->buildDocument(doc, lastWrite);
     CHECK(!status.has_value());
+}
+
+// QA bug 6: Mathematical Alphanumeric Symbols (outside the BMP, UTF-16
+// surrogate pairs in the writer) are written with their real glyphs, not
+// .notdef boxes: they extract back as the same code points, and two
+// different letters render differently (every .notdef box looks the same)
+// with visible ink.
+RIVET_TEST(builderWritesSupplementaryPlaneMathGlyphs) {
+    auto engine = pdfiumEngine();
+    if (!engine) return;
+    // Math italic E, m, c, a summation sign, an integral, math italic x.
+    const std::string utf8 = "\xF0\x9D\x90\xB8\xF0\x9D\x91\x9A\xF0\x9D\x91\x90\xE2\x88\x91\xE2\x88\xAB\xF0\x9D\x91\xA5";
+    PdfBuildDocument doc;
+    doc.pages.emplace_back();
+    doc.pages[0].items.emplace_back(run(PdfBundledFont::MathRegular, 50.0, 400.0, utf8, 40.0));
+    // One letter per spot for the glyph comparison: italic E and italic m.
+    doc.pages[0].items.emplace_back(run(PdfBundledFont::MathRegular, 100.0, 200.0, "\xF0\x9D\x90\xB8", 40.0));
+    doc.pages[0].items.emplace_back(run(PdfBundledFont::MathRegular, 300.0, 200.0, "\xF0\x9D\x91\x9A", 40.0));
+    MemorySink sink;
+    const core::Status built = engine->buildDocument(doc, sink);
+    CHECK(built.has_value());
+    if (!built.has_value()) return;
+    auto reopened = reopen(*engine, sink);
+    if (!reopened) return;
+    const auto text = reopened->textPage(0);
+    CHECK(text.has_value());
+    if (!text.has_value()) return;
+
+    // The BMP operators of the run extract as themselves. (PDFium reports a
+    // supplementary-plane character as two UTF-16 halves, which the text
+    // layer maps to U+FFFD; the glyphs themselves are checked below.)
+    std::u32string extracted;
+    for (const rivet::pdf::TextChar& c : (*text)->chars()) extracted += c.unicode;
+    CHECK(extracted.find(U"∑∫") != std::u32string::npos);
+
+    // Real glyphs, not .notdef: the box of the italic capital E is taller
+    // than the italic m's (every .notdef box is the same rectangle).
+    const auto boxNear = [&](double left) -> std::optional<core::Rect> {
+        for (const rivet::pdf::TextChar& ch : (*text)->chars()) {
+            const core::Rect& r = ch.bounds;
+            if (r.size.width > 0.0 && r.size.height > 0.0 && r.origin.x >= left - 5.0 && r.origin.x < left + 40.0 &&
+                r.origin.y > 792.0 - 260.0 && r.origin.y < 792.0 - 180.0) {
+                return r;
+            }
+        }
+        return std::nullopt;
+    };
+    const auto capE = boxNear(100.0);
+    const auto smallM = boxNear(300.0);
+    CHECK(capE.has_value() && smallM.has_value());
+    if (capE && smallM) CHECK(capE->size.height > smallM->size.height * 1.2);
+
+    // And they render with ink.
+    auto bitmap = reopened->renderPage(0, core::Rect(0.0, 0.0, 612.0, 792.0), 1.0);
+    CHECK(bitmap.has_value());
+    if (!bitmap.has_value()) return;
+    int ink = 0;
+    for (std::uint32_t dy = 0; dy < 50; ++dy) {
+        for (std::uint32_t dx = 0; dx < 50; ++dx) ink += pixelAt(*bitmap, 95 + dx, 792 - 245 + dy).r < 128 ? 1 : 0;
+    }
+    CHECK(ink > 20);
 }

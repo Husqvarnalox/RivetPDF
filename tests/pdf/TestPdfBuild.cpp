@@ -187,6 +187,17 @@ RIVET_TEST(pdfBuildRejectsBadText) {
     std::get<PdfBuildText>(doc.pages[0].items[0]).origin = {10.0, 10.0};
     std::get<PdfBuildText>(doc.pages[0].items[0]).color = PdfColor{-0.1F, 0.0F, 0.0F};
     CHECK(rejected(doc));
+
+    // Synthetic oblique: finite and within kMaxBuildTextSkew.
+    doc = onePage();
+    std::get<PdfBuildText>(doc.pages[0].items[0]).skew = kSyntheticObliqueSkew;
+    CHECK(validatePdfBuild(doc).has_value());
+    std::get<PdfBuildText>(doc.pages[0].items[0]).skew = -kMaxBuildTextSkew;
+    CHECK(validatePdfBuild(doc).has_value());
+    std::get<PdfBuildText>(doc.pages[0].items[0]).skew = kMaxBuildTextSkew + 0.01;
+    CHECK(rejected(doc));
+    std::get<PdfBuildText>(doc.pages[0].items[0]).skew = std::numeric_limits<double>::quiet_NaN();
+    CHECK(rejected(doc));
 }
 
 RIVET_TEST(pdfBuildRejectsBadLinks) {

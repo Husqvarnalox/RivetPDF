@@ -70,6 +70,9 @@ core::Status validateText(const PdfBuildText& text, const PdfBuildPage& page, co
     }
     if (!validColor(text.color)) return invalid(at + "text color out of range");
     if (!pointOnPage(text.origin, page)) return invalid(at + "text origin is not finite or outside the page");
+    if (!std::isfinite(text.skew) || std::abs(text.skew) > kMaxBuildTextSkew) {
+        return invalid(at + "text skew is not finite or out of range");
+    }
     if (text.utf8.empty()) return invalid(at + "text run is empty");
     if (text.utf8.size() > kMaxBuildTextBytes) return invalid(at + "text run is too long");
     bool hadInvalid = false;

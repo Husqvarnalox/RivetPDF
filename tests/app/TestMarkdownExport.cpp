@@ -245,3 +245,29 @@ RIVET_TEST(exportRejectsUnusableGeometry) {
     options.pageWidth = -1.0;
     CHECK(!buildMarkdownPdf("x", options, {}).has_value());
 }
+
+// QA bug 6: emphasis is exported as a synthetic oblique (the bundled faces
+// have no italic), everything else upright.
+RIVET_TEST(exportItalicUsesSyntheticOblique) {
+    auto result = buildMarkdownPdf("plain *slanted* **strong**\n", MarkdownExportOptions{}, {});
+    CHECK(result.has_value());
+    if (!result.has_value()) return;
+    CHECK(pdf::validatePdfBuild(result->document).has_value());
+    bool sawSlanted = false;
+    bool sawUpright = false;
+    for (const auto& page : result->document.pages) {
+        for (const auto& item : page.items) {
+            const auto* text = std::get_if<pdf::PdfBuildText>(&item);
+            if (text == nullptr) continue;
+            if (text->utf8.find("slanted") != std::string::npos) {
+                sawSlanted = true;
+                CHECK_NEAR(text->skew, pdf::kSyntheticObliqueSkew, 1e-12);
+            } else if (text->utf8.find("plain") != std::string::npos || text->utf8.find("strong") != std::string::npos) {
+                sawUpright = true;
+                CHECK_EQ(text->skew, 0.0);
+            }
+        }
+    }
+    CHECK(sawSlanted);
+    CHECK(sawUpright);
+}

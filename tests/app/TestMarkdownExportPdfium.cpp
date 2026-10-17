@@ -17,6 +17,8 @@
 #include <fstream>
 #include <memory>
 #include <string>
+#include <system_error>
+#include <vector>
 
 namespace {
 
@@ -149,6 +151,46 @@ RIVET_TEST(markdownExportReopensThroughPdfium) {
 
             auto bitmap = document.renderPage(0, core::Rect{0.0, 0.0, 200.0, 100.0}, 1.0);
             CHECK(bitmap.has_value());
+        }
+    }
+    std::error_code ignored;
+    fs::remove(file, ignored);
+}
+
+// QA bug 6: the math italic letters (Mathematical Alphanumeric Symbols,
+// outside the BMP) of an exported formula are real glyphs, not .notdef
+// boxes: the italic capital E is taller than the italic m (every .notdef
+// box is the same rectangle).
+RIVET_TEST(markdownExportMathLettersHaveGlyphsThroughPdfium) {
+    std::unique_ptr<pdf::PdfEngine> engine = pdf::createEngine();
+    if (engine == nullptr || !engine->isAvailable()) return;
+    auto built = app::buildMarkdownPdf("$$\nE\n$$\n\n$$\nm\n$$\n", app::MarkdownExportOptions{}, {});
+    CHECK(built.has_value());
+    if (!built.has_value()) return;
+    StringSink sink;
+    CHECK(engine->buildDocument(built->document, sink).has_value());
+    const fs::path file = fs::temp_directory_path() / "rivet-mdexport-mathglyphs.pdf";
+    {
+        std::ofstream out(file, std::ios::binary | std::ios::trunc);
+        out.write(sink.bytes.data(), static_cast<std::streamsize>(sink.bytes.size()));
+    }
+    {
+        auto opened = engine->openDocument(file);
+        CHECK(opened.has_value());
+        if (opened.has_value()) {
+            auto text = (*opened)->textPage(0);
+            CHECK(text.has_value());
+            if (text.has_value()) {
+                // The letters' glyph boxes in reading order (PdfTextPage
+                // reports each UTF-16 half of a letter as U+FFFD; only boxed
+                // entries are kept).
+                std::vector<core::Rect> boxes;
+                for (const pdf::TextChar& ch : (*text)->chars()) {
+                    if (ch.bounds.size.width > 0.0 && ch.bounds.size.height > 0.0) boxes.push_back(ch.bounds);
+                }
+                CHECK(boxes.size() >= 2);
+                if (boxes.size() >= 2) CHECK(boxes.front().size.height > boxes.back().size.height * 1.2);
+            }
         }
     }
     std::error_code ignored;

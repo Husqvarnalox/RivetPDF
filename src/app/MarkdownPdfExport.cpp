@@ -175,11 +175,15 @@ private:
     // that no page shows, and the build rejects origins outside the page.
     void text(std::string_view utf8, const markdown::TextStyle& style, double x, double baseline,
               pdf::PdfColor color) {
-        textInFont(utf8, exportFontFor(style), style.size, x, baseline, color);
+        // The bundled faces have no italic: emphasis is a synthetic oblique
+        // (QA bug 6), like the preview's platform fallback; advances are
+        // unchanged, so the layout measured upright still holds.
+        textInFont(utf8, exportFontFor(style), style.size, x, baseline, color,
+                   style.italic ? pdf::kSyntheticObliqueSkew : 0.0);
     }
 
     void textInFont(std::string_view utf8, pdf::PdfBundledFont font, double size, double x, double baseline,
-                    pdf::PdfColor color) {
+                    pdf::PdfColor color, double skew = 0.0) {
         // Script glyphs of a formula scaled far down can drop below the
         // smallest size a build accepts: invisible anyway, not written.
         if (utf8.empty() || !(size >= pdf::kMinFontSize) || size > pdf::kMaxFontSize) return;
@@ -204,6 +208,7 @@ private:
                 item.color = color;
                 item.origin = pdf::PdfPoint{px, y};
                 item.utf8 = std::string(piece);
+                item.skew = skew;
                 page_->items.emplace_back(std::move(item));
             }
             offset += metrics.textWidth(piece, style.size);
