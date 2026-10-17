@@ -55,6 +55,12 @@ if (-not (Test-Path (Join-Path $DepotTools "python3_bin_reldir.txt"))) {
 }
 $env:DEPOT_TOOLS_UPDATE = "0"          # reproducible: no self-update mid-run
 $env:DEPOT_TOOLS_WIN_TOOLCHAIN = "0"   # use the installed Visual Studio
+# A developer-command-prompt environment can list an SDK directory that is not installed
+# (e.g. a newer SDK than the image ships); gn's setup_toolchain.py validates every INCLUDE/LIB
+# entry. Drop the inherited ones and let depot_tools' vs_toolchain locate VS and the SDK itself.
+foreach ($v in "INCLUDE", "LIB", "LIBPATH") { Remove-Item "Env:$v" -ErrorAction SilentlyContinue }
+$sdkRoot = "${env:ProgramFiles(x86)}\Windows Kits\10\Include"
+if (Test-Path $sdkRoot) { Write-Host ("installed Windows SDKs: " + ((Get-ChildItem $sdkRoot -Directory).Name -join ", ")) }
 
 # --- source at the pinned revision -------------------------------------------
 @"
