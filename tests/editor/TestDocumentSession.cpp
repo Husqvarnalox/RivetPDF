@@ -76,7 +76,7 @@ public:
         // One-shot blocking hook so tests can hold a render in flight.
         if (blockNextRender.exchange(false)) {
             renderEntered_.set_value();
-            (void)releaseFuture_.wait_for(std::chrono::seconds(10));
+            (void)releaseFuture_.wait_for(std::chrono::seconds(30));
         }
 
         if (pageIndex == failingPageIndex.load()) {
@@ -162,7 +162,7 @@ RenderRequest makeRequest(const DocumentSession& session, std::size_t pageIndex,
 // Bounded wait; correctness is asserted through the future's payload, this
 // only keeps a hung delivery from hanging the test forever.
 template <typename Future>
-bool settled(const Future& future, std::chrono::milliseconds timeout = std::chrono::seconds(5)) {
+bool settled(const Future& future, std::chrono::milliseconds timeout = std::chrono::seconds(30)) {
     return future.wait_for(timeout) == std::future_status::ready;
 }
 

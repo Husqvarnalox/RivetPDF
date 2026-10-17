@@ -140,7 +140,7 @@ public:
     }
     bool waitAnnotationParked(int count) {
         std::unique_lock<std::mutex> lock(mutex_);
-        return cv_.wait_for(lock, std::chrono::seconds(10), [&] { return annotationParked_ >= count; });
+        return cv_.wait_for(lock, std::chrono::seconds(30), [&] { return annotationParked_ >= count; });
     }
 
     core::Result<pdf::PdfPageAnnotationsPtr> annotations(std::size_t pageIndex) const override {

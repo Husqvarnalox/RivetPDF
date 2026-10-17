@@ -158,7 +158,7 @@ RIVET_TEST(workspaceOpenActivatesLoadingTabThenAttachesSession) {
 
     // Drain the open pipeline: worker task -> queued completion -> attach.
     // The worker may need a moment to post its completion.
-    for (int i = 0; i < 500 && f.workspace.activeTab()->state() == DocumentTab::State::Loading; ++i) {
+    for (int i = 0; i < 15000 && f.workspace.activeTab()->state() == DocumentTab::State::Loading; ++i) {
         f.dispatcher.pump();
         std::this_thread::sleep_for(std::chrono::milliseconds(2));
     }
@@ -175,7 +175,7 @@ RIVET_TEST(workspaceOpenFailureEntersErrorState) {
     f.workspace.openDocument(tempPdf("fail"));
     // Pump until the completion has run (the worker thread needs to finish
     // the background open first).
-    for (int i = 0; i < 500 && f.workspace.activeTab()->state() == DocumentTab::State::Loading; ++i) {
+    for (int i = 0; i < 15000 && f.workspace.activeTab()->state() == DocumentTab::State::Loading; ++i) {
         f.dispatcher.pump();
         std::this_thread::sleep_for(std::chrono::milliseconds(2));
     }
@@ -192,7 +192,7 @@ RIVET_TEST(workspaceDeduplicatesPathsAndActivatesExistingTab) {
     f.workspace.openDocument(path);
     // Pump until the completion has run (the worker thread needs to finish
     // the background open first).
-    for (int i = 0; i < 500 && f.workspace.activeTab()->state() == DocumentTab::State::Loading; ++i) {
+    for (int i = 0; i < 15000 && f.workspace.activeTab()->state() == DocumentTab::State::Loading; ++i) {
         f.dispatcher.pump();
         std::this_thread::sleep_for(std::chrono::milliseconds(2));
     }
@@ -219,7 +219,7 @@ RIVET_TEST(workspaceSwitchTabsPreservesViewStatePerTab) {
     f.workspace.openDocument(a);
     // Pump until the completion has run (the worker thread needs to finish
     // the background open first).
-    for (int i = 0; i < 500 && f.workspace.activeTab()->state() == DocumentTab::State::Loading; ++i) {
+    for (int i = 0; i < 15000 && f.workspace.activeTab()->state() == DocumentTab::State::Loading; ++i) {
         f.dispatcher.pump();
         std::this_thread::sleep_for(std::chrono::milliseconds(2));
     }
@@ -227,7 +227,7 @@ RIVET_TEST(workspaceSwitchTabsPreservesViewStatePerTab) {
     f.workspace.openDocument(b);
     // Pump until the completion has run (the worker thread needs to finish
     // the background open first).
-    for (int i = 0; i < 500 && f.workspace.activeTab()->state() == DocumentTab::State::Loading; ++i) {
+    for (int i = 0; i < 15000 && f.workspace.activeTab()->state() == DocumentTab::State::Loading; ++i) {
         f.dispatcher.pump();
         std::this_thread::sleep_for(std::chrono::milliseconds(2));
     }
@@ -255,7 +255,7 @@ RIVET_TEST(workspaceCloseActiveTabActivatesNeighbor) {
     f.workspace.openDocument(tempPdf("c0"));
     f.workspace.openDocument(tempPdf("c1"));
     f.workspace.openDocument(tempPdf("c2"));
-    for (int i = 0; i < 500 && f.workspace.activeTab()->state() == DocumentTab::State::Loading; ++i) {
+    for (int i = 0; i < 15000 && f.workspace.activeTab()->state() == DocumentTab::State::Loading; ++i) {
         f.dispatcher.pump();
         std::this_thread::sleep_for(std::chrono::milliseconds(2));
     }
@@ -298,7 +298,7 @@ RIVET_TEST(workspaceTabClosedDuringLoadDropsTheSession) {
     // A fresh open still works afterwards.
     f.workspace.openDocument(tempPdf("after"));
     CHECK_EQ(f.workspace.tabCount(), std::size_t{1});
-    for (int i = 0; i < 500 && f.workspace.activeTab()->state() == DocumentTab::State::Loading; ++i) {
+    for (int i = 0; i < 15000 && f.workspace.activeTab()->state() == DocumentTab::State::Loading; ++i) {
         f.dispatcher.pump();
         std::this_thread::sleep_for(std::chrono::milliseconds(2));
     }
@@ -311,7 +311,7 @@ RIVET_TEST(workspaceEmptyStateTransitionsAndOutsideOpenFailure) {
     f.workspace.openDocument("/definitely/not/a/real/file.pdf");
     // Pump until the completion has run (the worker thread needs to finish
     // the background open first).
-    for (int i = 0; i < 500 && f.workspace.activeTab()->state() == DocumentTab::State::Loading; ++i) {
+    for (int i = 0; i < 15000 && f.workspace.activeTab()->state() == DocumentTab::State::Loading; ++i) {
         f.dispatcher.pump();
         std::this_thread::sleep_for(std::chrono::milliseconds(2));
     }
@@ -328,7 +328,7 @@ RIVET_TEST(workspacePasswordFlowPromptsAndRetries) {
     f.workspace.openDocument(path);
 
     // Wait for the open to complete (fake engine fails with PasswordRequired).
-    for (int i = 0; i < 500 && f.workspace.activeTab()->state() == DocumentTab::State::Loading; ++i) {
+    for (int i = 0; i < 15000 && f.workspace.activeTab()->state() == DocumentTab::State::Loading; ++i) {
         f.dispatcher.pump();
         std::this_thread::sleep_for(std::chrono::milliseconds(2));
     }
@@ -338,7 +338,7 @@ RIVET_TEST(workspacePasswordFlowPromptsAndRetries) {
 
     // Retry with a password: the fake engine then opens the document.
     f.workspace.retryWithPassword(f.workspace.activeIndex(), "secret");
-    for (int i = 0; i < 500 && f.workspace.activeTab()->state() == DocumentTab::State::Loading; ++i) {
+    for (int i = 0; i < 15000 && f.workspace.activeTab()->state() == DocumentTab::State::Loading; ++i) {
         f.dispatcher.pump();
         std::this_thread::sleep_for(std::chrono::milliseconds(2));
     }

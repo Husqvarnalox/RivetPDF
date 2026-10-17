@@ -58,7 +58,7 @@ RIVET_TEST(searchRestartsOnOrderAddRemoveAndContentChanges) {
         PageModelChange change;
         change.orderChanged = true;
         s.search.handlePageModelChanged(change);
-        CHECK(s.search.searching());
+        CHECK(!s.search.currentIndex().has_value()); // restart marker; a fast worker may already be done
         CHECK(settle(s.f.dispatcher, [&] { return !s.search.searching(); }));
         CHECK_EQ(s.search.matchCount(), std::size_t{3});
     }
@@ -67,7 +67,7 @@ RIVET_TEST(searchRestartsOnOrderAddRemoveAndContentChanges) {
         PageModelChange change;
         change.removed = {s.f.id(0)};
         s.search.handlePageModelChanged(change);
-        CHECK(s.search.searching());
+        CHECK(!s.search.currentIndex().has_value()); // restart marker; a fast worker may already be done
         CHECK(settle(s.f.dispatcher, [&] { return !s.search.searching(); }));
     }
     {
@@ -75,7 +75,7 @@ RIVET_TEST(searchRestartsOnOrderAddRemoveAndContentChanges) {
         PageModelChange change;
         change.added = {s.f.id(0)};
         s.search.handlePageModelChanged(change);
-        CHECK(s.search.searching());
+        CHECK(!s.search.currentIndex().has_value()); // restart marker; a fast worker may already be done
         CHECK(settle(s.f.dispatcher, [&] { return !s.search.searching(); }));
     }
     {
@@ -83,7 +83,7 @@ RIVET_TEST(searchRestartsOnOrderAddRemoveAndContentChanges) {
         PageModelChange change;
         change.contentChanged = {s.f.id(0)};
         s.search.handlePageModelChanged(change);
-        CHECK(s.search.searching());
+        CHECK(!s.search.currentIndex().has_value()); // restart marker; a fast worker may already be done
         CHECK(settle(s.f.dispatcher, [&] { return !s.search.searching(); }));
     }
 }

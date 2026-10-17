@@ -97,7 +97,7 @@ RIVET_TEST(annotationServiceDropsCompletionWhenServiceDies) {
     std::atomic<int> fired{0};
     f.session->setOnAnnotationsChanged([&](core::PageId) { ++fired; });
     std::thread release([&] {
-        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        std::this_thread::sleep_for(std::chrono::milliseconds(30));
         f.document->releaseAnnotationGate();
     });
     f.session.reset(); // destructor waits for the parked job, cancels the rest

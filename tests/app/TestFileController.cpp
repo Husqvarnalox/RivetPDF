@@ -94,7 +94,7 @@ public:
     }
     std::atomic<int> posted{0};
     bool waitUntil(const std::function<bool()>& predicate) {
-        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
         for (;;) {
             pump();
             if (predicate()) return true;

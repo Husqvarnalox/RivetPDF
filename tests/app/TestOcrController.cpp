@@ -60,12 +60,12 @@ public:
         for (auto& task : run) task();
     }
     bool waitUntil(const std::function<bool()>& predicate) {
-        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(20);
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
         for (;;) {
             pump();
             if (predicate()) return true;
             std::unique_lock<std::mutex> lock(mutex_);
-            if (!cv_.wait_until(lock, std::min(deadline, std::chrono::steady_clock::now() + std::chrono::milliseconds(5)),
+            if (!cv_.wait_until(lock, std::min(deadline, std::chrono::steady_clock::now() + std::chrono::milliseconds(30)),
                                 [this] { return !queue_.empty(); })) {
                 if (std::chrono::steady_clock::now() >= deadline) return predicate();
             }

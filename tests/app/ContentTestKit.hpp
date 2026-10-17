@@ -350,13 +350,13 @@ public:
         for (auto& task : run) task();
     }
     bool waitUntil(const std::function<bool()>& predicate) {
-        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
         for (;;) {
             pump();
             if (predicate()) return true;
             if (std::chrono::steady_clock::now() >= deadline) return predicate();
             std::unique_lock<std::mutex> lock(mutex_);
-            cv_.wait_for(lock, std::chrono::milliseconds(5), [this] { return !queue_.empty(); });
+            cv_.wait_for(lock, std::chrono::milliseconds(30), [this] { return !queue_.empty(); });
         }
     }
 

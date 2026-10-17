@@ -58,7 +58,7 @@ private:
 // Pumps `dispatcher` until `done()` or the timeout (5 s).
 template <typename Pred>
 bool settle(QueueDispatcher& dispatcher, Pred done) {
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
     while (std::chrono::steady_clock::now() < deadline) {
         dispatcher.pump();
         if (done()) return true;

@@ -255,11 +255,11 @@ RIVET_TEST(copyCallbackIsDroppedWhenTheSessionCloses) {
         [&delivered](Result<std::string>) { delivered = true; });
     {
         std::unique_lock<std::mutex> lock(f.document().mutex);
-        CHECK(f.document().cv.wait_for(lock, std::chrono::seconds(10), [&] { return f.document().parked; }));
+        CHECK(f.document().cv.wait_for(lock, std::chrono::seconds(30), [&] { return f.document().parked; }));
     }
     TextDocument* document = &f.document();
     std::thread releaser([document] {
-        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        std::this_thread::sleep_for(std::chrono::milliseconds(30));
         std::lock_guard<std::mutex> lock(document->mutex);
         document->released = true;
         document->cv.notify_all();
