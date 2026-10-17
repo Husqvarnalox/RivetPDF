@@ -21,7 +21,7 @@ namespace rivet::ui {
 template <typename Measure>
 std::string elideMiddle(std::string_view text, double maxWidth, Measure&& measure) {
     if (measure(text) <= maxWidth) return std::string(text);
-    constexpr std::string_view kEllipsis = "\xE2\x80\xA6";
+    constexpr std::string_view ellipsis = "\xE2\x80\xA6";
 
     // Code point start offsets (+ the end), so cuts never split a sequence.
     std::vector<std::size_t> starts;
@@ -35,7 +35,7 @@ std::string elideMiddle(std::string_view text, double maxWidth, Measure&& measur
         const std::size_t head = (keep + 1) / 2;
         const std::size_t tail = keep - head;
         std::string out(text.substr(0, starts[head]));
-        out += kEllipsis;
+        out += ellipsis;
         out += text.substr(starts[count - tail]);
         return out;
     };

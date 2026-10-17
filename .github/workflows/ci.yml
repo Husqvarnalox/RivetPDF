@@ -101,7 +101,7 @@ jobs:
                 -DRIVET_BUILD_TESTS=ON
 
       - name: Build
-        run: cmake --build build
+        run: cmake --build build -- -k 0  # report every MSVC error in one run
 
       - name: Test
         run: ctest --test-dir build --output-on-failure
