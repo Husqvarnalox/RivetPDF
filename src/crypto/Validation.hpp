@@ -4,6 +4,7 @@
 #include "crypto/Certificate.hpp"
 
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -49,6 +50,19 @@ std::string_view toString(CertificateStatus);
 std::string_view toString(TrustStatus);
 std::string_view toString(SignatureState);
 
+// Optional detail of an online/offline revocation check (see
+// crypto/revocation/RevocationChecker.hpp, applyRevocation). Absent unless a
+// revocation policy was applied.
+struct RevocationDetail {
+    RevocationStatus status = RevocationStatus::NotChecked;
+    bool hardFail = false;
+    std::size_t certificatesChecked = 0;
+    std::size_t certificatesUnknown = 0;
+    std::optional<std::chrono::system_clock::time_point> revokedAt;
+    std::optional<int> reasonCode; // RFC 5280 CRLReason
+    std::string summary;
+};
+
 struct ValidationResult {
     SignatureState state = SignatureState::UnableToValidate;
     CryptoCheck crypto = CryptoCheck::NotChecked;
@@ -60,6 +74,7 @@ struct ValidationResult {
     RevocationStatus revocation = RevocationStatus::NotChecked;
     PolicyStatus policy = PolicyStatus::Compliant;
     std::vector<std::string> notes; // short human-readable reasons, no secrets
+    std::optional<RevocationDetail> revocationDetail;
 };
 
 // Folds the independent statuses into the user-facing state.

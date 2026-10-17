@@ -19,6 +19,7 @@
 #include <fstream>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace rivet::crypto::testing {
@@ -68,6 +69,7 @@ struct CertSpec {
     std::string email;
     const TestKey* issuer = nullptr; // null: self-signed
     std::string extKeyUsage;         // X509V3 conf value for extendedKeyUsage, e.g. "critical,timeStamping"; empty: none
+    std::vector<std::pair<int, std::string>> extraExt; // additional extensions: (NID, X509V3 conf value)
 };
 
 inline TestKey makeCert(const CertSpec& spec) {
@@ -111,6 +113,7 @@ inline TestKey makeCert(const CertSpec& spec) {
     }
     if (!spec.extKeyUsage.empty())
         addExt(c, issuerCert == c ? nullptr : issuerCert, NID_ext_key_usage, spec.extKeyUsage.c_str());
+    for (const auto& [nid, value] : spec.extraExt) addExt(c, issuerCert == c ? nullptr : issuerCert, nid, value.c_str());
     EVP_PKEY* signKey = spec.issuer ? spec.issuer->pkey.get() : out.pkey.get();
     X509_sign(c, signKey, EVP_get_digestbyname(spec.sigDigest.c_str()));
     return out;

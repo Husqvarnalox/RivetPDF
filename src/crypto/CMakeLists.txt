@@ -45,6 +45,8 @@ option(RIVET_ENABLE_PKCS11 "Build the PKCS#11 token provider (module is dlopen'e
 add_subdirectory(providers)
 # RFC 3161 client (needs rivet::net); the request/token code is part of rivet_crypto.
 add_subdirectory(timestamp)
+# OCSP / CRL clients, revocation evidence and policy (needs rivet::net).
+add_subdirectory(revocation)
 
 rivet_set_target_warnings(rivet_crypto)
 rivet_set_target_sanitizers(rivet_crypto)
