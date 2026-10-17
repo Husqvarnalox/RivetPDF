@@ -118,10 +118,20 @@ crypto::SignatureAlgorithm pick(crypto::DigestAlgorithm d, crypto::SignatureAlgo
     return d == crypto::DigestAlgorithm::Sha256 ? s256 : d == crypto::DigestAlgorithm::Sha384 ? s384 : s512;
 }
 
+// Whole file as bytes. (Not an istreambuf_iterator range: GCC 13 -O2 reports a false
+// -Wnull-dereference inside libstdc++ for that construction.)
+std::string readWholeFile(const std::string& path) {
+    std::ifstream in(path, std::ios::binary);
+    std::string data;
+    if (!in) return data;
+    char buffer[8192];
+    while (in.read(buffer, sizeof buffer) || in.gcount() > 0) data.append(buffer, static_cast<std::size_t>(in.gcount()));
+    return data;
+}
+
 // Certificates from a PEM file (several allowed) or a single DER file.
 std::vector<crypto::Bytes> readCertificates(const std::string& path) {
-    std::ifstream in(path, std::ios::binary);
-    const std::string raw((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    const std::string raw = readWholeFile(path);
     std::vector<crypto::Bytes> out;
     if (raw.find("-----BEGIN CERTIFICATE-----") == std::string::npos) {
         if (!raw.empty()) out.emplace_back(raw.begin(), raw.end());
@@ -298,7 +308,9 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "cannot read %s\n", opt["--p12"].c_str());
         return 1;
     }
-    const crypto::Bytes p12((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    in.close();
+    const std::string p12Text = readWholeFile(opt["--p12"]);
+    const crypto::Bytes p12(p12Text.begin(), p12Text.end());
     const auto password = readPassword();
     auto contents = provider->importPkcs12(p12, password);
     if (!contents || contents->identities.empty()) {
