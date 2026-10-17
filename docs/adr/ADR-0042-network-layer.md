@@ -41,3 +41,5 @@ Mature TLS 1.2+ verification with the platform trust store, HTTP/1.1 edge cases 
 - macOS (system libcurl) and Linux/GCC: built with `RIVET_ENABLE_NETWORK=ON` in CI; loopback-server tests run with no internet.
 - macOS universal job: network OFF for now (a Homebrew single-arch libcurl could be picked up by `find_package`).
 - Windows/MSVC: network OFF in CI (no libcurl provisioning yet); portable code compiles, loopback tests are skipped. A WinHTTP transport behind the same `INetworkTransport` interface is the expected follow-up.
+
+See also: ADR-0047 (cloud signing talks to a remote service only through this layer).
