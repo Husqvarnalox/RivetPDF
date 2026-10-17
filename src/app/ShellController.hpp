@@ -162,6 +162,10 @@ public:
     ComparisonHostView& comparisonHost() { return *comparisonView_; }
     bool comparisonChromeActive() const { return chromeComparison_; }
     ui::Toolbar& toolbar() { return *toolbar_; }
+    ui::TabStrip& tabStrip() { return *tabStrip_; }
+    // Toolbar items that only make sense with a document open (tests).
+    const std::vector<ui::Widget*>& pdfToolbarItems() const { return pdfToolbarItems_; }
+    const std::vector<ui::Widget*>& documentToolbarItems() const { return documentToolbarItems_; }
     // Tool mode (View | Annotate | Edit | Forms | Redact), derived from the
     // controllers' tool state; setToolMode switches exclusively.
     ToolMode toolMode() const;
@@ -335,6 +339,8 @@ private:
     // Toolbar items per kind (hidden/shown by applyChromeForKind).
     std::vector<ui::Widget*> pdfToolbarItems_;
     std::vector<ui::Widget*> markdownToolbarItems_;
+    // Save / Find / Print: hidden (not just disabled) while no document is open.
+    std::vector<ui::Widget*> documentToolbarItems_;
     bool chromeMarkdown_ = false;
     bool chromeComparison_ = false;
     TextLabel* overlayLabel_ = nullptr; // loading / error state over the viewport

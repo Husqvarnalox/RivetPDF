@@ -347,6 +347,7 @@ void ShellController::buildToolbar() {
     auto save = iconButton(ui::Icon::Save, "Save", AppCommand::of(FileCommand::Save),
                            [this] { performFile(FileCommand::Save); });
     saveButton_ = save.get();
+    documentToolbarItems_.push_back(save.get());
     toolbar_->addItem(std::move(save), 8.0, Group::Leading);
 
     // Center (PDF): zoom, then page navigation.
@@ -408,10 +409,12 @@ void ShellController::buildToolbar() {
     });
     search->setTooltip(std::format("Find  {}", shortcutText(Shortcut{"f"})));
     searchButton_ = search.get();
+    documentToolbarItems_.push_back(search.get());
     toolbar_->addItem(std::move(search), 4.0, Group::Trailing);
     auto print = iconButton(ui::Icon::Print, "Print\xE2\x80\xA6", std::nullopt, [this] { handlePrintRequest(); });
     print->setTooltip(std::format("Print\xE2\x80\xA6  {}", shortcutText(Shortcut{"p"})));
     printButton_ = print.get();
+    documentToolbarItems_.push_back(print.get());
     toolbar_->addItem(std::move(print), 4.0, Group::Trailing);
     auto more = iconButton(ui::Icon::More, "More Commands", std::nullopt, [this] { openOverflowMenu(); });
     toolbar_->addItem(std::move(more), 0.0, Group::Trailing);
@@ -558,10 +561,12 @@ void ShellController::layoutShell() {
         hideContextBars();
         if (sidebarSplitter_ != nullptr) sidebarSplitter_->setFrame(kHiddenFrame);
     } else {
-        const double tabHeight = ui::metrics::kTabStripHeight;
+        // No document: the welcome view owns the window, so the (empty) tab
+        // strip band collapses.
+        const double tabHeight = empty ? 0.0 : ui::metrics::kTabStripHeight;
         const double toolbarHeight = ui::metrics::kToolbarHeight;
         const double statusHeight = StatusBarController::kHeight;
-        tabStrip_->setFrame(core::Rect{0.0, 0.0, width, tabHeight});
+        tabStrip_->setFrame(empty ? kHiddenFrame : core::Rect{0.0, 0.0, width, tabHeight});
         toolbar_->setFrame(core::Rect{0.0, tabHeight, width, toolbarHeight});
 
         // One context bar under the toolbar for the active tool (or the
@@ -649,6 +654,7 @@ void ShellController::applyChromeForKind(bool markdown, bool comparison) {
     const bool empty = workspace_.tabCount() == 0;
     for (ui::Widget* item : pdfToolbarItems_) toolbar_->setItemVisible(item, !markdown && !comparison && !empty);
     for (ui::Widget* item : markdownToolbarItems_) toolbar_->setItemVisible(item, markdown);
+    for (ui::Widget* item : documentToolbarItems_) toolbar_->setItemVisible(item, !empty);
     syncChrome();
     if (chromeMarkdown_ == markdown && chromeComparison_ == comparison) return;
     chromeMarkdown_ = markdown;

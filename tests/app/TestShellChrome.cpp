@@ -195,6 +195,36 @@ RIVET_TEST(shellShowsWelcomeUntilATabOpensAndRecordsRecents) {
     CHECK(s.shell->welcomeView().recentCount() == 1);
 }
 
+RIVET_TEST(welcomeViewHidesTabStripAndDocumentToolbarGroups) {
+    Shell s;
+    const auto visible = [&](const std::vector<rivet::ui::Widget*>& items) {
+        for (const rivet::ui::Widget* item : items) {
+            if (s.shell->toolbar().itemVisible(item)) return true;
+        }
+        return false;
+    };
+    CHECK(!s.shell->pdfToolbarItems().empty());
+    CHECK(!s.shell->documentToolbarItems().empty());
+    // Welcome: no tab strip band, no zoom / page / tool / sidebar / save /
+    // search / print controls; the toolbar sits at the very top.
+    CHECK(s.shell->tabStrip().frame().isEmpty());
+    CHECK(s.shell->toolbar().frame().origin.y == 0.0);
+    CHECK(!visible(s.shell->pdfToolbarItems()));
+    CHECK(!visible(s.shell->documentToolbarItems()));
+
+    CHECK(s.openPdf("doc.pdf"));
+    CHECK(!s.shell->tabStrip().frame().isEmpty());
+    CHECK(s.shell->toolbar().frame().origin.y == rivet::ui::metrics::kTabStripHeight);
+    for (const rivet::ui::Widget* item : s.shell->pdfToolbarItems()) CHECK(s.shell->toolbar().itemVisible(item));
+    for (const rivet::ui::Widget* item : s.shell->documentToolbarItems()) CHECK(s.shell->toolbar().itemVisible(item));
+
+    // Closing the last tab brings the welcome chrome back.
+    s.shell->workspace().closeTab(0);
+    CHECK(s.shell->tabStrip().frame().isEmpty());
+    CHECK(!visible(s.shell->pdfToolbarItems()));
+    CHECK(!visible(s.shell->documentToolbarItems()));
+}
+
 RIVET_TEST(shellToolModesSwitchExclusivelyAndShowContextBars) {
     Shell s;
     CHECK(s.openPdf("doc.pdf"));
