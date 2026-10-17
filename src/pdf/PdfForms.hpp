@@ -85,6 +85,14 @@ struct PdfFormField {
     // /DV (the value Reset Form restores) as text when the field or an
     // ancestor has a string or name /DV; nullopt when absent.
     std::optional<std::string> defaultValue;
+    // A widget dictionary of the field carries a non-empty (or non-text) /DV
+    // or any /RV. Applying a value to the field also empties these (a
+    // redacted value must not survive in the saved file).
+    bool defaultResidue = false;
+    // A widget has a separate parent field dictionary, which may hold an
+    // inherited /DV, /RV or /V that PDFium's public API can neither read nor
+    // remove. Redaction refuses to delete the last widget of such a field.
+    bool hasParentField = false;
     std::vector<PdfFormOption> options;
     std::vector<PdfFormWidget> widgets; // in page, then /Annots order
     // Format/keystroke/validate/calculate JavaScript is attached (it does
@@ -129,6 +137,9 @@ struct PdfFormValue {
     Kind kind = Kind::Text;
     std::string text;
     std::vector<std::uint32_t> selected;
+    // Redaction: also empty the field's own /DV and /RV (a redacted value
+    // must not survive as a default). Ordinary edits leave them alone.
+    bool clearDefaults = false;
 
     bool operator==(const PdfFormValue&) const = default;
 

@@ -72,13 +72,23 @@ core::Rect userRect(double left, double bottom, double right, double top) {
 
 } // namespace
 
-RIVET_TEST(redactionRoundTripRemovesTextWidgetAndFieldValue) {
+// `secretDefault`: the "name" field's /DV repeats the redacted value, so the
+// default must be removed from the file as well.
+void roundTripRemovesFieldValue(bool secretDefault) {
     auto engine = pdf::createEngine();
     if (engine == nullptr || !engine->isAvailable()) return;
     TempDir dir;
     const fs::path path = dir / "redact.pdf";
     {
-        const std::string bytes = pdffix::formPdf();
+        std::string bytes = pdffix::formPdf();
+        if (secretDefault) {
+            // Same length as "/DV (Your name)", so the xref stays valid.
+            const std::string original = "/DV (Your name)";
+            const std::size_t at = bytes.find(original);
+            CHECK(at != std::string::npos);
+            if (at != std::string::npos) bytes.replace(at, original.size(), "/DV (Alice)    ");
+            CHECK(bytes.find("/DV (Alice)") != std::string::npos);
+        }
         std::ofstream out(path, std::ios::binary);
         out.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
     }
@@ -156,6 +166,11 @@ RIVET_TEST(redactionRoundTripRemovesTextWidgetAndFieldValue) {
         if (city != pdf::PdfFormInfo::npos) CHECK_EQ((*form)->fields[city].value, std::string("Paris"));
     }
 }
+
+RIVET_TEST(redactionRoundTripRemovesTextWidgetAndFieldValue) { roundTripRemovesFieldValue(false); }
+
+// ADR-0026: a redacted value repeated in /DV does not survive in the file.
+RIVET_TEST(redactionRoundTripRemovesTheDefaultValueOfAFieldToo) { roundTripRemovesFieldValue(true); }
 
 // A save rebases the session onto the written file and drops the undo
 // history: undoing "Apply Redactions" afterwards cannot bring the redacted

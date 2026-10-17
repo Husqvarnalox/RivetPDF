@@ -250,6 +250,27 @@ std::optional<std::string> defaultValueOf(FPDF_ANNOTATION annot) {
     }, kMaxFormValueBytes);
 }
 
+// Whether the widget dictionary carries a /DV or /RV that applying a value
+// must empty (PdfFormField::defaultResidue). An absent or empty-string /DV
+// needs nothing.
+bool keepsDefaultResidue(FPDF_ANNOTATION annot) {
+    if (FPDFAnnot_HasKey(annot, "RV") != 0) return true;
+    if (FPDFAnnot_HasKey(annot, "DV") == 0) return false;
+    const auto dv = defaultValueOf(annot);
+    return !dv.has_value() || !dv->empty();
+}
+
+// Empties the widget's own /DV and /RV (SetStringValue replaces whatever
+// object the key held, strings, names, arrays and streams alike).
+bool clearDefaults(FPDF_ANNOTATION annot) {
+    const FPDF_WCHAR empty[1] = {0};
+    for (const char* key : {"DV", "RV"}) {
+        if (FPDFAnnot_HasKey(annot, key) == 0) continue;
+        if (FPDFAnnot_SetStringValue(annot, key, empty) == 0) return false;
+    }
+    return !keepsDefaultResidue(annot);
+}
+
 bool hasScript(FPDF_FORMHANDLE form, FPDF_ANNOTATION annot) {
     const int events[] = {FPDF_ANNOT_AACTION_KEY_STROKE, FPDF_ANNOT_AACTION_FORMAT,
                           FPDF_ANNOT_AACTION_VALIDATE, FPDF_ANNOT_AACTION_CALCULATE};
@@ -511,6 +532,8 @@ core::Result<PdfFormInfo> readFormInfo(FPDF_DOCUMENT reader, std::size_t pageCou
                 info.fields.push_back(std::move(field));
             }
             PdfFormField& field = info.fields[known->second];
+            if (keepsDefaultResidue(annot.get())) field.defaultResidue = true;
+            if (FPDFAnnot_HasKey(annot.get(), "Parent") != 0) field.hasParentField = true;
             if (widget.onState.empty() && field.isToggle()) field.overLimit = true; // no usable on-state
             field.widgets.push_back(std::move(widget));
         }
@@ -585,6 +608,12 @@ core::Status applyFormValues(FPDF_DOCUMENT document,
                 break;
             }
             FORM_ForceToKillFocus(form);
+            if (ok && value.clearDefaults) {
+                for (const Target& target : targets) {
+                    ScopedAnnot annot(openWidget(form, target, name));
+                    if (annot.get() == nullptr || !clearDefaults(annot.get())) ok = false;
+                }
+            }
             if (!ok) {
                 failed.push_back(name);
                 continue;

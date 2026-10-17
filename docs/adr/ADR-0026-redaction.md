@@ -84,7 +84,13 @@ implementation removes more, never less:
   filler, regenerating the appearance). Fields that cannot be cleared that
   way - read-only fields holding a value, push buttons and signatures,
   whose appearance would stay in the file - refuse the apply. Field names
-  remain in the file.
+  remain in the file. The field's own `/DV` and `/RV` (a default repeating
+  the redacted value) are emptied with the value (`PdfFormValue::
+  clearDefaults`, `FPDFAnnot_SetStringValue` on each widget dictionary). A
+  field whose widget has a separate `/Parent` dictionary may hold an
+  inherited `/DV`, `/RV` or `/V` that the public API cannot read or remove;
+  the apply is refused ("a redacted area contains a form field whose default
+  value cannot be removed") rather than risk under-redacting.
 - **Annotations.** Annotations whose `/Rect` intersects are removed (popups
   with their parent). A page with more than `kMaxAnnotationsPerPage`
   entries (some unlisted) refuses the apply.

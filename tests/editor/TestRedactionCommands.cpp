@@ -40,13 +40,16 @@ pdf::PdfPageAnnotation opaqueAt(std::uint32_t index, double left, double bottom,
     return item;
 }
 
-pdf::PdfFormInfoPtr formWith(pdf::PdfFormFieldType type, std::string value, bool readOnly = false) {
+pdf::PdfFormInfoPtr formWith(pdf::PdfFormFieldType type, std::string value, bool readOnly = false,
+                             bool residue = false, bool parent = false) {
     auto info = std::make_shared<pdf::PdfFormInfo>();
     pdf::PdfFormField field;
     field.name = "secret";
     field.type = type;
     field.value = std::move(value);
     field.readOnly = readOnly;
+    field.defaultResidue = residue;
+    field.hasParentField = parent;
     pdf::PdfFormWidget widget;
     widget.pageIndex = 0;
     widget.annotIndex = 1;
@@ -276,6 +279,38 @@ RIVET_TEST(Redaction_apply_refuses_fields_whose_value_cannot_be_removed) {
         CHECK(f.ready());
         CHECK(f.mark(0, userRect(60, 680, 140, 720)));
         CHECK(applyRedactions(*f.session, {}).has_value());
+    }
+}
+
+RIVET_TEST(Redaction_apply_clears_defaults_or_refuses_when_they_cannot_be_removed) {
+    {
+        // The widget's own /DV or /RV: the value to apply also empties them.
+        RedactionFixture f(formWith(pdf::PdfFormFieldType::Text, "classified", false, /*residue=*/true));
+        CHECK(f.ready());
+        CHECK(f.mark(0, userRect(60, 680, 140, 720)));
+        auto command = applyRedactions(*f.session, {});
+        CHECK(command.has_value());
+        if (command.has_value()) CHECK(f.session->execute(std::move(*command)).has_value());
+        const auto& values = f.session->pageSnapshot()->formValues();
+        CHECK(values != nullptr && values->contains("secret") && values->at("secret").clearDefaults);
+    }
+    {
+        // An already empty field still gets its default removed.
+        RedactionFixture f(formWith(pdf::PdfFormFieldType::Text, "", false, /*residue=*/true));
+        CHECK(f.ready());
+        CHECK(f.mark(0, userRect(60, 680, 140, 720)));
+        auto command = applyRedactions(*f.session, {});
+        CHECK(command.has_value());
+        if (command.has_value()) CHECK(f.session->execute(std::move(*command)).has_value());
+        const auto& values = f.session->pageSnapshot()->formValues();
+        CHECK(values != nullptr && values->contains("secret"));
+    }
+    {
+        // A separate parent field may hold an unreachable /DV: refused.
+        RedactionFixture f(formWith(pdf::PdfFormFieldType::Text, "classified", false, false, /*parent=*/true));
+        CHECK(f.ready());
+        CHECK(f.mark(0, userRect(60, 680, 140, 720)));
+        CHECK(hasCode(applyRedactions(*f.session, {}), ErrorCode::Unsupported));
     }
 }
 

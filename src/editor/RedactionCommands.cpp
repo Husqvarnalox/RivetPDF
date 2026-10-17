@@ -406,13 +406,21 @@ core::Result<std::unique_ptr<Command>> applyRedactions(DocumentSession& session,
                 }
             }
             if (!removedNow || visible) continue;
-            const std::optional<pdf::PdfFormValue> empty = emptyValueFor(field);
+            std::optional<pdf::PdfFormValue> empty = emptyValueFor(field);
             if (!empty.has_value()) {
                 return std::unexpected(unsupported(
                     "a redacted area contains a button or signature field, whose appearance cannot be removed"));
             }
+            if (field.hasParentField) {
+                // ADR-0026: never under-redact. The default (/DV) or rich-text
+                // (/RV) value of a field with a separate parent dictionary
+                // cannot be read or removed through PDFium's public API.
+                return std::unexpected(unsupported(
+                    "a redacted area contains a form field whose default value cannot be removed"));
+            }
+            empty->clearDefaults = field.defaultResidue;
             if (!values.has_value()) values = formsAfter != nullptr ? *formsAfter : pdf::PdfFormValues{};
-            if (pdf::originalValue(field) == *empty) {
+            if (pdf::originalValue(field) == *empty && !field.defaultResidue) {
                 values->erase(field.name); // the file holds nothing to remove
                 continue;
             }
