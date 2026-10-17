@@ -64,14 +64,14 @@ struct CertSpec {
     long notBeforeOffsetSec = -3600;
     long notAfterOffsetSec = 3600L * 24 * 365;
     std::string sigDigest = "SHA256";
-    std::string inn;   // adds 1.2.643.3.131.1.1 to the subject when non-empty
-    std::string snils; // adds 1.2.643.100.3
-    std::string email;
+    std::string inn{};   // adds 1.2.643.3.131.1.1 to the subject when non-empty
+    std::string snils{}; // adds 1.2.643.100.3
+    std::string email{};
     const TestKey* issuer = nullptr; // null: self-signed
-    std::string extKeyUsage;         // X509V3 conf value for extendedKeyUsage, e.g. "critical,timeStamping"; empty: none
-    std::string basicConstraints;    // X509V3 conf value replacing the default basicConstraints (e.g. "critical,CA:TRUE,pathlen:0")
-    std::string keyUsage;            // X509V3 conf value replacing the default keyUsage
-    std::vector<std::pair<int, std::string>> extraExt; // additional extensions: (NID, X509V3 conf value)
+    std::string extKeyUsage{};         // X509V3 conf value for extendedKeyUsage, e.g. "critical,timeStamping"; empty: none
+    std::string basicConstraints{};    // X509V3 conf value replacing the default basicConstraints (e.g. "critical,CA:TRUE,pathlen:0")
+    std::string keyUsage{};            // X509V3 conf value replacing the default keyUsage
+    std::vector<std::pair<int, std::string>> extraExt{}; // additional extensions: (NID, X509V3 conf value)
 };
 
 inline TestKey makeCert(const CertSpec& spec) {

@@ -31,8 +31,8 @@ struct DssScript {
     int pendingPolls = 2;       // status polls answered "pending" before the result
     int fail5xxFirst = 0;       // sign calls answered with HTTP 503 first
     bool timeoutOnSign = false; // transport-level timeout on the sign call
-    std::string redirectSignTo; // answer the sign call with a 307 to this URL
-    std::function<void()> onStatusPoll;
+    std::string redirectSignTo{}; // answer the sign call with a 307 to this URL
+    std::function<void()> onStatusPoll{};
 };
 
 struct SeenRequest {

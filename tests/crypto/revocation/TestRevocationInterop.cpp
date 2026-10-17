@@ -4,6 +4,7 @@
 // produced by `openssl ca -gencrl` are verified by Rivet, and a CRL fetched by
 // Rivet is checked by `openssl crl` / `openssl verify -crl_check`. Skipped
 // (reported, not failed) when no OpenSSL 3 command line tool is found.
+#include <cstdio>
 #include "RivetTest.h"
 
 #include "TestRevocationSupport.hpp"
@@ -83,8 +84,9 @@ std::string stamp(Clock::time_point t) {
     const std::time_t tt = Clock::to_time_t(t);
     std::tm tm{};
     gmtime_r(&tt, &tm);
-    char buf[32];
-    std::strftime(buf, sizeof buf, "%y%m%d%H%M%SZ", &tm);
+    char buf[96];
+    std::snprintf(buf, sizeof buf, "%02d%02d%02d%02d%02d%02dZ", tm.tm_year % 100, tm.tm_mon + 1, tm.tm_mday,
+                  tm.tm_hour, tm.tm_min, tm.tm_sec);
     return buf;
 }
 

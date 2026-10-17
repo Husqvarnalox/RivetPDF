@@ -336,7 +336,9 @@ RIVET_TEST(chainFromDssAndAiaWithoutEmbeddedCertificates) {
     const int before = env.transport->totalCalls();
     const auto sigs = env.verify(out->data);
     CHECK_EQ(env.transport->totalCalls(), before);
-    CHECK(firstSignature(sigs) && firstSignature(sigs)->level == PadesLevel::BaselineLT);
+    const PdfSignatureInfo* first = firstSignature(sigs);
+    CHECK(first != nullptr);
+    CHECK(first->level == PadesLevel::BaselineLT);
 }
 
 RIVET_TEST(networkOffYieldsNoEvidence) {
@@ -417,12 +419,16 @@ RIVET_TEST(missingVriAndIncompleteChainAreNotLtv) {
     CHECK(noVri.has_value());
     if (!noVri) return;
     const auto strict = env.verify(noVri->data);
-    CHECK(firstSignature(strict) && firstSignature(strict)->level == PadesLevel::BaselineT);
-    CHECK(firstSignature(strict) && !firstSignature(strict)->ltv.vriPresent);
+    const PdfSignatureInfo* strictFirst = firstSignature(strict);
+    CHECK(strictFirst != nullptr);
+    CHECK(strictFirst->level == PadesLevel::BaselineT);
+    CHECK(!strictFirst->ltv.vriPresent);
     VerifyOptions lax = env.verifyOpts();
     lax.requireVri = false;
     const auto relaxed = env.verify(noVri->data, &lax);
-    CHECK(firstSignature(relaxed) && firstSignature(relaxed)->level == PadesLevel::BaselineLT);
+    const PdfSignatureInfo* relaxedFirst = firstSignature(relaxed);
+    CHECK(relaxedFirst != nullptr);
+    CHECK(relaxedFirst->level == PadesLevel::BaselineLT);
 
     // Evidence without the CA certificates and without CMS-embedded intermediates: incomplete chain.
     LtvEnv bare(/*leafHasChain=*/false);
@@ -445,8 +451,10 @@ RIVET_TEST(missingVriAndIncompleteChainAreNotLtv) {
     if (!inc) return;
     const auto incSigs = bare.verify(inc->data);
     printLtv("incomplete-chain", incSigs);
-    CHECK(firstSignature(incSigs) && firstSignature(incSigs)->level == PadesLevel::BaselineT);
-    CHECK(firstSignature(incSigs) && !firstSignature(incSigs)->ltv.missing.empty());
+    const PdfSignatureInfo* incFirst = firstSignature(incSigs);
+    CHECK(incFirst != nullptr);
+    CHECK(incFirst->level == PadesLevel::BaselineT);
+    CHECK(!incFirst->ltv.missing.empty());
 }
 
 namespace {
@@ -472,6 +480,10 @@ Bytes withRawDss(const Bytes& pdf, const std::string& dssValue,
 
 } // namespace
 
+static PadesLevel levelOf(const std::vector<PdfSignatureInfo>& v) {
+    return v.empty() ? PadesLevel::NotPades : v.front().level;
+}
+
 RIVET_TEST(malformedDssNeverCrashes) {
     LtvEnv env;
     const Bytes t = signAt(env, PadesLevel::BaselineT);
@@ -493,7 +505,7 @@ RIVET_TEST(malformedDssNeverCrashes) {
     for (const auto& [value, extra] : cases) {
         const Bytes bad = withRawDss(t, value, extra);
         auto r = verifyPdfSignatures(bad, *env.provider, env.verifyOpts());
-        std::printf("    DSS %.40s -> %s\n", value.c_str(), r ? std::string(toString(firstSignature(*r) ? firstSignature(*r)->level : PadesLevel::NotPades)).c_str() : "unreadable");
+        std::printf("    DSS %.40s -> %s\n", value.c_str(), r ? std::string(toString(levelOf(*r))).c_str() : "unreadable");
         if (r)
             if (const PdfSignatureInfo* s = firstSignature(*r)) CHECK(s->level < PadesLevel::BaselineLT);
         // A writer meeting such a catalog refuses or merges, never crashes.
