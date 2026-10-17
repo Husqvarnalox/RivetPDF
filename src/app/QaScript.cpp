@@ -416,6 +416,8 @@ std::optional<std::string> environmentValue(std::string_view name) {
 } // namespace
 
 struct QaSession::Impl {
+    // Title of the last error alert shown (log-state: lastalert).
+    std::string lastAlert;
     // Answers queued by `answer` lines, consumed by the doubles.
     std::map<std::string, std::deque<std::string>, std::less<>> answers;
     int failures = 0;
@@ -499,6 +501,7 @@ struct QaSession::Impl {
         }
         void showError(std::string_view title, std::string_view message) override {
             qaLog(std::format("alert: error '{}': {}", title, message));
+            owner_.lastAlert = std::string(title);
         }
         std::optional<std::string> promptForText(std::string_view title, std::string_view message,
                                                  std::string_view defaultText) override {
@@ -1038,6 +1041,7 @@ struct QaSession::Impl {
         const core::Size size = shell->rootWidget().frame().size;
         out << std::format(" root={:.0f}x{:.0f}", size.width, size.height);
         out << " status='" << shell->statusText() << "'";
+        if (!lastAlert.empty()) out << " lastalert='" << lastAlert << "'";
         if (const std::string find = shell->searchCountText(); !find.empty()) out << " find='" << find << "'";
         return out.str();
     }

@@ -4,9 +4,13 @@
 resize 1280 850
 theme light
 shot 12-welcome.png
-# Without PDFium the open must fail with a message, not crash.
+# Without PDFium the open must fail with an alert (QA #21), not crash and
+# not only a status line.
 open ${QA_FIX}/sample.pdf
 log-state
+assert-state lastalert='PDF support is not available in this build'
+assert-status PDF support is not available in this build
+assert-tabs 0
 shot 12-pdf-without-engine.png
 key cmd+w
 open ${QA_ROOT}/README.md

@@ -221,7 +221,7 @@ void ShellController::buildWidgets() {
     passwordPrompt_ = std::make_unique<PasswordPromptController>(*context_, *root_);
     statusBar_ = std::make_unique<StatusBarController>(
         *context_, *root_,
-        engine_->isAvailable() ? "Ready" : "Ready — PDF support is not built into this binary");
+        engine_->isAvailable() ? "Ready" : "Ready — PDF support is not available in this build");
     // The page indicator lives in the toolbar's page navigation.
     statusBar_->attachPageIndicator(*pageNavigator_);
 
@@ -1178,7 +1178,16 @@ void ShellController::handleOpenRequest() {
 void ShellController::openDocument(const std::filesystem::path& path) {
     // Availability is per kind: Markdown never needs the PDF engine.
     if (documentKindForPath(path) == DocumentKind::Pdf && !engine_->isAvailable()) {
-        setStatus("PDF support is not built into this binary (RIVET_WITH_PDFIUM=OFF)");
+        // An alert, not only a status line that is easy to miss (QA #21):
+        // this is how the Linux and Windows builds ship today.
+        constexpr std::string_view kTitle = "PDF support is not available in this build";
+        setStatus(std::string(kTitle));
+        if (services_.alerts != nullptr) {
+            services_.alerts->showError(
+                kTitle, std::format("\u201C{}\u201D cannot be opened because this build of Rivet does not include "
+                                    "a PDF engine. Markdown documents open normally.",
+                                    path.filename().string()));
+        }
         return;
     }
     // Recent files (welcome view): paths only, existing files only.
