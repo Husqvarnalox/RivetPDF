@@ -85,6 +85,15 @@ editor reports "text extends below the original block" in the status bar
 and keeps the outline of the new extent. Text outside the page is still
 written (it is the user's content) and reported likewise.
 
+The inline editor of a single-line block (no wrap width) and of Add Text
+without a dragged box grows to the right with the text instead of
+soft-wrapping at the block width (QA #13, October 2026: the editor's
+fixed width used to soft-wrap a longer line, the commit recorded that width
+as a new wrap width and the block wrapped below itself). It wraps only at
+the page's right edge, which then becomes the block's wrap width. The
+overflow report ignores the small difference between the re-set line box
+and the original glyph bounds (half a line).
+
 ### Geometric scaling vs font size
 
 Text blocks have no scale handles: dragging a block's side handle changes

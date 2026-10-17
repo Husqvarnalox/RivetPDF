@@ -461,6 +461,28 @@ RIVET_TEST(contentControllerSelectionIsPrunedWhenTheObjectDisappears) {
     CHECK(!f.c.selected().has_value());
 }
 
+// QA #13: a single-line block has no wrap width (ADR-0015). The inline
+// editor grows with the text instead of soft-wrapping at the block width,
+// so a longer line stays one line and no wrap width is recorded.
+RIVET_TEST(contentControllerSingleLineEditGrowsInsteadOfWrapping) {
+    Fixture f;
+    f.shell.click(kInBlock);
+    f.c.editSelectedText();
+    CHECK(f.c.editorOpen());
+    const double before = f.c.editorArea().frame().size.width;
+    f.c.editorArea().setText("Hello, this line is a good deal longer than before");
+    CHECK(f.c.commitEditor());
+    CHECK_EQ(f.fake.editCalls, 1);
+    CHECK(!f.fake.lastPatch.wrapWidth.has_value());
+    // While editing, the editor widened past the original block width.
+    f.c.editSelectedText();
+    f.c.editorArea().setText("Hello, this line is a good deal longer than before, and longer");
+    f.c.placeEditor(*f.shell.viewport);
+    CHECK(f.c.editorArea().frame().size.width > before);
+    CHECK_EQ(f.c.editorArea().lineCount(), std::size_t{1});
+    f.c.cancelEditor();
+}
+
 RIVET_TEST(contentControllerReportsTextThatOverflowsTheOriginalBlock) {
     Fixture f;
     f.fake.editMarksEdited = false; // the edited block resolves later
