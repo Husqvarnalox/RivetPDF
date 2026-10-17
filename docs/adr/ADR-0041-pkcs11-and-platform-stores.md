@@ -85,3 +85,32 @@ The ABI header was written from the specification and then compared structurally
 - Vendor modules run in-process: a crashing module crashes Rivet. Out-of-process isolation is a possible later hardening.
 
 <!-- platform-stores-section-below -->
+
+## Part 2: Platform key stores
+
+### Decision
+
+`makePlatformIdentityStore()` (`src/crypto/providers/platform/`) returns an
+`IdentityStore` with assurance `PlatformKeystore`. Keys stay in the OS store
+and are non-exportable; Rivet only asks the OS to sign.
+
+- **macOS** (`MacKeychainStore_macos.mm`, Security.framework): enumerates
+  identities (certificate plus private key) from the default keychain search
+  list; signs RSA PKCS#1, RSA-PSS and ECDSA over messages or digests. The OS
+  shows its own access prompt, so no `PinPrompt` is used. GOST keys are
+  unsupported (typed error). The chain is whatever SecTrust returns, so an
+  untrusted private CA yields a leaf-only chain.
+- **Windows** (`CngStore_windows.cpp`, certificate store plus CNG / NCrypt):
+  written to the same contract but UNTESTED: it was reviewed only, has not been
+  compiled or run, and is in no CI job. Treat it as a draft until a Windows
+  build exercises it.
+- **Linux**: no platform keystore. The store reports `isAvailable() == false`
+  with a reason; use PKCS#11 or software keys.
+
+### Testing
+
+The macOS test creates a temporary keychain non-interactively, imports a
+throwaway PKCS#12 with RSA-2048 and EC P-256 identities, signs with every
+supported algorithm, verifies the signatures with OpenSSL, and removes the
+keychain. It uses the deprecated `SecKeychain*` APIs (suppressed locally) and
+skips if a future macOS removes them. The Windows path has no tests.
