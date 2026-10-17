@@ -183,8 +183,12 @@ core::Point PdfViewport::clampedScrollOffset(const core::Point& offset) const {
         const double maxOffset = std::max(0.0, contentExtent - visibleExtentPoints);
         return std::clamp(value, 0.0, maxOffset);
     };
-    return core::Point{clampAxis(offset.x, content.width, visibleExtent.width),
-                       clampAxis(offset.y, content.height, visibleExtent.height)};
+    // Content narrower than the viewport is centred horizontally (QA #17):
+    // the offset becomes negative by half the slack, so every transform
+    // ((frame.origin - offset) * zoom) places the pages in the middle.
+    const double x = content.width < visibleExtent.width ? (content.width - visibleExtent.width) / 2.0
+                                                         : clampAxis(offset.x, content.width, visibleExtent.width);
+    return core::Point{x, clampAxis(offset.y, content.height, visibleExtent.height)};
 }
 
 core::Rect PdfViewport::visibleContentRectPoints() const {
@@ -337,6 +341,17 @@ void PdfViewport::setOnFocusRequested(std::function<void()> onFocusRequested) {
 }
 
 void PdfViewport::onStateChanged() {
+    // A zoom change does not move the offset by itself: re-clamp it so the
+    // content stays in bounds and narrow content stays centred (QA #17).
+    // The corrected offset re-enters here once and does the rest.
+    if (layout_ != nullptr && state_ != &emptyStateState_ && !frame().isEmpty()) {
+        const core::Point current = state_->scrollOffsetPoints();
+        const core::Point clamped = clampedScrollOffset(current);
+        if (!core::Point::nearlyEqual(current, clamped, 1e-9)) {
+            state_->setScrollOffsetPoints(clamped);
+            return;
+        }
+    }
     const double zoomValue = state_->zoom().zoom();
     if (zoomValue != lastReportedZoom_) {
         // Queued renders were requested at the previous scale; drop them so
@@ -496,13 +511,14 @@ bool PdfViewport::handlePointer(const PointerEvent& event) {
             // content underneath stays approximately stationary. Manual zoom
             // exits an active fit mode.
             const double oldZoom = state_->zoom().zoom();
+            // Captured first: the zoom change re-clamps the offset.
+            const core::Point oldOffset = state_->scrollOffsetPoints();
             state_->zoom().setFitMode(render::ZoomState::FitMode::None);
             const bool changed = event.scrollDelta.y < 0.0 ? state_->zoom().zoomIn()
                                                            : state_->zoom().zoomOut();
             if (changed) {
                 const double newZoom = state_->zoom().zoom();
-                const core::Point contentAnchor =
-                    state_->scrollOffsetPoints() + event.position / oldZoom;
+                const core::Point contentAnchor = oldOffset + event.position / oldZoom;
                 setScrollOffsetPoints(contentAnchor - event.position / newZoom);
             }
             event.accepted = true;

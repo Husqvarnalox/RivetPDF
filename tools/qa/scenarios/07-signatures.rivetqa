@@ -17,10 +17,10 @@ shot 07-sign-armed.png
 # (clickpage scrolls a point outside the viewport into view first, which is
 # what QA bug 20 saw as "placing scrolls sideways"): placing must not move
 # the view.
-assert-state scroll=0,0
+assert-state scrolly=0 
 clickpage 1 300 470
 log-state
-assert-state scroll=0,0
+assert-state scrolly=0 
 assert-status Signature placed
 shot 07-sign-placed.png
 theme dark

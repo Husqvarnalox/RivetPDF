@@ -1015,7 +1015,18 @@ struct QaSession::Impl {
                 out << " pages=" << tab->session()->pageCount() << " page=" << (viewport.currentPageIndex() + 1)
                     << std::format(" zoom={:.0f}%", viewport.zoom().zoom() * 100.0)
                     << std::format(" scroll={:.0f},{:.0f}", viewport.scrollOffsetPoints().x,
-                                   viewport.scrollOffsetPoints().y);
+                                   viewport.scrollOffsetPoints().y)
+                    << std::format(" scrolly={:.0f}", viewport.scrollOffsetPoints().y);
+                // Horizontal placement of the current page: "yes" when it is
+                // narrower than the viewport and centred, "no" when narrower
+                // but off-centre, "wide" when it does not fit.
+                if (const auto rect = viewport.pageRectInViewport(viewport.currentPageIndex())) {
+                    const double width = viewport.bounds().size.width;
+                    const char* centred = rect->size.width >= width - 1.0 ? "wide"
+                                          : std::abs(rect->minX() - (width - rect->maxX())) <= 1.5 ? "yes"
+                                                                                                  : "no";
+                    out << " hcentered=" << centred;
+                }
             }
         }
         out << " tool=" << static_cast<int>(shell->toolMode());
