@@ -31,6 +31,12 @@ void TextField::setText(std::string text) {
     invalidate();
 }
 
+void TextField::selectAll() {
+    anchor_ = 0;
+    caret_ = text_.size();
+    invalidate();
+}
+
 TextField::Selection TextField::selection() const {
     if (anchor_ == caret_) return Selection{caret_, caret_};
     return Selection{std::min(anchor_, caret_), std::max(anchor_, caret_)};
