@@ -10,6 +10,7 @@
 namespace rivet::platform {
 
 core::Result<std::filesystem::path> WindowsAppDataLocation::directory() const {
+    if (std::optional<std::filesystem::path> overridden = appDataOverride()) return *std::move(overridden);
     PWSTR raw = nullptr;
     const HRESULT hr = ::SHGetKnownFolderPath(FOLDERID_RoamingAppData, KF_FLAG_DEFAULT, nullptr, &raw);
     if (FAILED(hr) || raw == nullptr) {

@@ -46,6 +46,7 @@ core::Result<std::filesystem::path> LinuxAppDataLocation::resolve(std::optional<
 }
 
 core::Result<std::filesystem::path> LinuxAppDataLocation::directory() const {
+    if (std::optional<std::filesystem::path> overridden = appDataOverride()) return *std::move(overridden);
     auto resolved = resolve(environment("XDG_DATA_HOME"), environment("HOME"));
     if (resolved.has_value()) return resolved;
     const std::optional<std::string> fallback = passwdHome();
