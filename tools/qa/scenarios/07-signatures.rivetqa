@@ -1,0 +1,33 @@
+# Scenario 7: signatures - Sign..., typed signature, place it, save, reopen.
+# The sheet's controls are at fixed window positions for 1280x850.
+resize 1280 850
+theme light
+open ${QA_FIX}/sample.pdf
+cmd Annotate/Sign…
+shot 07-sign-sheet.png
+# Type tab, then the name (the field takes focus).
+click 624 341
+type Rivet Tester
+shot 07-sign-typed.png
+# Done.
+click 936 584
+log-state
+shot 07-sign-armed.png
+# Place it on page 1 below the text.
+clickpage 1 300 400
+log-state
+shot 07-sign-placed.png
+theme dark
+shot 07-sign-placed-dark.png
+theme light
+
+answer save ${QA_WORK}/07-signed.pdf
+cmd File/Save As…
+log-state
+key cmd+w
+open ${QA_WORK}/07-signed.pdf
+shot 07-reopened.png
+# The Signatures sidebar tab (below the annotation strip, which stays on).
+click 168 128
+shot 07-signatures-tab.png
+quit

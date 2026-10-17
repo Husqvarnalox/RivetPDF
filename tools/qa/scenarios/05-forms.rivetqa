@@ -1,0 +1,71 @@
+# Scenario 5: forms - text, multiline, checkbox, radio, combo, list, Tab
+# traversal, Reset Form, Highlight Form Fields; save; reopen; values persist.
+# form.pdf page 1 (300x400): name (20,340)-(200,360) "Alice", notes multiline
+# (20,260)-(200,330), agree checkbox (20,230)-(34,244), color radios Red
+# (20,200) / Blue (60,200), size combo (20,160)-(120,180), fruits list
+# (140,130)-(260,180), id read-only (20,100)-(120,120), city (140,100)-(260,120).
+resize 1280 850
+theme light
+open ${QA_FIX}/form.pdf
+# Forms mode (toolbar segment).
+click 1059 54
+log-state
+shot 05-forms-mode.png
+
+# Text field: replace "Alice".
+clickpage 1 110 350
+key cmd+a
+type Bob
+# Tab to the multiline field and add a second line.
+key tab
+key cmd+a
+type First line\nSecond line
+shot 05-text-filled.png
+
+# Checkbox, radio.
+clickpage 1 27 237
+clickpage 1 67 207
+# List box: a click opens a popup under it; try the keyboard first
+# (Down, Return), then click the third row (Cherry) of the popup.
+clickpage 1 200 140
+shot 05-list-popup.png
+key down
+key return
+shot 05-list-keyboard.png
+clickpage 1 200 140
+clickpage 1 160 115.7
+shot 05-list-picked.png
+
+# Combo: open and click its third row (Large).
+clickpage 1 70 170
+shot 05-combo-open.png
+clickpage 1 70 145.7
+shot 05-combo-picked.png
+
+# Tab traversal from the name field.
+clickpage 1 110 350
+key tab
+key tab
+key tab
+shot 05-tab-traversal.png
+key escape
+
+cmd View/Highlight Form Fields
+shot 05-highlight-fields.png
+cmd View/Highlight Form Fields
+
+# Save As, close, reopen: values persist.
+answer save ${QA_WORK}/05-form.pdf
+cmd File/Save As…
+log-state
+key cmd+w
+open ${QA_WORK}/05-form.pdf
+click 1059 54
+shot 05-reopened.png
+
+# Reset Form (asks for confirmation) on the reopened copy.
+answer confirm yes
+cmd Edit/Reset Form
+log-state
+shot 05-reset.png
+quit

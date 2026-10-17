@@ -1,0 +1,13 @@
+# Scenario 11 (bug reproduction): File > Export as PDF on a Markdown tab
+# before any PDF was opened in the session. Expected: a PDF is written.
+# Observed (2026-10-17, PDFium ON): SIGSEGV in PDFium (GetStockCS via
+# FPDFPageObj_CreateNewRect) on the export worker - PdfiumEngine::
+# buildDocument never initializes the library (only openDocument does).
+# The process dies, so the "done" line is never logged.
+resize 1280 850
+open ${QA_FIX}/edit.md
+answer save ${QA_WORK}/11-export.pdf
+cmd File/Export as PDF…
+log-state
+log export finished without crashing
+quit

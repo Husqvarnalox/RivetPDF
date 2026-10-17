@@ -1,0 +1,67 @@
+# Scenario 9: Markdown - README.md and a sample with Mermaid + math;
+# Rendered/Source/Split; WYSIWYG typing, Cmd+B, Enter in a list, undo;
+# Export as PDF; dark theme.
+resize 1280 850
+theme light
+# Workaround for bug #1 (Export as PDF crashes while no PDF was opened in
+# the session; see 11-markdown-export-crash.rivetqa): open and close a PDF
+# first so PDFium is initialized.
+open ${QA_FIX}/sample.pdf
+key cmd+w
+open ${QA_ROOT}/README.md
+log-state
+shot 09-readme-rendered.png
+key cmd+2
+shot 09-readme-source.png
+key cmd+3
+shot 09-readme-split.png
+key cmd+1
+theme dark
+shot 09-readme-dark.png
+theme light
+key cmd+w
+
+open ${QA_FIX}/graphics.md
+log-state
+shot 09-graphics-rendered.png
+theme dark
+shot 09-graphics-dark.png
+theme light
+cmd View/Split
+shot 09-graphics-split.png
+cmd View/Rendered
+answer save ${QA_WORK}/09-graphics.pdf
+cmd File/Export as PDF…
+log-state
+key cmd+w
+open ${QA_WORK}/09-graphics.pdf
+log-state
+shot 09-graphics-exported.png
+key cmd+w
+
+# WYSIWYG editing on a copy-safe sample (edits are not saved).
+open ${QA_FIX}/edit.md
+shot 09-edit-initial.png
+# Click at the end of "First paragraph to edit." and type.
+click 900 200
+log-state
+shot 09-edit-clicked.png
+type  more words
+shot 09-edit-typed.png
+# Bold the next word.
+key cmd+b
+type bold
+key cmd+b
+shot 09-edit-bold.png
+# Into the list: click after "banana", Enter adds an item.
+key cmd+2
+shot 09-edit-source.png
+key cmd+1
+cmd Edit/Undo
+cmd Edit/Undo
+log-state
+shot 09-edit-undo.png
+key cmd+w
+answer savechanges dontsave
+log-state
+quit
