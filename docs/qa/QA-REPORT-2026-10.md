@@ -389,3 +389,69 @@ scenario 12 passes on `p-off`. Linux (Docker `ubuntu:24.04`, GCC, Debug,
 assertion). Windows not built here (the D2D change in f0d372b is
 compile-unverified).
 
+
+Markdown/UI findings (the original findings above are kept unchanged).
+
+- **#5** Fixed in a1543ba. `toggleInline` with a collapsed caret never
+  selects or rewrites text: it inserts an empty pair with the caret inside
+  (`**|**`), removes such a pair when toggled again, and steps past the
+  closing delimiter it sits before (`**bold|**` -> `**bold**|`); the same for
+  Italic, Strikethrough, Code and Link (`[|](url)`). Unit test
+  `inlineFormattingWithCollapsedCaretNeverSelects`; scenario 09 asserts the
+  caret after each Cmd+B/Cmd+I (`assert-md-caret`, `assert-md-source`).
+- **#6** Fixed in dcdda9a. Root cause: the builder set run text with
+  `FPDFText_SetText`, whose Unicode -> char code lookup for the CID-keyed
+  bundled fonts only knows BMP code points, so the Mathematical Alphanumeric
+  Symbols (U+1D400...) became char code 0 (.notdef). The Noto Sans Math
+  subset already covered them (`subset_fonts.py --set math` unchanged).
+  Runs are now written with `FPDFText_SetCharcodes` and the glyph ids of the
+  cmap `BundledFontMetrics` measures with. `PdfBuildText::skew` (validated,
+  text matrix `{1,0,skew,1,x,y}`) gives `*emphasis*` a ~12 degree synthetic
+  oblique in the export, matching the preview. PDFium-ON tests
+  `builderWritesSupplementaryPlaneMathGlyphs` and
+  `markdownExportMathLettersHaveGlyphsThroughPdfium` (fail before the fix).
+  Remaining limitation: `PdfTextPage` reports each UTF-16 half of such a
+  letter as U+FFFD, so math letters are not searchable/copyable.
+- **#9** Fixed in 4f3317a. Return pressed while the search had no result yet
+  (typed right after the query) stepped an empty match list; the step is
+  now deferred until the first match arrives. Scenario 01 asserts "1 /"
+  then "2 /" (the double-Return workaround is gone).
+- **#10** Fixed in 4f3317a. Cmd+F selects the previous query
+  (`TextField::selectAll`). Scenarios 01/08 assert it with
+  `assert-find-query`; the `key cmd+a` workaround is gone.
+- **#11** Fixed in 7a1f5e5. Tool hints are transient (`StatusBarController::
+  setHint/clearHint`, `ShellContext::showHint/withdrawHint`): the crop hint
+  ends with the crop tool, the Edit-tool hints when the selection is cleared
+  or the content tool changes, any hint on a tool-mode switch (a tab switch
+  already replaces the status). Scenarios 02/04 `refute-status`.
+- **#14** Fixed in a6840af. Switching Rendered/Source/Split carries the
+  caret/selection of the view the user worked in over to the newly shown
+  view(s) (the rebound source pane used to reset it); scroll handling is
+  unchanged. Scenario 09 asserts the caret across Cmd+2/Cmd+3/Cmd+1.
+- **#15** Fixed in 0beacb5. `IMainThreadDispatcher::postDelayed`: macOS
+  `dispatch_after` on the main queue, Windows a `WM_TIMER` on the
+  dispatcher's message window, Linux the event loop's `poll()` timeout
+  (both over the portable `core::DelayedTaskQueue`). The caret blink and the
+  tooltip delay use it; no worker sleeps and `ShellController::idleBlocker`
+  no longer discounts sleeping tasks (QA idle waits now require an idle
+  pool while an editor is focused, which scenario 09 exercises). Unit tests
+  `delayedTaskQueueRunsDueTasksInDeadlineOrder`,
+  `wysiwygCaretBlinkUsesMainThreadTimers`.
+- **#19** Fixed in 4321cba. `ui::Card` with new `cardBorder`/`cardShadow`
+  tokens (ADR-0033): rounded panel fill, 1 px border, soft drop shadow
+  painted by the parent outside the card's clip (`Widget::paintBehind`).
+  Used by the signature sheet, password card, note editor and find bar.
+  Test `cardPaintsShadowOutsideItsFrameAndABorder`; screenshots
+  `07-sign-sheet.png`, `08-password-prompt.png` re-checked.
+- **Harness side effect** Fixed in 8ccbbeb. All three `IAppDataLocation`s
+  honour `RIVET_APP_DATA=<absolute dir>`; a run with `RIVET_QA_SCRIPT` and
+  no override uses `<temp>/rivet-qa-appdata`. `run-qa.sh` gives every
+  scenario a fresh `build/qa-appdata/<scenario>`.
+
+
+Validation of these fixes: macOS p-off, p-on, p-asan, p-tsan build with
+zero warnings and ctest is 100% green (10/10) in each; Linux Debug (GCC,
+Docker ubuntu:24.04, PDFium OFF) builds with -Werror, ctest 9/9, scenarios
+10 and 12 pass; the llvm-mingw Windows cross build (PDFium OFF) builds with
+zero warnings (not run). macOS p-on scenarios 01-04 and 06-11 pass; 05
+still fails on bug 7 (not part of this fix set).

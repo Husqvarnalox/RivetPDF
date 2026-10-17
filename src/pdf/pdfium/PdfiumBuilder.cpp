@@ -19,6 +19,8 @@
 #include "PdfiumDisplayTransform.h" // internal::ScopedPage
 #include "PdfiumStrings.h"
 #include "PdfiumWriting.h"
+#include "pdf/BundledFontMetrics.hpp"
+#include "pdf/PdfTextLayout.hpp"
 #include "fpdf_annot.h" // FPDFPage_CreateAnnot, FPDFAnnot_SetRect, FPDFAnnot_SetURI
 #include "fpdf_edit.h"  // FPDF_CreateNewDocument, FPDFPage_New, page objects
 #include "fpdfview.h"
@@ -39,9 +41,9 @@
 //   - Text:  FPDFPageObj_CreateTextObj with the bundled font loaded once per
 //            document (internal::FontCache: FPDFText_LoadFont, TrueType,
 //            CID-keyed, the whole subset program embedded - exactly what
-//            content edits do), FPDFText_SetText in UTF-16, fill color,
-//            matrix {1,0,0,1,x,y}: the text object's origin is the baseline
-//            start of its first glyph. The written widths come from the
+//            content edits do), FPDFText_SetCharcodes with the glyph ids
+//            (CID = GID), fill color, matrix {1,0,skew,1,x,y}: the text
+//            object's origin is the baseline start of its first glyph. The written widths come from the
 //            font's hmtx, so BundledFontMetrics measures the same advances
 //            (no kerning is applied).
 //   - Path:  FPDFPageObj_CreateNewPath at the first MoveTo, then
@@ -113,14 +115,15 @@ unsigned int toByte(float v) {
     return static_cast<unsigned int>(std::lround(static_cast<double>(std::clamp(v, 0.0F, 1.0F)) * 255.0));
 }
 
-std::vector<FPDF_WCHAR> toWide(const std::string& utf8) {
-    const std::vector<std::uint8_t> bytes = internal::utf8ToUtf16le(utf8);
-    std::vector<FPDF_WCHAR> units(bytes.size() / 2);
-    for (std::size_t i = 0; i < units.size(); ++i) {
-        units[i] = static_cast<FPDF_WCHAR>(static_cast<unsigned>(bytes[2 * i]) |
-                                           (static_cast<unsigned>(bytes[2 * i + 1]) << 8));
-    }
-    return units;
+// The run's glyph ids in the bundled font (validated: every code point is
+// covered, so none maps to .notdef).
+std::vector<std::uint32_t> glyphCodes(const PdfBuildText& text) {
+    const BundledFontMetrics& metrics = bundledFontMetrics(text.font);
+    std::vector<std::uint32_t> codes;
+    const std::u32string decoded = decodeUtf8(text.utf8);
+    codes.reserve(decoded.size());
+    for (const char32_t cp : decoded) codes.push_back(metrics.glyphId(cp));
+    return codes;
 }
 
 FS_MATRIX matrix(double a, double d, double e, double f) {
@@ -209,13 +212,23 @@ core::Status addText(FPDF_DOCUMENT document, FPDF_PAGE page, const PdfBuildText&
     if (font == nullptr) return fail("PDFium rejected a bundled font program");
     OwnedObject object(FPDFPageObj_CreateTextObj(document, font, static_cast<float>(text.fontSize)));
     if (object.get() == nullptr) return fail("PDFium could not create a text object");
-    const std::vector<FPDF_WCHAR> wide = toWide(text.utf8);
-    if (FPDFText_SetText(object.get(), wide.data()) == 0) return fail("PDFium could not set the text of a run");
+    // Character codes, not FPDFText_SetText: the font is CID-keyed with
+    // CID = glyph id (Identity-H), and PDFium's Unicode -> char code lookup
+    // only knows BMP code points, so supplementary-plane characters (the
+    // Mathematical Alphanumeric Symbols the math face draws, U+1D400...)
+    // became code 0 = .notdef boxes (QA bug 6). The glyph ids come from the
+    // same cmap BundledFontMetrics measures with; the embedded ToUnicode map
+    // still maps every glyph back to its code point.
+    const std::vector<std::uint32_t> codes = glyphCodes(text);
+    if (codes.empty() || FPDFText_SetCharcodes(object.get(), codes.data(), codes.size()) == 0) {
+        return fail("PDFium could not set the text of a run");
+    }
     if (FPDFPageObj_SetFillColor(object.get(), toByte(text.color.r), toByte(text.color.g), toByte(text.color.b),
                                  255) == 0) {
         return fail("PDFium could not set a text color");
     }
-    const FS_MATRIX m = matrix(1.0, 1.0, text.origin.x, text.origin.y);
+    FS_MATRIX m = matrix(1.0, 1.0, text.origin.x, text.origin.y);
+    m.c = static_cast<float>(text.skew); // synthetic oblique: x += skew * y
     if (FPDFPageObj_SetMatrix(object.get(), &m) == 0) return fail("PDFium could not place a text run");
     return insert(page, object);
 }

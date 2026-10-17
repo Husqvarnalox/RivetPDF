@@ -66,9 +66,8 @@ AnnotationController::AnnotationController(ShellContext& context, ui::Widget& pa
 
     // The note editor: a TextArea with a Done button, floating over the
     // viewport beside the note while open.
-    auto panel = std::make_unique<ui::Container>();
+    auto panel = std::make_unique<ui::Card>();
     notePanel_ = panel.get();
-    notePanel_->setBackground(&ui::Palette::panelBackground);
     parent.addChild(std::move(panel));
 
     auto area = std::make_unique<ui::TextArea>("Note");

@@ -186,6 +186,7 @@ void ContentController::setTool(ContentTool next) {
     interaction_.setTool(next); // cancels a running gesture, clears hover
     if (DocumentTab* tab = activeTab(); tab != nullptr) selected_.erase(tab->id());
     interaction_.setSelection(std::nullopt);
+    context_.withdrawHint();
     nudge_.valid = false;
     overflowCheck_.reset();
     if (next != ContentTool::None) {
@@ -340,6 +341,7 @@ void ContentController::select(std::optional<ContentInteraction::Selected> selec
     } else {
         selected_.erase(tab->id());
         interaction_.setSelection(std::nullopt);
+        context_.withdrawHint(); // the selection's hint no longer applies (QA bug 11)
     }
     notifyState();
     repaint();
@@ -356,17 +358,17 @@ void ContentController::announceSelection(const HitInfo& info) {
     const std::string suffix = info.reason.empty() ? std::string() : std::format(" — {}", info.reason);
     switch (info.capability) {
     case editor::ContentCapability::ReadOnly:
-        context_.setStatus(std::format("Edit: read-only{}", suffix));
+        context_.showHint(std::format("Edit: read-only{}", suffix));
         break;
     case editor::ContentCapability::MoveOnly:
-        context_.setStatus(std::format("Edit: can be moved or deleted{}", suffix));
+        context_.showHint(std::format("Edit: can be moved or deleted{}", suffix));
         break;
     case editor::ContentCapability::Replaceable:
-        context_.setStatus(std::format("Edit: text can be retyped; a bundled font will be used{}", suffix));
+        context_.showHint(std::format("Edit: text can be retyped; a bundled font will be used{}", suffix));
         break;
     case editor::ContentCapability::FullyEditable:
         if (info.kind == ContentInteraction::Kind::Text) {
-            context_.setStatus("Edit: double-click or press Return to edit the text");
+            context_.showHint("Edit: double-click or press Return to edit the text");
         }
         break;
     }

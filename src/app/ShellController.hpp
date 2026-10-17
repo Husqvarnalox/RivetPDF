@@ -28,7 +28,6 @@
 #include "core/async/TaskScheduler.hpp"
 #include "pdf/PdfSystem.hpp"
 #include "platform/PlatformKit.hpp"
-#include "core/async/AsyncScope.hpp"
 #include "ui/Animation.hpp"
 #include "ui/Container.hpp"
 #include "ui/PdfViewport.hpp"
@@ -36,7 +35,6 @@
 #include "ui/TabStrip.hpp"
 #include "ui/Toolbar.hpp"
 
-#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
@@ -223,9 +221,9 @@ private:
         }
     };
 
-    // Runs a tooltip delay on the worker pool and delivers it on the main
-    // thread; fenced by delayScope_ and alive_ (nothing runs after the
-    // shell's destructor started).
+    // Runs a tooltip delay as a main-thread timer
+    // (IMainThreadDispatcher::postDelayed); fenced by alive_ (nothing runs
+    // after the shell's destructor started).
     class DelayedRunner final : public ui::IDelayedRunner {
     public:
         explicit DelayedRunner(ShellController& shell) : shell_(shell) {}
@@ -292,12 +290,8 @@ private:
     platform::ShellServices services_;
     std::function<void()> quitHandler_;
     // Tooltip delays (see DelayedRunner). alive_ is reset first in the
-    // destructor; delayScope_ outlives nothing it fences (declared before
-    // the scheduler: destroyed after the posted work finished).
+    // destructor.
     std::shared_ptr<int> alive_ = std::make_shared<int>(0);
-    // Delay tasks (tooltips, caret blink) currently occupying the worker
-    // pool: isIdle() does not count them as pending work.
-    std::shared_ptr<std::atomic<std::size_t>> delayedTasks_ = std::make_shared<std::atomic<std::size_t>>(0);
     RecentFiles recentFiles_;
     // Declaration order = reverse destruction order: the feature controllers
     // die first (they only hold pointers into the tree and the workspace;
@@ -307,7 +301,6 @@ private:
     // engine, then the scheduler. The background open tasks reference the
     // scheduler and engine, both alive until after the workspace is gone.
     core::TaskScheduler scheduler_;
-    core::AsyncScope delayScope_;
     DelayedRunner delayedRunner_{*this};
     std::unique_ptr<pdf::PdfEngine> engine_;
     DocumentWorkspace workspace_;

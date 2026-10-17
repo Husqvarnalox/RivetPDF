@@ -16,7 +16,6 @@ constexpr std::size_t kNpos = std::string_view::npos;
 bool isSpace(char c) { return c == ' ' || c == '\t'; }
 bool isDigit(char c) { return c >= '0' && c <= '9'; }
 bool isAlnum(char c) { return isDigit(c) || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z'); }
-bool isWordByte(char c) { return isAlnum(c) || static_cast<unsigned char>(c) >= 0x80; }
 
 std::size_t lineStartOf(std::string_view s, std::size_t offset) {
     offset = std::min(offset, s.size());
@@ -1085,27 +1084,96 @@ Rewrite toggleLink(std::string_view s, Segment g, std::string_view url) {
 
 } // namespace
 
+namespace {
+
+// A collapsed caret never selects or rewrites existing text (QA bug 5):
+//  - inside an empty delimiter pair of this format ("**|**") the pair is
+//    removed (toggle off before anything was typed);
+//  - just before the closing delimiter of this format ("**bold|**") the caret
+//    steps past it, so the next keystroke types plain text;
+//  - otherwise an empty pair is inserted with the caret between ("**|**"),
+//    so the next keystroke types formatted text.
+Edit toggleAtCaret(std::string_view source, std::size_t at, InlineFormat format, std::string_view url) {
+    const std::size_t lineStart = [&] {
+        const std::size_t nl = at == 0 ? std::string_view::npos : source.rfind('\n', at - 1);
+        return nl == std::string_view::npos ? std::size_t{0} : nl + 1;
+    }();
+    const std::size_t lineEnd = lineEndOf(source, at);
+    const auto moveTo = [&](std::size_t to) {
+        Edit e;
+        e.offset = at;
+        e.anchor = e.caret = to;
+        return e;
+    };
+    const auto insertPair = [&](std::string_view open, std::string_view close) {
+        Edit e;
+        e.offset = at;
+        e.insert.append(open).append(close);
+        e.anchor = e.caret = at + open.size();
+        return e;
+    };
+    const auto removePair = [&](std::size_t open, std::size_t close) {
+        Edit e;
+        e.offset = at - open;
+        e.removeLength = open + close;
+        e.anchor = e.caret = at - open;
+        return e;
+    };
+    // The caret closes a span: the text before it on this line is not blank
+    // right at the caret and contains an opener `c` run.
+    const auto closesSpan = [&](char c) {
+        if (at <= lineStart || isSpace(source[at - 1]) || source[at - 1] == c) return false;
+        return source.substr(lineStart, at - lineStart).find(c) != std::string_view::npos;
+    };
+
+    if (format == InlineFormat::Link) {
+        const std::string target = "](" + std::string(url.empty() ? std::string_view("https://") : url) + ")";
+        if (at > 0 && source[at - 1] == '[' && source.substr(at, target.size()) == target) {
+            return removePair(1, target.size());
+        }
+        if (source.substr(at, 2) == "](") {
+            int depth = 0;
+            for (std::size_t i = at + 1; i < lineEnd; ++i) {
+                if (source[i] == '\\') {
+                    ++i;
+                    continue;
+                }
+                if (source[i] == '(') ++depth;
+                if (source[i] == ')' && --depth == 0) return moveTo(i + 1);
+            }
+        }
+        return insertPair("[", target);
+    }
+    const std::string_view delim = format == InlineFormat::Bold            ? "**"
+                                   : format == InlineFormat::Italic        ? "*"
+                                   : format == InlineFormat::Strikethrough ? "~~"
+                                                                           : "`";
+    const std::size_t n = delim.size();
+    if (at >= lineStart + n && source.substr(at - n, n) == delim && source.substr(at, n) == delim) {
+        return removePair(n, n);
+    }
+    const std::string_view closers = format == InlineFormat::Bold || format == InlineFormat::Italic ? "*_" : delim.substr(0, 1);
+    for (const char closer : closers) {
+        const std::size_t run = runAfter(source, at, closer);
+        const bool matches = format == InlineFormat::Bold     ? run >= 2
+                             : format == InlineFormat::Italic ? run == 1 || run >= 3
+                             : format == InlineFormat::Code   ? run >= 1
+                                                              : run >= 2;
+        if (run > 0 && matches && closesSpan(closer)) return moveTo(at + run);
+    }
+    return insertPair(delim, delim);
+}
+
+} // namespace
+
 Edit toggleInline(std::string_view source, std::size_t selBegin, std::size_t selEnd, InlineFormat format,
                   std::string_view url) {
     if (selBegin > selEnd) std::swap(selBegin, selEnd);
     selEnd = std::min(selEnd, source.size());
     selBegin = std::min(selBegin, selEnd);
-    std::size_t a = selBegin;
-    std::size_t b = selEnd;
-    if (a == b) {
-        while (a > 0 && isWordByte(source[a - 1])) --a;
-        while (b < source.size() && isWordByte(source[b])) ++b;
-        if (a == b) {
-            if (format != InlineFormat::Link) return noChange(selBegin, selEnd);
-            const std::string target(url.empty() ? std::string_view("https://") : url);
-            Edit e;
-            e.offset = a;
-            e.insert = "[" + target + "](" + target + ")";
-            e.anchor = a + 1;
-            e.caret = a + 1 + target.size();
-            return e;
-        }
-    }
+    if (selBegin == selEnd) return toggleAtCaret(source, selBegin, format, url);
+    const std::size_t a = selBegin;
+    const std::size_t b = selEnd;
     // Segments: one per line, without the line's container prefix and
     // without surrounding whitespace.
     std::vector<Segment> segments;

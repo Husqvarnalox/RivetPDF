@@ -1,5 +1,6 @@
 #pragma once
 
+#include "ui/Drawing.hpp"
 #include "ui/Theme.hpp"
 #include "ui/Widget.hpp"
 
@@ -41,6 +42,34 @@ public:
 private:
     ColorToken backgroundToken_ = nullptr;
     Color backgroundColor_{0.0, 0.0, 0.0, 0.0}; // transparent by default
+};
+
+// A floating card (ADR-0033): modal sheets, prompts, popovers and the find
+// bar. Rounded (kRadiusCard) background from a token (panelBackground by
+// default), a 1 px cardBorder outline and a soft cardShadow drop shadow
+// painted outside its frame, so it separates from the page behind it.
+class Card : public Container {
+public:
+    Card() { setBackground(&Palette::panelBackground); }
+
+    void paintBehind(PaintContext& context) const override {
+        const core::Rect box = frame();
+        if (box.isEmpty()) return;
+        const Color shadow = colors().cardShadow;
+        constexpr int kLayers = 4;
+        for (int layer = kLayers; layer >= 1; --layer) {
+            const double grow = metrics::kCardShadowRadius * static_cast<double>(layer) / kLayers;
+            const core::Rect halo{box.minX() - grow, box.minY() - grow + metrics::kCardShadowOffsetY,
+                                  box.size.width + 2.0 * grow, box.size.height + 2.0 * grow};
+            context.fillRoundedRect(halo, withAlpha(shadow, shadow.a / (1.0 + static_cast<double>(layer))),
+                                    metrics::kRadiusCard + grow);
+        }
+    }
+    void paintSelf(PaintContext& context) const override {
+        const core::Rect rect = bounds();
+        context.fillRoundedRect(rect, backgroundColor(), metrics::kRadiusCard);
+        strokeRoundedRect(context, rect, colors().cardBorder, metrics::kHairline, metrics::kRadiusCard);
+    }
 };
 
 // A chrome strip (context bar, status bar): the chrome background with

@@ -17,7 +17,9 @@ light and dark themes, the document as the focus.
 1. **Design tokens in `rivet_ui`.** `ui/Theme.hpp` defines semantic tokens,
    never raw colors at call sites: `windowBackground`, `chromeBackground`
    (toolbar/tab strip/sidebar), `chromeSeparator`, `canvasBackground` (behind
-   pages), `pageShadow`, `controlFill` / `controlFillHover` /
+   pages), `pageShadow`, `cardBorder` / `cardShadow` (floating cards:
+   `ui::Card` gives every sheet, prompt, popover and the find bar a 1 px
+   border and a soft drop shadow), `controlFill` / `controlFillHover` /
    `controlFillPressed`, `controlBorder`, `textPrimary` / `textSecondary` /
    `textDisabled`, `accent` / `accentText` / `accentSubtle` (selection
    backgrounds), `focusRing`, `danger`, `success`, `warning`,

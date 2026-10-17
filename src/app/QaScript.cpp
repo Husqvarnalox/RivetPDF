@@ -9,6 +9,7 @@
 #include "render/PageLayout.hpp"
 #include "render/PageTransform.hpp"
 #include "ui/PdfViewport.hpp"
+#include "ui/TextField.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -25,6 +26,7 @@
 #include <map>
 #include <sstream>
 #include <stop_token>
+#include <string_view>
 #include <thread>
 #include <utility>
 
@@ -161,7 +163,11 @@ const std::map<std::string, Spec, std::less<>>& specs() {
         {"theme", {StepKind::Theme, 0, false, true, false}},
         {"answer", {StepKind::Answer, 0, false, true, false}},
         {"assert-status", {StepKind::AssertStatus, 0, false, true, false}},
+        {"refute-status", {StepKind::RefuteStatus, 0, false, true, false}},
         {"assert-find", {StepKind::AssertFind, 0, false, true, false}},
+        {"assert-find-query", {StepKind::AssertFindQuery, 0, false, true, false}},
+        {"assert-md-source", {StepKind::AssertMdSource, 0, false, true, false}},
+        {"assert-md-caret", {StepKind::AssertMdCaret, 0, false, true, false}},
         {"assert-clipboard", {StepKind::AssertClipboard, 0, false, true, false}},
         {"assert-pages", {StepKind::AssertPages, 1, false, false, false}},
         {"assert-tabs", {StepKind::AssertTabs, 1, false, false, false}},
@@ -952,6 +958,53 @@ struct QaSession::Impl {
             const std::string& status = shell->statusText();
             if (status.find(step.text) != std::string::npos) ok(step);
             else fail(step, std::format("status is '{}'", status));
+            return;
+        }
+        case StepKind::RefuteStatus: {
+            const std::string& status = shell->statusText();
+            if (status.find(step.text) == std::string::npos) ok(step);
+            else fail(step, std::format("status is '{}'", status));
+            return;
+        }
+        case StepKind::AssertFindQuery: {
+            const ui::TextField& field = shell->searchBar().field();
+            const ui::TextField::Selection sel = field.selection();
+            std::string typed = field.text();
+            typed.replace(sel.begin, sel.end - sel.begin, step.text);
+            if (field.selection().begin == 0 && typed == step.text) ok(step);
+            else fail(step, std::format("typing would give '{}'", typed));
+            return;
+        }
+        case StepKind::AssertMdSource:
+        case StepKind::AssertMdCaret: {
+            const MarkdownHostView& host = shell->markdownHost();
+            const MarkdownTabState* state = host.state();
+            const auto selection = host.sourceSelection();
+            if (state == nullptr || !selection) {
+                fail(step, "no bound Markdown tab");
+                return;
+            }
+            const std::string& source = state->source();
+            if (step.kind == StepKind::AssertMdSource) {
+                if (source.find(step.text) != std::string::npos) ok(step);
+                else fail(step, "source does not contain the text");
+                return;
+            }
+            std::string want;
+            for (std::size_t i = 0; i < step.text.size(); ++i) {
+                if (step.text[i] == '\\' && i + 1 < step.text.size() && step.text[i + 1] == 'n') {
+                    want.push_back('\n');
+                    ++i;
+                } else {
+                    want.push_back(step.text[i]);
+                }
+            }
+            const auto [anchor, caret] = *selection;
+            const std::size_t at = std::min(caret, source.size());
+            const std::string before = source.substr(at >= 40 ? at - 40 : 0, std::min<std::size_t>(at, 40));
+            if (anchor != caret) fail(step, std::format("selection {}..{} is not collapsed", anchor, caret));
+            else if (std::string_view(source).substr(0, at).ends_with(want)) ok(step);
+            else fail(step, std::format("caret {} follows '{}'", caret, before));
             return;
         }
         case StepKind::AssertFind: {

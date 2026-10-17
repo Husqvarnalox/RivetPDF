@@ -30,11 +30,14 @@ assert-pages 4
 # Crop page 1: start the tool, pull the top-left corner in, apply.
 click 110 240
 cmd Page/Crop…
+assert-status Drag the handles to crop
 shot 02-crop-tool.png
 dragpage 1 1 791 150 650
 shot 02-crop-dragged.png
 key return
 log-state
+# The crop hint ends with the tool (bug 11).
+refute-status Drag the handles
 shot 02-cropped.png
 
 # Duplicate, then Save As a new file.

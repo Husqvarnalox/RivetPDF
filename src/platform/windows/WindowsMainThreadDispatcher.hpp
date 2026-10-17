@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 #pragma once
 
+#include "core/async/DelayedTaskQueue.hpp"
 #include "core/async/IMainThreadDispatcher.hpp"
 
 #include <cstddef>
@@ -35,6 +36,16 @@ public:
     WindowsMainThreadDispatcher& operator=(const WindowsMainThreadDispatcher&) = delete;
 
     void post(std::function<void()> task) override;
+    // Timers live in a DelayedTaskQueue; the message window keeps one
+    // WM_TIMER armed for the earliest deadline (SetTimer is main-thread only,
+    // so other threads ask the window to re-arm it). Due tasks join the FIFO
+    // and run through drain() (deferred while modal, like posted tasks).
+    bool postDelayed(std::chrono::milliseconds delay, std::function<void()> task) override;
+
+    // Main thread (window procedure): moves due timers into the FIFO, drains
+    // and re-arms the WM_TIMER for the next deadline.
+    void fireTimers();
+    void armTimer();
 
     // Main thread: runs every task queued so far (unless a modal scope is
     // active). Returns how many ran.
@@ -57,6 +68,7 @@ private:
     HWND__* window_ = nullptr;
     std::mutex mutex_;
     std::deque<std::function<void()>> tasks_;
+    core::DelayedTaskQueue timers_;
     int modalDepth_ = 0; // main thread only
 };
 

@@ -11,6 +11,7 @@
 #include <cmath>
 #include <memory>
 #include <optional>
+#include <utility>
 #include <string>
 #include <unordered_map>
 #include <utility>
@@ -259,6 +260,17 @@ public:
 
     ISearchTarget* searchTarget() override { return state_ != nullptr ? &router_ : nullptr; }
 
+    std::optional<std::pair<std::size_t, std::size_t>> sourceSelection() const override {
+        if (state_ == nullptr) return std::nullopt;
+        const bool editorLeads = appliedMode_ == MarkdownDisplayMode::Source ||
+                                 (appliedMode_ == MarkdownDisplayMode::Split && !preview_->isFocused());
+        if (!editorLeads) return std::pair{preview_->anchorOffset(), preview_->caretOffset()};
+        const ui::SourceEditor& editor = pane_->editor();
+        const ui::SourceEditor::Selection sel = editor.selection();
+        const std::size_t caret = editor.caretOffset();
+        return std::pair{caret == sel.begin ? sel.end : sel.begin, caret};
+    }
+
     bool copySelection() override {
         if (state_ == nullptr || !previewShown(appliedMode_)) return false;
         if (appliedMode_ == MarkdownDisplayMode::Split && pane_->editor().isFocused()) return false;
@@ -359,6 +371,17 @@ private:
         const std::optional<std::size_t> fromPreview =
             previewShown(prior) ? preview_->topSourceOffset() : std::nullopt;
         const std::size_t fromEditor = sourceShown(prior) ? pane_->editor().topVisibleOffset() : 0;
+        // The caret/selection (source offsets) of the view the user worked in:
+        // it survives the switch (QA bug 14).
+        const auto [selAnchor, selCaret] = [&]() -> std::pair<std::size_t, std::size_t> {
+            const bool fromPreviewCaret = prior == MarkdownDisplayMode::Rendered ||
+                                          (prior == MarkdownDisplayMode::Split && preview_->isFocused());
+            if (fromPreviewCaret || !sourceShown(prior)) return {preview_->anchorOffset(), preview_->caretOffset()};
+            const ui::SourceEditor& editor = pane_->editor();
+            const ui::SourceEditor::Selection sel = editor.selection();
+            const std::size_t caret = editor.caretOffset();
+            return {caret == sel.begin ? sel.end : sel.begin, caret};
+        }();
 
         appliedMode_ = next;
         pane_->bind(sourceShown(next) ? state_ : nullptr);
@@ -370,6 +393,14 @@ private:
         } else if (!previewShown(prior) && previewShown(next) && sourceShown(prior)) {
             const SyncGuard guard(*this);
             preview_->scrollToSourceOffset(fromEditor);
+        }
+        {
+            const SyncGuard guard(*this);
+            if (sourceShown(next)) {
+                pane_->editor().setSelection(selAnchor, selCaret);
+                pane_->editor().revealOffset(selCaret);
+            }
+            if (previewShown(next)) preview_->setCaretFromSource(selAnchor, selCaret, false);
         }
 
         router_.setDelegate(delegateFor(next));

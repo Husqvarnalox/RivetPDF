@@ -1,8 +1,11 @@
 // SPDX-License-Identifier: MPL-2.0
 #include "LinuxMainThreadDispatcher.hpp"
 
+#include <algorithm>
 #include <cerrno>
+#include <optional>
 #include <utility>
+#include <vector>
 
 #include <fcntl.h>
 #include <unistd.h>
@@ -48,6 +51,22 @@ void LinuxMainThreadDispatcher::post(std::function<void()> task) {
     if (wasEmpty) wake();
 }
 
+bool LinuxMainThreadDispatcher::postDelayed(std::chrono::milliseconds delay, std::function<void()> task) {
+    if (!task) return true;
+    const auto deadline = core::DelayedTaskQueue::Clock::now() + std::max(delay, std::chrono::milliseconds(0));
+    // A new earliest timer shortens the loop's current poll(): wake it so it
+    // recomputes the timeout.
+    if (timers_.push(deadline, std::move(task))) wake();
+    return true;
+}
+
+int LinuxMainThreadDispatcher::pollTimeoutMs(int requested) const {
+    constexpr int kMaxWaitMs = 60 * 60 * 1000;
+    const std::optional<int> next =
+        timers_.millisecondsUntilNext(core::DelayedTaskQueue::Clock::now(), requested >= 0 ? requested : kMaxWaitMs);
+    return next ? *next : requested;
+}
+
 void LinuxMainThreadDispatcher::wake() const {
     if (writeFd_ < 0) return;
     const char byte = 1;
@@ -75,12 +94,17 @@ std::size_t LinuxMainThreadDispatcher::drain() {
     }
     // Run outside the lock: tasks may post (re-entrancy) or block.
     for (auto& task : batch) task();
-    return batch.size();
+    std::vector<std::function<void()>> due = timers_.takeDue(core::DelayedTaskQueue::Clock::now());
+    for (auto& task : due) task();
+    return batch.size() + due.size();
 }
 
 bool LinuxMainThreadDispatcher::hasPending() {
-    const std::lock_guard<std::mutex> lock(mutex_);
-    return !tasks_.empty();
+    {
+        const std::lock_guard<std::mutex> lock(mutex_);
+        if (!tasks_.empty()) return true;
+    }
+    return timers_.millisecondsUntilNext(core::DelayedTaskQueue::Clock::now(), 1) == 0;
 }
 
 } // namespace rivet::platform

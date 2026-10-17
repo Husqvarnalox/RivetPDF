@@ -38,3 +38,21 @@ RIVET_TEST(linuxAppDataPrefersAbsoluteXdgDataHome) {
     CHECK(live.has_value());
     if (live) CHECK(live->is_absolute());
 }
+
+// RIVET_APP_DATA / RIVET_QA_SCRIPT override shared by every platform
+// implementation (scripted QA must not touch the user's Recent list).
+RIVET_TEST(appDataOverrideKeepsQaRunsAwayFromUserData) {
+    using rivet::platform::resolveAppDataOverride;
+    const fs::path temp("/tmp");
+    const auto explicitDir = resolveAppDataOverride(std::string_view("/qa/data"), std::nullopt, temp);
+    CHECK(explicitDir.has_value());
+    if (explicitDir) CHECK(*explicitDir == fs::path("/qa/data"));
+    const auto explicitWins = resolveAppDataOverride(std::string_view("/qa/data"), std::string_view("s.rivetqa"), temp);
+    CHECK(explicitWins.has_value());
+    if (explicitWins) CHECK(*explicitWins == fs::path("/qa/data"));
+    const auto qa = resolveAppDataOverride(std::string_view("relative"), std::string_view("s.rivetqa"), temp);
+    CHECK(qa.has_value());
+    if (qa) CHECK(*qa == fs::path("/tmp/rivet-qa-appdata"));
+    CHECK(!resolveAppDataOverride(std::nullopt, std::nullopt, temp).has_value());
+    CHECK(!resolveAppDataOverride(std::string_view(""), std::nullopt, temp).has_value());
+}

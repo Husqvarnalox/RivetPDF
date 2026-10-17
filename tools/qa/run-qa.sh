@@ -9,7 +9,9 @@
 #
 # Environment: QA_FIX (fixture dir, default build/qa-fixtures; create it with
 # tools/qa/make-fixtures.sh), RIVET_QA_OUT, QA_TIMEOUT (seconds per scenario,
-# default 300), QA_WRAP (a command prefix such as "xvfb-run -a").
+# default 300), QA_WRAP (a command prefix such as "xvfb-run -a"),
+# RIVET_APP_DATA (application data; default: a fresh build/qa-appdata/<scenario>
+# per scenario, so runs never touch the user's preferences or Recent list).
 set -u
 here="$(cd "$(dirname "$0")" && pwd)"
 root="$(cd "$here/../.." && pwd)"
@@ -37,7 +39,12 @@ for scenario in "$@"; do
     else
         limit=(perl -e 'alarm shift; exec @ARGV' "$timeout_s") # macOS has no timeout(1)
     fi
-    RIVET_QA_SCRIPT="$scenario" "${limit[@]}" ${QA_WRAP:-} "$binary" >"$log" 2>&1
+    appdata="${RIVET_APP_DATA:-}"
+    if [ -z "$appdata" ]; then
+        appdata="$root/build/qa-appdata/$name"
+        rm -rf "$appdata"
+    fi
+    RIVET_APP_DATA="$appdata" RIVET_QA_SCRIPT="$scenario" "${limit[@]}" ${QA_WRAP:-} "$binary" >"$log" 2>&1
     code=$?
     grep -E "^\[qa\] (line [0-9]+: (FAIL|ERROR)|ERROR|done|.*parse error)" "$log"
     echo "   exit code $code (log: $log)"

@@ -177,8 +177,10 @@ enum class BlockFormat : std::uint8_t {
     Quote,
 };
 
-// Wraps or unwraps [selBegin, selEnd) (an empty selection works on the word
-// around it). Text-only: works on any source, parsed or not. `url` is the
+// Wraps or unwraps [selBegin, selEnd). An empty selection never selects or
+// rewrites existing text: it inserts an empty pair with the caret between
+// ("**|**"), removes such an empty pair, or steps the caret past the closing
+// delimiter it sits before ("**bold|**" -> "**bold**|"). Text-only: works on any source, parsed or not. `url` is the
 // link target for Link (unused otherwise). Returns an edit that changes
 // nothing when there is nothing to format.
 Edit toggleInline(std::string_view source, std::size_t selBegin, std::size_t selEnd, InlineFormat format,

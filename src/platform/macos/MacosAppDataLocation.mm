@@ -6,6 +6,7 @@
 namespace rivet::platform {
 
 core::Result<std::filesystem::path> MacosAppDataLocation::directory() const {
+    if (std::optional<std::filesystem::path> overridden = appDataOverride()) return *std::move(overridden);
     @autoreleasepool {
         NSArray<NSURL*>* urls = [[NSFileManager defaultManager] URLsForDirectory:NSApplicationSupportDirectory
                                                                        inDomains:NSUserDomainMask];

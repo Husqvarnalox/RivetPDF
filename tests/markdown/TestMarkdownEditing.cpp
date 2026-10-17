@@ -535,8 +535,8 @@ RIVET_TEST(inlineFormattingTogglesAreIdempotent) {
     for (const std::string& src : sources) {
         for (const ed::InlineFormat f : formats) {
             for (const auto& [b, e] : {std::pair<std::size_t, std::size_t>{0, src.size()}, {2, 2}, {1, src.size() - 2}}) {
-                if (f == ed::InlineFormat::Link && b == e) continue; // no word there: inserts a new link
                 const ed::Edit once = ed::toggleInline(src, b, e, f, "u");
+                if (b == e && !once.changesText()) continue; // stepped past a closing delimiter
                 const std::string a1 = applyEdit(src, once);
                 const std::string a2 = applyEdit(a1, ed::toggleInline(a1, once.anchor, once.caret, f, "u"));
                 CHECK(same(a2, src));
@@ -555,6 +555,56 @@ RIVET_TEST(inlineFormattingTogglesAreIdempotent) {
     // Multi-line selections wrap each line's content, not its prefix.
     const std::string ml = "> one\n> two\n";
     CHECK(same(applyEdit(ml, ed::toggleInline(ml, 2, 11, ed::InlineFormat::Bold)), "> **one**\n> **two**\n"));
+}
+
+RIVET_TEST(inlineFormattingWithCollapsedCaretNeverSelects) {
+    // QA bug 5: Cmd+B with no selection inserts an empty pair, typing goes
+    // inside it, a second Cmd+B steps out; nothing is ever selected.
+    std::string src = "more words";
+    std::size_t caret = src.size();
+    const auto toggle = [&](ed::InlineFormat f) {
+        const ed::Edit e = ed::toggleInline(src, caret, caret, f);
+        CHECK(e.anchor == e.caret);
+        src = applyEdit(src, e);
+        caret = e.caret;
+    };
+    const auto type = [&](std::string_view t) {
+        src.insert(caret, t);
+        caret += t.size();
+    };
+    toggle(ed::InlineFormat::Bold);
+    CHECK(same(src, "more words****"));
+    CHECK(caret == 12);
+    type("bold");
+    toggle(ed::InlineFormat::Bold);
+    CHECK(same(src, "more words**bold**"));
+    CHECK(caret == src.size());
+    type(" plain");
+    CHECK(same(src, "more words**bold** plain"));
+    // Toggling twice before typing restores the text.
+    toggle(ed::InlineFormat::Italic);
+    toggle(ed::InlineFormat::Italic);
+    CHECK(same(src, "more words**bold** plain"));
+    for (const ed::InlineFormat f : {ed::InlineFormat::Italic, ed::InlineFormat::Strikethrough, ed::InlineFormat::Code}) {
+        src = "x ";
+        caret = 2;
+        toggle(f);
+        type("y");
+        toggle(f);
+        type(" z");
+        CHECK(same(Rendered(src).text(), "x y z"));
+    }
+    src = "see ";
+    caret = 4;
+    const ed::Edit link = ed::toggleInline(src, caret, caret, ed::InlineFormat::Link, "https://d.e");
+    CHECK(link.anchor == link.caret);
+    src = applyEdit(src, link);
+    caret = link.caret;
+    CHECK(same(src, "see [](https://d.e)"));
+    type("docs");
+    toggle(ed::InlineFormat::Link);
+    CHECK(caret == src.size());
+    CHECK(same(Rendered(src).text(), "see docs"));
 }
 
 RIVET_TEST(blockFormattingAppliesAndTogglesOff) {

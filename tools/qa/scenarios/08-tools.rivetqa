@@ -73,19 +73,17 @@ shot 08-ocr-done.png
 # Same query as before the recognition (a stale result would show here).
 # The reopened find bar keeps the old query unselected: select it first.
 key cmd+f
-key cmd+a
 type invoice\n
-key return
 log-state
-assert-find 1
+assert-find 1 /
 key escape
-# A query never searched before in this tab.
+# A query never searched before in this tab (the old one is selected on
+# reopen, bug 10).
 key cmd+f
-key cmd+a
+assert-find-query amount
 type amount\n
-key return
 log-state
-assert-find 1
+assert-find 1 /
 shot 08-ocr-search.png
 key escape
 # Save, reopen, search again.

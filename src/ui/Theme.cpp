@@ -37,6 +37,8 @@ Palette lightPalette(const Color& accentIn) {
     p.panelBackground = hex(0xF7F7F7);
     p.popoverBackground = kWhite;
     p.popoverBorder = hex(0x000000, 0.14);
+    p.cardBorder = hex(0x000000, 0.16);
+    p.cardShadow = hex(0x000000, 0.16);
     p.tooltipBackground = hex(0x2B2B2B, 0.96);
     p.tooltipText = hex(0xF5F5F5);
     p.scrim = hex(0x000000, 0.35);
@@ -112,6 +114,8 @@ Palette darkPalette(const Color& accentIn) {
     p.panelBackground = hex(0x2F2F2F);
     p.popoverBackground = hex(0x333333);
     p.popoverBorder = hex(0xFFFFFF, 0.12);
+    p.cardBorder = hex(0xFFFFFF, 0.14);
+    p.cardShadow = hex(0x000000, 0.50);
     p.tooltipBackground = hex(0x3C3C3C, 0.97);
     p.tooltipText = hex(0xF0F0F0);
     p.scrim = hex(0x000000, 0.50);

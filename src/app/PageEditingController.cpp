@@ -462,7 +462,7 @@ void PageEditingController::beginCrop() {
                                                                             : std::vector<core::PageId>{current};
     cropTool_.begin(snapshot->indexOf(current), CropFrame{entry->view, entry->mediaBox});
     context_.viewport.setActiveTool(&cropTool_);
-    context_.setStatus("Drag the handles to crop; Enter applies, Esc cancels");
+    context_.showHint("Drag the handles to crop; Enter applies, Esc cancels");
 }
 
 void PageEditingController::resetCrop() {
@@ -482,6 +482,7 @@ void PageEditingController::endCrop() {
     // the uninstall must happen regardless.
     cropTool_.end();
     context_.viewport.setActiveTool(nullptr);
+    context_.withdrawHint(); // the crop hint ends with the tool (QA bug 11)
     cropTargets_.clear();
 }
 

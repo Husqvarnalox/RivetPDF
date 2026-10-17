@@ -9,6 +9,8 @@ namespace rivet::platform {
 class MacosMainThreadDispatcher final : public core::IMainThreadDispatcher {
 public:
     void post(std::function<void()> task) override;
+    // dispatch_after on the main queue: a main-thread timer, no thread waits.
+    bool postDelayed(std::chrono::milliseconds delay, std::function<void()> task) override;
 };
 
 } // namespace rivet::platform

@@ -40,6 +40,11 @@ inline constexpr std::size_t kMaxBuildUriBytes = 2048;
 inline constexpr std::size_t kMaxBuildPathSegments = 65536;
 inline constexpr std::size_t kMaxBuildDashCount = 16;
 inline constexpr double kMaxBuildDashLength = 1000.0;
+// Synthetic oblique shear of a text run (|skew| at most this; 0.5 ~ 26.6 deg).
+inline constexpr double kMaxBuildTextSkew = 0.5;
+// The shear used for italic text in faces without an italic (about 12 deg,
+// what PDF viewers and CSS use for synthetic obliques).
+inline constexpr double kSyntheticObliqueSkew = 0.2126;
 // Slack allowed when checking that a box lies within its page (layout
 // arithmetic rounds); boxes beyond it are rejected, never clamped.
 inline constexpr double kBuildPageEpsilon = 1.0e-6;
@@ -65,6 +70,11 @@ struct PdfBuildText {
     PdfColor color;
     PdfPoint origin;        // baseline start, user space, inside the page
     std::string utf8;       // non-empty, valid UTF-8
+    // Synthetic oblique (the bundled faces have no italic): the glyphs are
+    // sheared by x += skew * y around the baseline (text matrix
+    // {1, 0, skew, 1, x, y}); advances are unchanged. Finite, |skew| <=
+    // kMaxBuildTextSkew; 0 = upright.
+    double skew = 0.0;
 };
 
 // An image stretched onto `box`.
@@ -110,7 +120,8 @@ struct PdfBuildDocument {
 
 // Structural validation: at least one page and the limits above; finite,
 // in-range page sizes; valid (positive-size) boxes lying within their page;
-// text origins inside the page; font sizes in [kMinFontSize, kMaxFontSize];
+// text origins inside the page; text skews finite and within
+// kMaxBuildTextSkew; font sizes in [kMinFontSize, kMaxFontSize];
 // color components in [0, 1]; stroke widths in (0, kMaxBuildStrokeWidth];
 // paths starting with a MoveTo, at most kMaxBuildPathSegments segments with
 // every point inside the page, fill and/or stroke, valid dash arrays;

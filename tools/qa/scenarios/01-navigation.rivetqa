@@ -62,12 +62,19 @@ shot 01-thumb-page6.png
 key cmd+f
 type Rivet\n
 log-state
-assert-find 1
+# The first Return selects the first match (bug 9).
+assert-find 1 /
 key return
+assert-find 2 /
 log-state
 click 1117 101
 log-state
 shot 01-search.png
+key escape
+# Reopening selects the previous query: typing replaces it (bug 10).
+key cmd+f
+assert-find-query Rivet
+type Chapter
 key escape
 
 # Outline (outline.pdf has one).

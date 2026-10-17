@@ -38,6 +38,8 @@ shot 04-add-text.png
 clickpage 1 280 20
 cmd Content/Edit Objects
 log-state
+# Nothing selected: no stale Edit-tool hint (bug 11).
+refute-status Edit: double-click
 shot 04-after-add.png
 
 # Save As, reopen, find the new text.

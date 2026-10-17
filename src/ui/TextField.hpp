@@ -47,6 +47,8 @@ public:
     // Replaces the text, clears the selection and puts the caret at the end.
     // Does not fire onTextChanged (programmatic change, not user input).
     void setText(std::string text);
+    // Selects the whole text (caret at the end); no onTextChanged.
+    void selectAll();
 
     std::size_t caret() const { return caret_; } // byte offset on a code-point boundary
     Selection selection() const;
