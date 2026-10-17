@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 #include "app/ShellController.hpp"
 
+#include "app/MarkdownParseCoordinator.hpp"
 #include "app/MarkdownPreviewView.hpp"
 #include "app/RedactionController.hpp"
 
@@ -1527,6 +1528,32 @@ void ShellController::activateAdjacentTab(int delta) {
         (static_cast<long long>(workspace_.activeIndex()) + delta + static_cast<long long>(count)) %
         static_cast<long long>(count);
     workspace_.activateTab(static_cast<std::size_t>(next));
+}
+
+bool ShellController::isIdle() const {
+    for (std::size_t i = 0; i < workspace_.tabCount(); ++i) {
+        const DocumentTab* tab = workspace_.tab(i);
+        if (tab != nullptr && tab->state() == DocumentTab::State::Loading) return false;
+    }
+    if (fileLifecycle_ != nullptr && fileLifecycle_->isSavingAnything()) return false;
+    if (scheduler_.busyCount() != 0) return false;
+    if (chromeMarkdown_ && markdownView_ != nullptr) {
+        const MarkdownParseCoordinator* parser = markdownView_->parseCoordinator();
+        if (parser != nullptr && parser->busy()) return false;
+    }
+    const bool pdfVisible = context_ != nullptr && context_->readyPdfTab() != nullptr && viewport_ != nullptr &&
+                            !viewport_->frame().isEmpty();
+    return !(pdfVisible && viewport_->lastPaintMissedTiles());
+}
+
+const std::string& ShellController::statusText() const {
+    static const std::string kEmpty;
+    return statusBar_ != nullptr ? statusBar_->statusText() : kEmpty;
+}
+
+std::string ShellController::searchCountText() const {
+    if (searchBar_ == nullptr || !searchBar_->visible()) return {};
+    return searchBar_->countText();
 }
 
 void ShellController::setStatus(std::string text) {

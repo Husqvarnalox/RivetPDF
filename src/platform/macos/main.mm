@@ -14,12 +14,14 @@
 #import "RivetContentView.h"
 
 #include "app/MenuModel.hpp"
+#include "app/QaScript.hpp"
 #include "app/ShellController.hpp"
 #include "platform/PlatformKit.hpp"
 #include "ui/UiTypes.hpp"
 
 #import <AppKit/AppKit.h>
 
+#include <algorithm>
 #include <cstddef>
 #include <filesystem>
 #include <functional>
@@ -228,6 +230,30 @@ int main(int argc, char** argv) {
             // close-button dot is correct before any close/quit prompt.
             [weakWindow setDocumentEdited:edited ? YES : NO];
         };
+        RivetContentView* __weak weakView = contentView;
+        services.captureWindowPng = [weakView](const std::filesystem::path& path) -> bool {
+            RivetContentView* view = weakView;
+            if (view == nil) return false;
+            const NSRect bounds = view.bounds;
+            NSBitmapImageRep* bitmap = [view bitmapImageRepForCachingDisplayInRect:bounds];
+            if (bitmap == nil) return false;
+            [view cacheDisplayInRect:bounds toBitmapImageRep:bitmap];
+            NSData* png = [bitmap representationUsingType:NSBitmapImageFileTypePNG properties:@{}];
+            if (png == nil) return false;
+            NSString* target = [NSString stringWithUTF8String:path.string().c_str()];
+            return [png writeToFile:target atomically:YES] ? true : false;
+        };
+        services.resizeWindow = [weakWindow](double width, double height) {
+            NSWindow* target = weakWindow;
+            if (target == nil) return;
+            const NSSize minimum = target.contentMinSize;
+            [target setContentSize:NSMakeSize(std::max(width, minimum.width), std::max(height, minimum.height))];
+        };
+
+        // Scripted QA run (RIVET_QA_SCRIPT): non-interactive dialogs and a
+        // script runner; inert (null) otherwise. Outlives the shell.
+        std::unique_ptr<rivet::app::QaSession> qa = rivet::app::QaSession::fromEnvironment();
+        if (qa != nullptr) qa->installDoubles(services);
 
         // The shell owns the widget tree; the view only borrows the root.
         auto shell = rivet::app::createShell(services);
@@ -272,6 +298,23 @@ int main(int argc, char** argv) {
             [NSApp activateIgnoringOtherApps:YES];
 #pragma clang diagnostic pop
         }
+        if (qa != nullptr) {
+            // The script ends the run loop itself (no quit prompts), so
+            // main() tears down below and returns the script's exit code.
+            qa->start(*shell, services, [](int) {
+                [NSApp stop:nil];
+                NSEvent* wake = [NSEvent otherEventWithType:NSEventTypeApplicationDefined
+                                                   location:NSZeroPoint
+                                              modifierFlags:0
+                                                  timestamp:0
+                                               windowNumber:0
+                                                    context:nil
+                                                    subtype:0
+                                                      data1:0
+                                                      data2:0];
+                [NSApp postEvent:wake atStart:YES];
+            });
+        }
         [NSApp run];
 
         // Reached only if the run loop is stopped without terminate: (e.g.
@@ -281,6 +324,7 @@ int main(int argc, char** argv) {
             appDelegate->teardown = nullptr;
             run();
         }
+        if (qa != nullptr) return qa->exitCode();
     }
     return 0;
 }

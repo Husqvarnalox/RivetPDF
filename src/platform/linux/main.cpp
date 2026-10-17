@@ -21,6 +21,7 @@
 #endif
 
 #include "app/MenuModel.hpp"
+#include "app/QaScript.hpp"
 #include "app/ShellController.hpp"
 #include "platform/AppLifecycle.hpp"
 #include "platform/PlatformKit.hpp"
@@ -121,6 +122,13 @@ int main(int argc, char** argv) {
     platform::X11Window* const windowPtr = window.get();
     services.setWindowTitle = [windowPtr](const std::string& title) { windowPtr->setTitle(title); };
     services.setDocumentEdited = [windowPtr](bool edited) { windowPtr->setDocumentEdited(edited); };
+    services.captureWindowPng = [windowPtr](const std::filesystem::path& path) { return windowPtr->writePng(path); };
+    services.resizeWindow = [windowPtr](double width, double height) { windowPtr->resizeContent(width, height); };
+
+    // Scripted QA run (RIVET_QA_SCRIPT): non-interactive dialogs and a
+    // script runner; inert (null) otherwise. Outlives the shell.
+    std::unique_ptr<app::QaSession> qa = app::QaSession::fromEnvironment();
+    if (qa != nullptr) qa->installDoubles(services);
 
     // Event-loop state; quit decisions land here.
     bool running = true;
@@ -182,6 +190,11 @@ int main(int argc, char** argv) {
         if (argv[i] != nullptr && argv[i][0] != '-') shell->openDocument(std::filesystem::path(argv[i]));
     }
 
+    if (qa != nullptr) {
+        // The script ends the loop itself (no quit prompts).
+        qa->start(*shell, services, [&running](int) { running = false; });
+    }
+
     while (running) connection->pump(platform::X11Connection::Mode::Normal, nullptr, -1, -1);
 
     // Teardown, in main.mm's order: detach every borrower of the widget tree
@@ -200,5 +213,5 @@ int main(int argc, char** argv) {
     window->setRootWidget(nullptr);
     shell.reset();
     window.reset();
-    return 0;
+    return qa != nullptr ? qa->exitCode() : 0;
 }

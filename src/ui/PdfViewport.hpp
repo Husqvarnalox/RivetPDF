@@ -101,6 +101,14 @@ public:
     // pass until manual zoom exits the mode. Applies immediately via layout().
     void setFitMode(render::ZoomState::FitMode mode);
 
+    // The bound page layout (null when unbound). Read-only; the QA harness
+    // maps PDF user-space points through it.
+    const render::PageLayout* pageLayout() const { return layout_; }
+
+    // True when the last paint drew at least one placeholder (a visible tile
+    // was not rendered yet). Diagnostics / QA idle detection only.
+    bool lastPaintMissedTiles() const { return lastPaintMissedTiles_; }
+
     // Scroll offset: the content-space point (at zoom 1.0) shown at the
     // viewport's top-left. Reads/writes through the bound state, clamped.
     core::Point scrollOffsetPoints() const { return state_->scrollOffsetPoints(); }
@@ -308,6 +316,8 @@ private:
 
     // Alive flag shared with in-flight render callbacks (see class comment).
     std::shared_ptr<std::atomic<bool>> aliveFlag_;
+    // See lastPaintMissedTiles(); written by the (const) paint pass.
+    mutable bool lastPaintMissedTiles_ = false;
 };
 
 } // namespace rivet::ui

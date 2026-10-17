@@ -178,6 +178,17 @@ public:
     // and closes the tab when permitted (or when its save completes).
     void requestCloseTab(std::size_t index);
 
+    // --- Read-only probes (scripted QA harness, tests) ---------------------
+    // True when nothing is in flight: no tab is opening, no save runs, the
+    // Markdown parser is settled, the worker pool is drained and the last
+    // paint of a visible PDF viewport had every tile. A snapshot; callers
+    // poll it (the QA runner requires several idle polls in a row).
+    bool isIdle() const;
+    // Current status-bar message.
+    const std::string& statusText() const;
+    // The find bar's result text ("2 of 5", "No results"; empty when hidden).
+    std::string searchCountText() const;
+
 private:
     // Root container that re-runs the shell layout whenever its frame changes.
     class ShellRoot final : public ui::Container {

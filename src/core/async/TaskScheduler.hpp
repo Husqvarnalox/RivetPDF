@@ -40,6 +40,10 @@ public:
     // Queued-not-started tasks; approximate, for tests/diagnostics.
     std::size_t pendingCount() const;
 
+    // Queued plus currently running tasks; approximate (a snapshot), for
+    // diagnostics and the QA harness's idle detection.
+    std::size_t busyCount() const;
+
 private:
     void workerLoop(std::stop_token stopToken);
     static std::size_t resolveThreadCount(unsigned requested);
@@ -47,6 +51,7 @@ private:
     mutable std::mutex mutex_;
     std::condition_variable_any cv_; // any: supports the stop_token wait
     std::deque<std::function<void()>> queue_;
+    std::size_t running_ = 0; // guarded by mutex_
 
     // Declared last so it is destroyed first: joining the workers must happen
     // while the mutex and queue they touch are still alive.

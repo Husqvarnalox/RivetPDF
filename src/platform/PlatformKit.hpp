@@ -157,6 +157,17 @@ struct ShellServices {
     // System appearance (light/dark, accent; ADR-0033). May be null: the
     // shell then uses the light theme with the default accent.
     IAppearance* appearance = nullptr;
+
+    // --- Scripted QA harness hooks (app/QaScript.hpp) ---------------------
+    // Both may be null; they are only used while RIVET_QA_SCRIPT is set.
+    // Main thread only.
+    //
+    // Renders the window's current content (the widget tree, freshly
+    // painted) into a PNG file. False when it could not be written.
+    std::function<bool(const std::filesystem::path&)> captureWindowPng;
+    // Resizes the window so its content area (the root widget) becomes
+    // width x height logical points, honoring the window's minimum size.
+    std::function<void(double width, double height)> resizeWindow;
 };
 
 } // namespace rivet::platform

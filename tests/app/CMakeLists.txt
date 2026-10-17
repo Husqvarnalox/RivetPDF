@@ -9,6 +9,8 @@ add_executable(rivet_app_tests
     TestSignatureStore.cpp
     TestSignatureSheet.cpp
     TestMenuModel.cpp
+    # Scripted QA harness: parser, key combos, typing.
+    TestQaScript.cpp
     TestFormController.cpp
     # Redaction tool, marks and Apply Redactions (ADR-0026), fake backend.
     TestRedactionController.cpp

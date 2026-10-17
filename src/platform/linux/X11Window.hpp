@@ -159,6 +159,13 @@ public:
     // Content size in logical points (below the menu bar).
     core::Size contentLogicalSize() const;
 
+    // Scripted QA hooks (ShellServices::captureWindowPng / resizeWindow):
+    // paints the window into its back buffer and writes that as PNG; resizes
+    // so the content area becomes the given logical size (clamped to the
+    // minimum size), applied immediately.
+    bool writePng(const std::filesystem::path& path);
+    void resizeContent(double width, double height);
+
     // Used by X11Connection.
     void handleEvent(_XEvent& event, bool inputAllowed);
     void requestPaint() { sink_.requestRedraw(); }
@@ -195,6 +202,7 @@ private:
     cairo_surface_t* backBuffer_ = nullptr;
     int pixelWidth_ = 0;
     int pixelHeight_ = 0;
+    core::Size minLogicalSize_;
     ui::Widget* root_ = nullptr;
     LinuxMenuBar* menuBar_ = nullptr;
     std::function<bool(const ui::KeyEvent&)> keyHandler_;

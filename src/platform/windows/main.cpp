@@ -7,6 +7,7 @@
 // everything down in the same order as macOS.
 
 #include "app/MenuModel.hpp"
+#include "app/QaScript.hpp"
 #include "app/ShellController.hpp"
 #include "platform/AppLifecycle.hpp"
 #include "platform/PlatformKit.hpp"
@@ -136,6 +137,11 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int showCommand) {
     platform::WindowsWindow* const windowPtr = window.get();
     services.setWindowTitle = [windowPtr](const std::string& title) { windowPtr->setTitle(title); };
     services.setDocumentEdited = [windowPtr](bool edited) { windowPtr->setDocumentEdited(edited); };
+    // Scripted QA run (RIVET_QA_SCRIPT): non-interactive dialogs and a
+    // script runner; inert (null) otherwise. No screenshot/resize hooks on
+    // Windows yet (the runner logs and skips those steps). Outlives the shell.
+    std::unique_ptr<app::QaSession> qa = app::QaSession::fromEnvironment();
+    if (qa != nullptr) qa->installDoubles(services);
 
     // Message-loop state; quit decisions land here.
     bool running = true;
@@ -194,6 +200,11 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int showCommand) {
     // extension); failures surface in the shell's status label.
     for (const auto& path : documentArguments()) shell->openDocument(path);
 
+    if (qa != nullptr) {
+        // The script ends the loop itself (no quit prompts).
+        qa->start(*shell, services, [&running](int) { running = false; });
+    }
+
     MSG message;
     while (running) {
         const BOOL got = ::GetMessageW(&message, nullptr, 0, 0);
@@ -219,5 +230,5 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int showCommand) {
     shell.reset();
     window.reset();
     platform::text::shutdown();
-    return 0;
+    return qa != nullptr ? qa->exitCode() : 0;
 }

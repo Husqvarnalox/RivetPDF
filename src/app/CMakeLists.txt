@@ -41,6 +41,7 @@ add_library(rivet_app STATIC
     SearchBarController.cpp
     RecentFiles.cpp
     ShellController.cpp
+    QaScript.cpp
     SidebarController.cpp
     WelcomeView.cpp
     SignaturePad.cpp

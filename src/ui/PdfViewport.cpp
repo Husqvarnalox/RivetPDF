@@ -769,6 +769,7 @@ void PdfViewport::resolveFitMode() {
 void PdfViewport::paintSelf(PaintContext& context) const {
     context.pushClip(bounds());
     context.fillRect(bounds(), presentationMode_ ? colors().presentationBackground : colors().canvasBackground);
+    lastPaintMissedTiles_ = false;
 
     if (layout_ == nullptr || source_ == nullptr) {
         context.drawText(kEmptyStateText, bounds(), kEmptyStateFont, colors().textSecondary,
@@ -989,6 +990,7 @@ void PdfViewport::paintPageTiles(std::size_t pageIndex, const core::Rect& pageFr
                 context.drawBitmap(*tile, dest);
             } else {
                 context.fillRect(dest, colors().pagePlaceholder);
+                lastPaintMissedTiles_ = true;
                 requestTile(key, render::RasterParams{clipped, devicePixelsPerPoint});
             }
         }

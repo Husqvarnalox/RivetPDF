@@ -479,6 +479,7 @@ void X11Window::Sink::requestRedraw() {
 
 X11Window::X11Window(X11Connection& connection, const Options& options)
     : connection_(connection), title_(options.title) {
+    minLogicalSize_ = options.minLogicalSize;
     Display* display = connection_.display();
     const int screen = connection_.screen();
     const double scale = connection_.scale();
@@ -696,6 +697,30 @@ void X11Window::paint() {
     cairo_paint(front);
     cairo_destroy(front);
     cairo_surface_flush(windowSurface_);
+}
+
+bool X11Window::writePng(const std::filesystem::path& path) {
+    paint();
+    if (backBuffer_ == nullptr) return false;
+    return cairo_surface_write_to_png(backBuffer_, path.c_str()) == CAIRO_STATUS_SUCCESS;
+}
+
+void X11Window::resizeContent(double width, double height) {
+    const double scale = connection_.scale();
+    const double logicalWidth = std::max(width, minLogicalSize_.width);
+    const double logicalHeight = std::max(height + contentTop(), minLogicalSize_.height);
+    const int pixelWidth = std::max(1, static_cast<int>(std::lround(logicalWidth * scale)));
+    const int pixelHeight = std::max(1, static_cast<int>(std::lround(logicalHeight * scale)));
+    XResizeWindow(connection_.display(), window_, static_cast<unsigned>(pixelWidth),
+                  static_cast<unsigned>(pixelHeight));
+    XFlush(connection_.display());
+    if (pixelWidth != pixelWidth_ || pixelHeight != pixelHeight_) {
+        pixelWidth_ = pixelWidth;
+        pixelHeight_ = pixelHeight;
+        if (windowSurface_ != nullptr) cairo_xlib_surface_set_size(windowSurface_, pixelWidth, pixelHeight);
+        applyRootFrame();
+        sink_.requestRedraw();
+    }
 }
 
 void X11Window::handlePointer(const ui::PointerEvent& event) {
