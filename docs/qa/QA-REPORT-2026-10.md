@@ -352,3 +352,39 @@ reorder command (only thumbnail drag, which works).
 macOS `p-off`, `p-on`, `p-asan`, `p-tsan`: build with zero warnings, `ctest`
 100% passed (10/10) in each. Linux (GCC) and llvm-mingw: not run here (see
 Environment); left to CI.
+
+## Fix log
+
+PDF-side fixes (October 2026, branch of `phase6-7-integration`). Each bug
+above keeps its original finding; the scenarios now carry assertions that
+fail on the old behaviour (`assert-state` / `assert-not-state` check the
+`log-state` line, which gained `scrolly`, `hcentered`, `formpopup`,
+`pagecount`, the password prompt texts and `lastalert`).
+
+| # | Status | Root cause and fix |
+|---|---|---|
+| 4 | Fixed in 00d226d | `PaintContext::pushClip` translates the origin to the clip rect, but the form overlay kept drawing text and list rows in viewport coordinates inside `pushClip(widgetRect)`, so edited values landed outside their widget. Geometry inside the clip is now widget-relative. Thumbnails (raster only, edited widgets hidden) now paint the page overlays too (`PageThumbnailList::setPageOverlayPainter`). Unit tests: `formControllerPaintsEditedValuesHighlightAndPopup` (checks where the text lands), `pageThumbnailListPaintsThePageOverlayOverCachedThumbnails`. |
+| 7 | Fixed in 4143b13 | Reset Form only dropped the session's edits, so a reopened filled form had nothing to reset. It now follows PDF 12.7.5.3: every fillable field goes to its `/DV`, else the empty value of its type; radio groups and combo boxes without `/DV` keep their value (PDFium's form filler cannot turn them off). Enabled whenever resetting changes what the form shows. ADR-0024 notes updated. Scenario 05 asserts enabled on the reopened copy and disabled after the reset. |
+| 8 | Fixed in 73218f3 | List boxes shared the combo-box popup path. A press now selects the row under the pointer in place (multi-select toggles), Up/Down move the selection, the overlay scrolls to keep it visible; combo boxes keep the popup. Scenario 05 asserts `formpopup=closed` for the list and `open` for the combo. |
+| 12 | Fixed in 8a0476c | The prompt was one fixed-width label; a wrong password re-entered NeedsPassword silently; the page indicator printed its placeholder "1" over "/ 0". Now: title + a sentence that always fits (long names shortened in the middle) + a danger-colored "Incorrect password. Try again." after a rejected retry; empty page indicator and "Locked document" in the sidebar while locked. Scenario 08 asserts the texts and `pagecount=''`. Shadow/scrim of the card (bug 19) not changed here. |
+| 13 | Fixed in 85e770c | Not the documented policy: ADR-0015 gives single-line blocks no wrap width. The inline editor had a fixed width, soft-wrapped the longer line, and the commit recorded that width as a new wrap width. The editor of an unwrapped block now grows with its text (up to the page edge), and the overflow report ignores the line-box vs glyph-bounds difference. ADR-0015 overflow section updated. Scenario 04 asserts no "extends below" report. |
+| 17 | Fixed in b7e4a0f | The scroll clamp pinned narrow content to x = 0. Content narrower than the viewport now gets a negative x offset of half the slack (every transform centres it); zoom changes re-clamp the offset. Scenario 01 asserts `hcentered=yes` at Actual Size (`01-actual-size.png`). |
+| 18 | Fixed in f0d372b | Tile destinations were fractional, so neighbouring tiles met on half-covered device pixels that blended with the background. The viewport snaps every tile edge to the device-pixel grid (`PdfViewport::snapToDevicePixels`), and `drawBitmap` draws with aliased edges on macOS, Linux (cairo) and Windows (D2D). Verified by eye on `06-reopened.png` (tile boundary through the redaction box) and by `tileDestinationsMeetOnWholeDevicePixels`. |
+| 20 | Fixed in dec7856 (+ 00d226d) | The sideways scroll was a harness artifact: `clickpage` centred an off-screen target point before clicking. Scenario 07 now places the signature at a visible point and asserts the scroll is unchanged. The stale thumbnail was real and is fixed by the thumbnail page overlay (00d226d). |
+| 21 | Fixed in 4689ebe | PDFium-OFF builds now show an alert "PDF support is not available in this build" naming the file; the status line uses the same wording. Scenario 12 (on `build/p-off`) asserts the alert and that no tab opened. |
+
+New finding while fixing 7 (not fixed here): applying a redaction over a
+text field removes its `/V` but keeps its `/DV`, so a field default can
+survive redaction (a fixture whose `/DV` repeated the redacted value made
+`redactionRoundTripRemovesTextWidgetAndFieldValue` fail). The fixture now
+uses a different `/DV`; redaction should drop `/DV` too.
+
+Validation for these fixes: macOS `p-off`, `p-on`, `p-asan`, `p-tsan` build
+with zero warnings and `ctest` passes (10/10) in each; scenarios 01–10 pass
+on `p-on` (01, 04, 05, 07, 08 also on `p-asan`, no sanitizer report);
+scenario 12 passes on `p-off`. Linux (Docker `ubuntu:24.04`, GCC, Debug,
+`-Werror`, PDFium OFF, `tools/qa/linux-qa.sh`): zero warnings, `ctest`
+9/9, scenarios 10 and 12 pass under Xvfb (12 includes the new alert
+assertion). Windows not built here (the D2D change in f0d372b is
+compile-unverified).
+
