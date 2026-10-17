@@ -56,7 +56,7 @@ endif()
 # problems for this code base.
 if(MSVC)
     add_compile_options(/utf-8 /Zc:__cplusplus /EHsc)
-    add_compile_definitions(_CRT_SECURE_NO_WARNINGS _CRT_NONSTDC_NO_WARNINGS)
+    add_compile_definitions(_CRT_SECURE_NO_WARNINGS _CRT_NONSTDC_NO_WARNINGS NOMINMAX WIN32_LEAN_AND_MEAN)
 endif()
 
 include(RivetMsvcRuntime)
