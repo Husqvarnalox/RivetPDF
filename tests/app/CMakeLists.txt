@@ -81,3 +81,23 @@ endif()
 target_compile_definitions(rivet_app_tests PRIVATE
     RIVET_APP_PDF_FIXTURE_DIR="${CMAKE_SOURCE_DIR}/tests/pdf/fixtures"
 )
+
+# Phase 8 digital-signature workflow and Set Password controllers (ADR-0048):
+# controller tests with fakes plus an integration test over the real signer
+# and encryptor (needs the crypto backend).
+if(TRUE)
+    find_package(OpenSSL 3 REQUIRED COMPONENTS Crypto)
+    add_executable(rivet_app_security_tests
+        TestSecurityText.cpp
+        TestSetPasswordController.cpp
+        TestDigitalSignatureController.cpp
+        TestSignatureValidationController.cpp
+        TestSecurityIntegration.cpp
+    )
+    add_test(NAME app_security COMMAND rivet_app_security_tests)
+    target_link_libraries(rivet_app_security_tests PRIVATE rivet::test_harness rivet::app OpenSSL::Crypto)
+    target_include_directories(rivet_app_security_tests PRIVATE "${CMAKE_SOURCE_DIR}/tests/crypto"
+        "${CMAKE_SOURCE_DIR}/tests/pdf/sign" "${CMAKE_SOURCE_DIR}/tests/pdf/encrypt")
+    rivet_set_target_warnings(rivet_app_security_tests)
+    rivet_set_target_sanitizers(rivet_app_security_tests)
+endif()
