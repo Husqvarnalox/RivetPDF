@@ -725,7 +725,12 @@ RIVET_TEST(softHsm2Roundtrip) {
         std::ofstream conf(dir / "softhsm2.conf");
         conf << "directories.tokendir = " << (dir / "tokens").string() << "\nobjectstore.backend = file\n";
     }
-    setenv("SOFTHSM2_CONF", (dir / "softhsm2.conf").c_str(), 1);
+    const std::string confPath = (dir / "softhsm2.conf").string();
+#ifdef _WIN32
+    _putenv_s("SOFTHSM2_CONF", confPath.c_str());
+#else
+    setenv("SOFTHSM2_CONF", confPath.c_str(), 1);
+#endif
     const std::string init = "softhsm2-util --init-token --free --label RivetTest --so-pin 5678 --pin 1234 >/dev/null 2>&1";
     if (std::system(init.c_str()) != 0) {
         std::puts("SKIP: softhsm2-util could not initialise a token");

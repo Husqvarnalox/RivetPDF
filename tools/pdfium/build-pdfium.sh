@@ -76,6 +76,9 @@ if [ ! -d "$depot_dir/.git" ] && [ ! -x "$depot_dir/gclient" ]; then
     https://chromium.googlesource.com/chromium/tools/depot_tools.git "$depot_dir"
 fi
 export PATH="$depot_dir:$PATH"
+# Fetch depot_tools' bundled python/cipd tools (writes python3_bin_reldir.txt, which gn needs);
+# with DEPOT_TOOLS_UPDATE=0 nothing else would ever bootstrap them.
+[ -x "$depot_dir/ensure_bootstrap" ] && "$depot_dir/ensure_bootstrap"
 export DEPOT_TOOLS_UPDATE=0   # reproducible: do not self-update mid-run
 
 # --- source at the pinned revision ----------------------------------------

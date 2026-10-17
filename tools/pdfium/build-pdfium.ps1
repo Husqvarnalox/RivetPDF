@@ -49,6 +49,10 @@ if (-not (Test-Path (Join-Path $DepotTools "gclient.bat"))) {
     }
 }
 $env:PATH = "$DepotTools;$env:PATH"
+# Bootstrap depot_tools' bundled python/git/cipd tools once (needed by gn and gclient hooks).
+if (-not (Test-Path (Join-Path $DepotTools "python3_bin_reldir.txt"))) {
+    Invoke-Native "bootstrap depot_tools" { cmd /c "`"$DepotTools\update_depot_tools.bat`"" }
+}
 $env:DEPOT_TOOLS_UPDATE = "0"          # reproducible: no self-update mid-run
 $env:DEPOT_TOOLS_WIN_TOOLCHAIN = "0"   # use the installed Visual Studio
 
@@ -80,10 +84,10 @@ if ($actual -ne $revision) { throw "checkout is $actual, expected $revision" }
 
 # --- patches (idempotent) ------------------------------------------------------
 foreach ($patch in Get-ChildItem (Join-Path $here "patches") -Filter *.patch | Sort-Object Name) {
-    git -C $src apply --reverse --check $patch.FullName 2>$null
+    git -C $src apply --ignore-whitespace --reverse --check $patch.FullName 2>$null
     if ($LASTEXITCODE -eq 0) { Write-Host "patch already applied: $($patch.Name)"; continue }
-    Invoke-Native "git apply --check" { git -C $src apply --check $patch.FullName }
-    Invoke-Native "git apply" { git -C $src apply $patch.FullName }
+    Invoke-Native "git apply --check" { git -C $src apply --ignore-whitespace --check $patch.FullName }
+    Invoke-Native "git apply" { git -C $src apply --ignore-whitespace $patch.FullName }
     Write-Host "applied patch: $($patch.Name)"
 }
 
