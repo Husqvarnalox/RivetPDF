@@ -27,6 +27,9 @@ namespace rivet::app {
 // View-menu zoom commands (PDF and comparison tabs).
 enum class ViewCommand : std::uint8_t { ZoomIn, ZoomOut, ActualSize, FitWidth, FitPage };
 
+// Clipboard, find and print commands handled by the shell itself.
+enum class ShellCommand : std::uint8_t { Copy, SelectAll, Find, FindNext, FindPrevious, Print };
+
 struct AppCommand {
     enum class Kind : std::uint8_t {
         Open,
@@ -40,6 +43,7 @@ struct AppCommand {
         Redact,
         MarkdownFormat,
         View,
+        Shell,
     };
 
     Kind kind = Kind::Open;
@@ -55,6 +59,7 @@ struct AppCommand {
     static AppCommand of(ContentCommand c) { return {Kind::Content, static_cast<std::uint8_t>(c)}; }
     static AppCommand of(FormCommand c) { return {Kind::Form, static_cast<std::uint8_t>(c)}; }
     static AppCommand of(RedactCommand c) { return {Kind::Redact, static_cast<std::uint8_t>(c)}; }
+    static AppCommand of(ShellCommand c) { return {Kind::Shell, static_cast<std::uint8_t>(c)}; }
     static AppCommand of(ViewCommand c) { return {Kind::View, static_cast<std::uint8_t>(c)}; }
     static AppCommand of(MarkdownDisplayMode m) { return {Kind::MarkdownMode, static_cast<std::uint8_t>(m)}; }
     static AppCommand of(MarkdownFormatCommand f) { return {Kind::MarkdownFormat, static_cast<std::uint8_t>(f)}; }
@@ -65,6 +70,7 @@ struct AppCommand {
     ContentCommand content() const { return static_cast<ContentCommand>(value); }
     FormCommand form() const { return static_cast<FormCommand>(value); }
     RedactCommand redact() const { return static_cast<RedactCommand>(value); }
+    ShellCommand shell() const { return static_cast<ShellCommand>(value); }
     ViewCommand view() const { return static_cast<ViewCommand>(value); }
     MarkdownDisplayMode markdownMode() const { return static_cast<MarkdownDisplayMode>(value); }
     MarkdownFormatCommand markdownFormat() const { return static_cast<MarkdownFormatCommand>(value); }

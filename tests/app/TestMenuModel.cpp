@@ -74,6 +74,30 @@ RIVET_TEST(viewMenuHasZoomCommandsWithDistinctShortcuts) {
     CHECK(find(ViewCommand::FitPage) != nullptr);
 }
 
+RIVET_TEST(editAndFileMenusCarryClipboardFindAndPrintShortcuts) {
+    const auto bar = buildMenuBar();
+    const auto shortcutOf = [&](ShellCommand command) -> const Shortcut* {
+        for (const Menu& menu : bar) {
+            for (const MenuItem& entry : menu.items) {
+                if (entry.command == AppCommand::of(command) && entry.shortcut) return &*entry.shortcut;
+            }
+        }
+        return nullptr;
+    };
+    const Shortcut* copy = shortcutOf(ShellCommand::Copy);
+    const Shortcut* all = shortcutOf(ShellCommand::SelectAll);
+    const Shortcut* find = shortcutOf(ShellCommand::Find);
+    const Shortcut* next = shortcutOf(ShellCommand::FindNext);
+    const Shortcut* previous = shortcutOf(ShellCommand::FindPrevious);
+    const Shortcut* print = shortcutOf(ShellCommand::Print);
+    CHECK(copy != nullptr && copy->key == "c" && copy->primary && !copy->shift);
+    CHECK(all != nullptr && all->key == "a" && !all->shift);
+    CHECK(find != nullptr && find->key == "f");
+    CHECK(next != nullptr && next->key == "g" && !next->shift);
+    CHECK(previous != nullptr && previous->key == "g" && previous->shift);
+    CHECK(print != nullptr && print->key == "p");
+}
+
 RIVET_TEST(menuHasOpenAndQuitWithRole) {
     bool open = false;
     bool quit = false;

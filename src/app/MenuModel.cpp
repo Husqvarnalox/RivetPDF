@@ -48,6 +48,7 @@ std::vector<Menu> buildMenuBar() {
     file.items.push_back(item("Export Selected Pages\xE2\x80\xA6", AppCommand::of(FileCommand::Extract)));
     file.items.push_back(item("Split PDF by Ranges\xE2\x80\xA6", AppCommand::of(FileCommand::Split)));
     file.items.push_back(item("Compare With\xE2\x80\xA6", AppCommand::of(FileCommand::Compare), std::nullopt, true));
+    file.items.push_back(item("Print\xE2\x80\xA6", AppCommand::of(ShellCommand::Print), cmd("p"), true));
     // macOS draws Quit in the application menu; other platforms keep it here.
     MenuItem quit = item("Quit", AppCommand::quit(), cmd("q"), true);
     quit.role = MenuRole::Quit;
@@ -57,6 +58,11 @@ std::vector<Menu> buildMenuBar() {
     Menu edit{"Edit", {}};
     edit.items.push_back(item("Undo", AppCommand::of(PageEditCommand::Undo), cmd("z")));
     edit.items.push_back(item("Redo", AppCommand::of(PageEditCommand::Redo), cmd("z", true)));
+    edit.items.push_back(item("Copy", AppCommand::of(ShellCommand::Copy), cmd("c"), true));
+    edit.items.push_back(item("Select All", AppCommand::of(ShellCommand::SelectAll), cmd("a")));
+    edit.items.push_back(item("Find\xE2\x80\xA6", AppCommand::of(ShellCommand::Find), cmd("f"), true));
+    edit.items.push_back(item("Find Next", AppCommand::of(ShellCommand::FindNext), cmd("g")));
+    edit.items.push_back(item("Find Previous", AppCommand::of(ShellCommand::FindPrevious), cmd("g", true)));
     edit.items.push_back(item("Reset Form", AppCommand::of(FormCommand::ResetForm), std::nullopt, true));
     bar.push_back(std::move(edit));
 

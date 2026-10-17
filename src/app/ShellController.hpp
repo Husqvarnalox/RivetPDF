@@ -141,6 +141,9 @@ public:
     bool canPerformMarkdownMode() const;
     // View-menu zoom commands: PDF viewport, or both comparison viewports.
     void performView(ViewCommand command);
+    // Copy / Select All / Find / Find Next / Previous / Print (menu bar).
+    void performShell(ShellCommand command);
+    bool canPerformShell(ShellCommand command) const;
     bool canPerformView() const;
     // The mode of the active Ready Markdown tab, if any (menu check marks).
     std::optional<MarkdownDisplayMode> activeMarkdownMode() const;
@@ -163,6 +166,7 @@ public:
     bool comparisonChromeActive() const { return chromeComparison_; }
     ui::Toolbar& toolbar() { return *toolbar_; }
     ui::TabStrip& tabStrip() { return *tabStrip_; }
+    SearchBarController& searchBar() { return *searchBar_; }
     // Toolbar items that only make sense with a document open (tests).
     const std::vector<ui::Widget*>& pdfToolbarItems() const { return pdfToolbarItems_; }
     const std::vector<ui::Widget*>& documentToolbarItems() const { return documentToolbarItems_; }

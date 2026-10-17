@@ -330,6 +330,24 @@ RIVET_TEST(viewMenuZoomCommandsFollowTheActiveTab) {
     CHECK(!s.shell->canPerform(cmd(ViewCommand::ZoomIn)));
 }
 
+RIVET_TEST(shellMenuCommandsForCopyFindAndPrintFollowTheActiveTab) {
+    Shell s;
+    const auto cmd = [](ShellCommand c) { return AppCommand::of(c); };
+    for (ShellCommand c : {ShellCommand::Copy, ShellCommand::SelectAll, ShellCommand::Find, ShellCommand::FindNext,
+                           ShellCommand::FindPrevious, ShellCommand::Print}) {
+        CHECK(!s.shell->canPerform(cmd(c))); // welcome view
+    }
+    CHECK(s.openPdf("a.pdf"));
+    CHECK(s.shell->canPerform(cmd(ShellCommand::Copy)));
+    CHECK(s.shell->canPerform(cmd(ShellCommand::Find)));
+    CHECK(s.shell->canPerform(cmd(ShellCommand::Print)));
+    CHECK(!s.shell->canPerform(cmd(ShellCommand::SelectAll))); // no PDF select-all
+    s.shell->perform(cmd(ShellCommand::Find));
+    CHECK(s.shell->searchBar().visible());
+    s.shell->perform(cmd(ShellCommand::Find));
+    CHECK(!s.shell->searchBar().visible());
+}
+
 RIVET_TEST(shellOverflowMenuMirrorsTheMenuBar) {
     Shell s;
     CHECK(s.openPdf("doc.pdf"));

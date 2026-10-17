@@ -67,9 +67,11 @@ public:
     ui::TextField& field() { return *field_; }
     const std::string& countText() const;
 
-private:
-    // Enter / arrow buttons: steps the active match and reveals it.
+    // Enter / arrow buttons / Find Next (+1) and Previous (-1): steps the
+    // active match and reveals it.
     void step(int delta);
+
+private:
 
     // The Markdown search target while a Ready Markdown tab is active (hooks
     // the results callback on first use), else null.

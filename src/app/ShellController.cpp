@@ -1295,6 +1295,51 @@ void ShellController::performView(ViewCommand command) {
     }
 }
 
+bool ShellController::canPerformShell(ShellCommand command) const {
+    if (context_ == nullptr) return false;
+    const bool pdfReady = context_->readyActiveTab() != nullptr;
+    const bool markdownReady = context_->readyMarkdownTab() != nullptr;
+    switch (command) {
+    case ShellCommand::Copy: return !chromeComparison_ && (pdfReady || markdownReady || focusedWidget_ != nullptr);
+    case ShellCommand::SelectAll: return markdownReady || focusedWidget_ != nullptr;
+    case ShellCommand::Find:
+    case ShellCommand::FindNext:
+    case ShellCommand::FindPrevious:
+        return pdfReady || (markdownReady && markdownView_->searchTarget() != nullptr);
+    case ShellCommand::Print: return pdfReady || markdownReady;
+    }
+    return false;
+}
+
+void ShellController::performShell(ShellCommand command) {
+    if (!canPerformShell(command)) return;
+    // A focused text field owns Copy / Select All (the menu bar's key
+    // equivalent would otherwise bypass it).
+    if ((command == ShellCommand::Copy || command == ShellCommand::SelectAll) && focusedWidget_ != nullptr) {
+        ui::KeyEvent key;
+        key.key = ui::Key::Character;
+        key.text = command == ShellCommand::Copy ? "c" : "a";
+        key.modifiers.command = true;
+        if (focusedWidget_->onKey(key)) return;
+    }
+    switch (command) {
+    case ShellCommand::Copy:
+        if (chromeMarkdown_) markdownView_->copySelection();
+        else textInteraction_->copySelection();
+        break;
+    case ShellCommand::SelectAll:
+        if (chromeMarkdown_) markdownView_->selectAll();
+        break;
+    case ShellCommand::Find: searchBar_->toggle(); break;
+    case ShellCommand::FindNext:
+    case ShellCommand::FindPrevious:
+        if (!searchBar_->visible()) searchBar_->toggle();
+        else searchBar_->step(command == ShellCommand::FindNext ? +1 : -1);
+        break;
+    case ShellCommand::Print: handlePrintRequest(); break;
+    }
+}
+
 void ShellController::perform(const AppCommand& command) {
     switch (command.kind) {
     case AppCommand::Kind::Open: handleOpenRequest(); break;
@@ -1307,6 +1352,7 @@ void ShellController::perform(const AppCommand& command) {
     case AppCommand::Kind::Content: performContent(command.content()); break;
     case AppCommand::Kind::MarkdownMode: performMarkdownMode(command.markdownMode()); break;
     case AppCommand::Kind::View: performView(command.view()); break;
+    case AppCommand::Kind::Shell: performShell(command.shell()); break;
     case AppCommand::Kind::MarkdownFormat:
         if (context_ != nullptr && context_->readyMarkdownTab() != nullptr) {
             markdownView_->applyFormat(command.markdownFormat());
@@ -1331,6 +1377,7 @@ bool ShellController::canPerform(const AppCommand& command) const {
     case AppCommand::Kind::Content: return canPerformContent(command.content());
     case AppCommand::Kind::MarkdownMode: return canPerformMarkdownMode();
     case AppCommand::Kind::View: return canPerformView();
+    case AppCommand::Kind::Shell: return canPerformShell(command.shell());
     case AppCommand::Kind::MarkdownFormat: {
         const DocumentTab* tab = context_ != nullptr ? context_->readyMarkdownTab() : nullptr;
         return tab != nullptr && !tab->markdown()->isEditingLocked();
