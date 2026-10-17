@@ -20,8 +20,8 @@ if(RIVET_ENABLE_CRYPTOPRO)
     )
     target_compile_definitions(rivet_crypto_providers PUBLIC RIVET_CRYPTO_CRYPTOPRO=1)
     # SDK headers stay private to the backend translation units.
-    set_source_files_properties(CryptoProApi.cpp CryptoProBackend.cpp PROPERTIES
-        COMPILE_FLAGS "-I${RIVET_CRYPTOPRO_ROOT}/include -I${RIVET_CRYPTOPRO_ROOT}/include/cpcsp"
+    set_source_files_properties(CryptoProApi.cpp CryptoProBackend.cpp TARGET_DIRECTORY rivet_crypto_providers PROPERTIES
+        COMPILE_FLAGS "-isystem ${RIVET_CRYPTOPRO_ROOT}/include -isystem ${RIVET_CRYPTOPRO_ROOT}/include/cpcsp"
         COMPILE_DEFINITIONS "UNIX;SIZEOF_VOID_P=${CMAKE_SIZEOF_VOID_P}")
     target_link_libraries(rivet_crypto_providers PRIVATE ${CMAKE_DL_LIBS})
     message(STATUS "Rivet: CryptoPro CSP provider ON (headers: ${RIVET_CRYPTOPRO_ROOT}/include)")
