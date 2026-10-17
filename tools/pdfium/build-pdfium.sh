@@ -111,6 +111,17 @@ for patch in "$here"/patches/*.patch; do
   fi
 done
 
+# --- Linux: no ELF CREL -----------------------------------------------------
+# The pinned build tree compiles Linux objects with -Wa,--crel (compact relocations), which
+# GNU ld < 2.43 cannot read ("unknown architecture of input file"), so a GCC/GNU-ld Rivet could
+# not link libpdfium.a. Drop the flag; it only shrinks object files (build/ is a separate
+# gclient checkout, so this is a build-script edit rather than a patches/*.patch).
+if [ "$os" = linux ]; then
+  sed -i.bak 's/cflags += \[ "-Wa,--crel,--allow-experimental-crel" \]/cflags += []/' \
+    "$src/build/config/compiler/BUILD.gn"
+  rm -f "$src/build/config/compiler/BUILD.gn.bak"
+fi
+
 # --- gn args + build --------------------------------------------------------
 out="$src/out/rivet-${os}-${cpu}"
 mkdir -p "$out"
