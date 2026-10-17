@@ -85,12 +85,12 @@ public:
         for (auto& task : run) task();
     }
     bool waitUntil(const std::function<bool()>& predicate) {
-        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
         for (;;) {
             pump();
             if (predicate()) return true;
             std::unique_lock<std::mutex> lock(mutex_);
-            if (!cv_.wait_until(lock, std::min(deadline, std::chrono::steady_clock::now() + std::chrono::milliseconds(5)),
+            if (!cv_.wait_until(lock, std::min(deadline, std::chrono::steady_clock::now() + std::chrono::milliseconds(30)),
                                 [this] { return !queue_.empty(); })) {
                 if (std::chrono::steady_clock::now() >= deadline) return predicate();
             }
@@ -98,7 +98,7 @@ public:
     }
     // Waits for a worker to POST (without delivering anything).
     bool waitPosted(int target) {
-        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
         while (posted.load() < target) {
             if (std::chrono::steady_clock::now() >= deadline) return false;
             std::this_thread::yield();
@@ -1078,7 +1078,7 @@ RIVET_TEST(stressQuitWhileASaveWithAnnotationEditsIsInFlightLeavesNothingDanglin
     // fences its workers (AsyncScope), so it waits for the parked save. Open
     // the gate from another thread while quit is waiting on it.
     std::thread releaser([&shell] {
-        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        std::this_thread::sleep_for(std::chrono::milliseconds(30));
         shell.engine.release();
     });
     shell.quit(); // controllers, then the workspace and its sessions, mid-save

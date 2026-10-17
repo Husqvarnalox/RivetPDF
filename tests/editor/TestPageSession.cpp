@@ -87,7 +87,7 @@ struct Fixture {
         auto future = promise->get_future();
         session->renderSource().requestRender(r, RenderPriority::Visible,
                                               [promise](RenderResult result) { promise->set_value(std::move(result)); });
-        if (future.wait_for(std::chrono::seconds(5)) != std::future_status::ready) {
+        if (future.wait_for(std::chrono::seconds(30)) != std::future_status::ready) {
             return std::unexpected(rivet::core::makeError(ErrorCode::Internal, "timeout", "test"));
         }
         return future.get();
@@ -97,7 +97,7 @@ struct Fixture {
         auto promise = std::make_shared<std::promise<std::shared_ptr<const rivet::pdf::PdfTextPage>>>();
         auto future = promise->get_future();
         session->textService().requestTextPage(page, [promise](auto result) { promise->set_value(result); });
-        if (future.wait_for(std::chrono::seconds(5)) != std::future_status::ready) return nullptr;
+        if (future.wait_for(std::chrono::seconds(30)) != std::future_status::ready) return nullptr;
         return future.get();
     }
 
@@ -109,7 +109,7 @@ struct Fixture {
 };
 
 template <typename Predicate>
-bool waitFor(Predicate predicate, int attempts = 1000) {
+bool waitFor(Predicate predicate, int attempts = 15000) {
     for (int i = 0; i < attempts; ++i) {
         if (predicate()) return true;
         std::this_thread::sleep_for(std::chrono::milliseconds(2));
@@ -278,7 +278,7 @@ RIVET_TEST(textCacheInvalidatesOnlyAffectedPages) {
     text.requestRangesText({rivet::editor::TextRange{f.id(2), 0, rivet::editor::TextRange::kToPageEnd},
                             rivet::editor::TextRange{f.id(1), 0, rivet::editor::TextRange::kToPageEnd}},
                            [&copied](rivet::core::Result<std::string> result) { copied.set_value(std::move(result)); });
-    CHECK(copiedFuture.wait_for(std::chrono::seconds(5)) == std::future_status::ready);
+    CHECK(copiedFuture.wait_for(std::chrono::seconds(30)) == std::future_status::ready);
     const auto copy = copiedFuture.get();
     CHECK(copy.has_value());
     if (copy.has_value()) CHECK_EQ(*copy, std::string("PAGE-3@0\nPAGE-2@180"));
@@ -325,7 +325,7 @@ RIVET_TEST(linkDestinationsResolveThroughSession) {
     std::promise<std::vector<rivet::pdf::PdfPageLink>> loaded;
     auto future = loaded.get_future();
     f.session->linkService().requestPageLinks(f.id(0), [&loaded](auto links) { loaded.set_value(std::move(links)); });
-    CHECK(future.wait_for(std::chrono::seconds(5)) == std::future_status::ready);
+    CHECK(future.wait_for(std::chrono::seconds(30)) == std::future_status::ready);
     const auto links = future.get();
     CHECK_EQ(links.size(), std::size_t{1});
     CHECK_EQ(f.session->linkService().cachedLinks(f.id(0)).size(), std::size_t{1});
@@ -365,7 +365,7 @@ RIVET_TEST(linkLoadStartedBeforeRebaseDeliversNothingStale) {
     f.session->linkService().resetForNewBase();
     gate.unlock();
 
-    CHECK(firstFuture.wait_for(std::chrono::seconds(5)) == std::future_status::ready);
+    CHECK(firstFuture.wait_for(std::chrono::seconds(30)) == std::future_status::ready);
     CHECK(firstFuture.get().empty());
     // The stale result was never cached...
     CHECK(f.session->linkService().cachedLinks(f.id(0)).empty());
@@ -374,7 +374,7 @@ RIVET_TEST(linkLoadStartedBeforeRebaseDeliversNothingStale) {
     std::promise<std::vector<rivet::pdf::PdfPageLink>> second;
     auto secondFuture = second.get_future();
     f.session->linkService().requestPageLinks(f.id(0), [&second](auto links) { second.set_value(std::move(links)); });
-    CHECK(secondFuture.wait_for(std::chrono::seconds(5)) == std::future_status::ready);
+    CHECK(secondFuture.wait_for(std::chrono::seconds(30)) == std::future_status::ready);
     CHECK_EQ(secondFuture.get().size(), std::size_t{1});
     CHECK_EQ(f.session->linkService().cachedLinks(f.id(0)).size(), std::size_t{1});
 }

@@ -171,7 +171,7 @@ public:
             const std::string chunk(300 * 1024, 'x');
             for (int i = 0; i < slowChunks; ++i) {
                 if (core::Status s = sink.write(chunk.data(), chunk.size()); !s) return s;
-                std::this_thread::sleep_for(std::chrono::milliseconds(20));
+                std::this_thread::sleep_for(std::chrono::milliseconds(30));
             }
         }
         for (std::size_t i = 0; i < build.pages.size(); ++i) {

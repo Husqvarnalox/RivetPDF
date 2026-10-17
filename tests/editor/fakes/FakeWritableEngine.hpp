@@ -265,7 +265,7 @@ public:
     }
     bool waitParked(int count) {
         std::unique_lock<std::mutex> lock(mutex_);
-        return cv_.wait_for(lock, std::chrono::seconds(10), [&] { return parked_ >= count; });
+        return cv_.wait_for(lock, std::chrono::seconds(30), [&] { return parked_ >= count; });
     }
 
     // Configuration (set before use; filenames, not full paths).

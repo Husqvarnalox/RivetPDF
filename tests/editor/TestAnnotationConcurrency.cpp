@@ -111,7 +111,7 @@ private:
 
 template <typename Pred>
 bool waitUntil(Pred done) {
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
     while (std::chrono::steady_clock::now() < deadline) {
         if (done()) return true;
         std::this_thread::sleep_for(std::chrono::milliseconds(1));

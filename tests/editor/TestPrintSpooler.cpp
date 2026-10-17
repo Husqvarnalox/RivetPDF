@@ -159,6 +159,11 @@ Outcome runJob(PrintSpooler& spooler, QueueDispatcher& dispatcher, std::vector<P
             outcome.result.emplace(std::move(result));
         });
     CHECK(started.has_value());
+    if (!started.has_value()) {
+        // Never wait for a completion that cannot arrive (it would hang the run).
+        outcome.result.emplace(std::unexpected(started.error()));
+        return outcome;
+    }
     while (!outcome.result.has_value()) dispatcher.waitAndPump();
     return outcome;
 }
