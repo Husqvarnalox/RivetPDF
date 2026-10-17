@@ -1,0 +1,29 @@
+# Scenario 10: welcome view (no documents) in light and dark, window resizing.
+log scenario 10: welcome + resize
+theme light
+log-state
+shot 10-welcome-light.png
+theme dark
+shot 10-welcome-dark.png
+theme light
+resize 940 600
+log-state
+shot 10-welcome-940x600.png
+# Below the minimum: must clamp to 940x600.
+resize 800 500
+log-state
+resize 1600 1000
+log-state
+shot 10-welcome-1600x1000.png
+# The same sizes with a document open.
+open ${QA_FIX}/long.pdf
+resize 940 600
+log-state
+shot 10-pdf-940x600.png
+theme dark
+shot 10-pdf-940x600-dark.png
+theme light
+resize 1600 1000
+log-state
+shot 10-pdf-1600x1000.png
+quit

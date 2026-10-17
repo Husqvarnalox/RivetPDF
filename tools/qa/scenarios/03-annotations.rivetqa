@@ -1,0 +1,57 @@
+# Scenario 3: annotations - highlight from a selection, highlight tool, note,
+# ink, shapes, stamp; save; reopen; the annotations persist.
+resize 1280 850
+theme light
+open ${QA_FIX}/sample.pdf
+
+# Highlight from a text selection (View mode), then Annotate > Highlight.
+dragpage 1 70 604 360 604
+cmd Annotate/Highlight
+log-state
+shot 03-highlight-from-selection.png
+
+# Highlight tool dragged over the first body line.
+dragpage 1 70 664 400 664
+shot 03-highlight-tool.png
+
+# Note: place it, type its text, close the editor.
+cmd Annotate/Note
+clickpage 1 480 700
+type QA note text
+shot 03-note-editing.png
+key escape
+
+# Ink stroke, rectangle, ellipse, arrow, stamp.
+cmd Annotate/Ink
+dragpage 1 100 480 300 420
+cmd Annotate/Rectangle
+dragpage 1 100 380 250 300
+cmd Annotate/Ellipse
+dragpage 1 300 380 450 300
+cmd Annotate/Arrow
+dragpage 1 100 250 300 200
+cmd Annotate/Stamp
+clickpage 1 420 220
+cmd Annotate/Select Tool
+log-state
+shot 03-all-annotations.png
+theme dark
+shot 03-all-annotations-dark.png
+theme light
+
+# Select the rectangle and delete it, then undo.
+clickpage 1 100 340
+cmd Annotate/Delete Annotation
+shot 03-rect-deleted.png
+cmd Edit/Undo
+shot 03-rect-restored.png
+
+# Save As, close, reopen.
+answer save ${QA_WORK}/03-annotated.pdf
+cmd File/Save As…
+log-state
+key cmd+w
+open ${QA_WORK}/03-annotated.pdf
+log-state
+shot 03-reopened.png
+quit

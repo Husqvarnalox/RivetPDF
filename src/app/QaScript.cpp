@@ -695,9 +695,11 @@ struct QaSession::Impl {
         pointer(ui::PointerEventType::Up, to, 1, modifiers);
     }
 
-    // PDF user space of page `page` (1-based) -> root coordinates; scrolls the
-    // point into view first when needed.
-    std::optional<core::Point> pagePoint(int page, core::Point user, std::string& error) {
+    // PDF user-space points of page `page` (1-based) -> root coordinates.
+    // When any of them is outside the viewport, the view scrolls once so the
+    // bounding box of all of them is centered (a drag keeps both ends).
+    std::optional<std::vector<core::Point>> pagePoints(int page, const std::vector<core::Point>& users,
+                                                       std::string& error) {
         ui::PdfViewport& viewport = shell->pdfViewport();
         const render::PageLayout* layout = viewport.pageLayout();
         if (layout == nullptr) {
@@ -709,7 +711,7 @@ struct QaSession::Impl {
             error = std::format("page {} out of range (1..{})", page, layout->pages().size());
             return std::nullopt;
         }
-        const auto map = [&]() -> std::optional<core::Point> {
+        const auto map = [&](core::Point user) -> std::optional<core::Point> {
             const std::optional<core::Rect> rect = viewport.pageRectInViewport(index);
             if (!rect.has_value()) return std::nullopt;
             const render::PageLayout::PageInfo& info = layout->pages()[index];
@@ -722,28 +724,40 @@ struct QaSession::Impl {
                 render::PageTransform::make(*rect, unrotated, info.rotation, zoom, 1.0);
             return transform.pageToLogical(user);
         };
-        std::optional<core::Point> local = map();
-        const core::Rect bounds = viewport.bounds().inset(core::Insets{4.0, 4.0, 4.0, 4.0});
-        if (!local.has_value() || !bounds.contains(*local)) {
+        const core::Rect inner = viewport.bounds().inset(core::Insets{4.0, 4.0, 4.0, 4.0});
+        bool allVisible = true;
+        std::optional<core::Rect> box; // page display points
+        for (const core::Point& user : users) {
+            const std::optional<core::Point> local = map(user);
             const std::optional<core::Rect> rect = viewport.pageRectInViewport(index);
-            if (rect.has_value() && local.has_value()) {
-                const double zoom = viewport.zoomFactor() > 0.0 ? viewport.zoomFactor() : 1.0;
-                const core::Point display{(local->x - rect->origin.x) / zoom, (local->y - rect->origin.y) / zoom};
-                viewport.revealContentRect(index, core::Rect{display.x - 1.0, display.y - 1.0, 2.0, 2.0});
-            } else {
-                viewport.goToPage(index);
+            if (!local.has_value() || !rect.has_value()) {
+                allVisible = false;
+                continue;
             }
-            local = map();
+            if (!inner.contains(*local)) allVisible = false;
+            const double zoom = viewport.zoomFactor() > 0.0 ? viewport.zoomFactor() : 1.0;
+            const core::Rect point{(local->x - rect->origin.x) / zoom - 1.0, (local->y - rect->origin.y) / zoom - 1.0,
+                                   2.0, 2.0};
+            box = box.has_value() ? box->united(point) : point;
         }
-        if (!local.has_value()) {
-            error = "page is not laid out";
-            return std::nullopt;
+        if (!allVisible) {
+            if (box.has_value()) viewport.revealContentRect(index, *box);
+            else viewport.goToPage(index);
         }
-        if (!viewport.bounds().contains(*local)) {
-            error = "point is outside the visible viewport";
-            return std::nullopt;
+        std::vector<core::Point> out;
+        for (const core::Point& user : users) {
+            const std::optional<core::Point> local = map(user);
+            if (!local.has_value()) {
+                error = "page is not laid out";
+                return std::nullopt;
+            }
+            if (!viewport.bounds().contains(*local)) {
+                error = "point is outside the visible viewport";
+                return std::nullopt;
+            }
+            out.push_back(viewport.originInRoot() + *local);
         }
-        return viewport.originInRoot() + *local;
+        return out;
     }
 
     const MenuItem* findMenuItem(std::string_view path) const {
@@ -840,31 +854,30 @@ struct QaSession::Impl {
         case StepKind::ClickPage:
         case StepKind::DoubleClickPage: {
             std::string error;
-            const auto point = pagePoint(step.page, core::Point{step.numbers[0], step.numbers[1]}, error);
-            if (!point.has_value()) {
+            const auto points = pagePoints(step.page, {core::Point{step.numbers[0], step.numbers[1]}}, error);
+            if (!points.has_value()) {
                 fail(step, error);
                 return;
             }
-            clickAt(*point, 1, step.modifiers, step.kind == StepKind::DoubleClickPage ? 2 : 1);
-            ok(step, std::format("at {:.0f},{:.0f}", point->x, point->y));
+            const core::Point point = points->front();
+            clickAt(point, 1, step.modifiers, step.kind == StepKind::DoubleClickPage ? 2 : 1);
+            ok(step, std::format("at {:.0f},{:.0f}", point.x, point.y));
             return;
         }
         case StepKind::DragPage: {
             std::string error;
-            const auto from = pagePoint(step.page, core::Point{step.numbers[0], step.numbers[1]}, error);
-            const auto to = from.has_value()
-                                ? pagePoint(step.page, core::Point{step.numbers[2], step.numbers[3]}, error)
-                                : std::nullopt;
-            // The second mapping may have scrolled: map the start again.
-            const auto start = to.has_value()
-                                   ? pagePoint(step.page, core::Point{step.numbers[0], step.numbers[1]}, error)
-                                   : std::nullopt;
-            if (!start.has_value() || !to.has_value()) {
+            const auto points = pagePoints(step.page,
+                                           {core::Point{step.numbers[0], step.numbers[1]},
+                                            core::Point{step.numbers[2], step.numbers[3]}},
+                                           error);
+            if (!points.has_value()) {
                 fail(step, error);
                 return;
             }
-            dragBetween(*start, *to, step.modifiers);
-            ok(step, std::format("{:.0f},{:.0f} -> {:.0f},{:.0f}", start->x, start->y, to->x, to->y));
+            const core::Point from = (*points)[0];
+            const core::Point to = (*points)[1];
+            dragBetween(from, to, step.modifiers);
+            ok(step, std::format("{:.0f},{:.0f} -> {:.0f},{:.0f}", from.x, from.y, to.x, to.y));
             return;
         }
         case StepKind::Key: {

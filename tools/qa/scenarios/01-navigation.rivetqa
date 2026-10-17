@@ -1,0 +1,87 @@
+# Scenario 1: long PDF - initial zoom/fit, scrolling, page navigation, zoom,
+# thumbnails, outline, search, text selection + copy.
+# Coordinates assume the default 1280x850 window (toolbar items are laid out
+# relative to the window width).
+resize 1280 850
+theme light
+open ${QA_FIX}/long.pdf
+log-state
+shot 01-open-initial.png
+
+# Scrolling (wheel) and keyboard paging.
+scroll 700 500 0 900
+log-state
+shot 01-scrolled.png
+key pagedown
+key end
+log-state
+key home
+log-state
+
+# Page field: go to page 5; then the next/previous chevrons.
+click 688 54
+key backspace
+key backspace
+type 5\n
+log-state
+click 768 54
+log-state
+click 650 54
+log-state
+shot 01-page-nav.png
+
+# Zoom buttons, Cmd+0, the zoom menu.
+click 602 54
+click 602 54
+log-state
+click 512 54
+log-state
+key cmd+0
+log-state
+key cmd++
+log-state
+key cmd+-
+log-state
+click 552 54
+shot 01-zoom-menu.png
+# Zoom menu > Fit Width (no menu-bar item exists for it).
+click 580 113
+log-state
+shot 01-fit-width.png
+
+# Thumbnails: the strip follows the current page (5); page 6 is the
+# thumbnail below it.
+click 110 700
+log-state
+shot 01-thumb-page6.png
+
+# Search: find, next, previous.
+key cmd+f
+type Rivet\n
+log-state
+assert-find 1
+key return
+log-state
+click 1117 101
+log-state
+shot 01-search.png
+key escape
+
+# Outline (outline.pdf has one).
+open ${QA_FIX}/outline.pdf
+click 95 95
+shot 01-outline.png
+# Chapter 2 entry (page 2 or later).
+click 68 198
+log-state
+shot 01-outline-clicked.png
+
+# Text selection + copy on a PDF with known text positions.
+open ${QA_FIX}/sample.pdf
+click 36 95
+dragpage 1 70 664 360 664
+shot 01-selection.png
+key cmd+c
+assert-clipboard quick brown
+log-state
+quit
