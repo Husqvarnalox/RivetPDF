@@ -207,7 +207,8 @@ inline Bytes appendRevision(Bytes base, const std::vector<std::pair<std::uint32_
     const std::uint64_t prev = file->lastStartxref();
     const std::uint64_t size = file->nextObjectNumber();
     std::string root = "1 0 R";
-    if (const PdfObject* r = file->mergedTrailer().find("Root"); r && r->isRef())
+    const auto trailer = file->mergedTrailer(); // by value: keep it alive while `r` is used
+    if (const PdfObject* r = trailer.find("Root"); r && r->isRef())
         root = std::to_string(r->ref.num) + " 0 R";
     std::string out;
     if (base.back() != '\n') out += "\n";
