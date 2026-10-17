@@ -4,6 +4,7 @@
 // saver and reopen the file. The text is no longer extractable, the widget
 // is gone from the page and its field's value is no longer in the file.
 // Returns early only when no PDF backend is built in.
+#include "TestProcess.hpp"
 #include "RivetTest.h"
 
 #include "PdfFixtures.hpp"
@@ -19,7 +20,6 @@
 #include "pdf/PdfSystem.hpp"
 #include "pdf/PdfText.hpp"
 
-#include <unistd.h>
 
 #include <atomic>
 #include <chrono>
@@ -43,7 +43,7 @@ public:
     TempDir() {
         static std::atomic<int> counter{0};
         path_ = fs::temp_directory_path() /
-                ("rivet-redact-rt-" + std::to_string(::getpid()) + "-" +
+                ("rivet-redact-rt-" + std::to_string(rivet::test::processId()) + "-" +
                  std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + "-" +
                  std::to_string(counter.fetch_add(1)));
         fs::create_directories(path_);

@@ -331,9 +331,11 @@ bool FormController::stepList(const Target& target, int delta) {
         next = delta < 0 ? last : 0;
     }
     // Like a native list: the arrow selects exactly the next row.
-    const pdf::PdfFormValue value = pdf::PdfFormValue::ofChoice({static_cast<std::uint32_t>(next)});
+    pdf::PdfFormValue value = pdf::PdfFormValue::ofChoice({static_cast<std::uint32_t>(next)});
     if (current.has_value() && *current == value) return true;
-    setValue(target, value);
+    // Moved, not copied: GCC 13 -O2 reports a false -Warray-bounds on the
+    // one-element vector copy.
+    setValue(target, std::move(value));
     return true;
 }
 

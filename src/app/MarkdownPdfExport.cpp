@@ -300,7 +300,7 @@ private:
             }
             item.segments.push_back(out);
         }
-        if (!inside || item.segments.front().op != pdf::PdfPathSegment::Op::MoveTo) return;
+        if (!inside || item.segments.empty() || item.segments.front().op != pdf::PdfPathSegment::Op::MoveTo) return;
         page_->items.emplace_back(std::move(item));
     }
 
