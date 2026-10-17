@@ -8,6 +8,13 @@ add_executable(rivet_crypto_x509_tests
     TestCertificateDisplay.cpp
 )
 target_link_libraries(rivet_crypto_x509_tests PRIVATE rivet::test_harness rivet::crypto)
+if(RIVET_ENABLE_CRYPTO)
+    # Equivalence tests compare the backend-free reader with the OpenSSL provider.
+    find_package(OpenSSL 3 REQUIRED COMPONENTS Crypto)
+    target_include_directories(rivet_crypto_x509_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/..)
+    target_link_libraries(rivet_crypto_x509_tests PRIVATE OpenSSL::Crypto)
+    target_compile_definitions(rivet_crypto_x509_tests PRIVATE RIVET_TEST_CRYPTO_OPENSSL=1)
+endif()
 rivet_set_target_warnings(rivet_crypto_x509_tests)
 rivet_set_target_sanitizers(rivet_crypto_x509_tests)
 add_test(NAME crypto_x509 COMMAND rivet_crypto_x509_tests)
