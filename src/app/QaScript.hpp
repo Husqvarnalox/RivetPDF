@@ -50,7 +50,16 @@
 //   answer savechanges save|dontsave|cancel
 //   answer review review|discard|cancel
 //   assert-status <substring>   status-bar text contains <substring>
+//   refute-status <substring>   status-bar text does NOT contain <substring>
 //   assert-find <substring>     find-bar result text contains <substring>
+//   assert-find-query <text>    what typing into the find field would yield:
+//                               its text with the selection replaced by
+//                               <text> equals <text> (i.e. the old query is
+//                               selected or the field is empty)
+//   assert-md-source <substring>  active Markdown tab's source contains it
+//   assert-md-caret <text>      active Markdown tab: the selection is
+//                               collapsed and the source before the caret
+//                               ends with <text> (\n = newline)
 //   assert-clipboard <substring>
 //   assert-pages <n> | assert-tabs <n>
 //   log-state | log <text> | quit
@@ -87,7 +96,11 @@ enum class StepKind : std::uint8_t {
     Theme,
     Answer,
     AssertStatus,
+    RefuteStatus,
     AssertFind,
+    AssertFindQuery,
+    AssertMdSource,
+    AssertMdCaret,
     AssertClipboard,
     AssertPages,
     AssertTabs,

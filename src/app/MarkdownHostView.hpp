@@ -11,7 +11,9 @@
 
 #include <functional>
 #include <memory>
+#include <optional>
 #include <string>
+#include <utility>
 
 namespace rivet::app {
 
@@ -73,6 +75,9 @@ public:
     // Rendered view's caret/selection, or the Source editor's. One undo step.
     // False when nothing is bound, editing is locked or nothing changed.
     virtual bool applyFormat(MarkdownFormatCommand) { return false; }
+    // The caret/selection of the focused view as source offsets {anchor,
+    // caret} (QA harness); nullopt while nothing is bound.
+    virtual std::optional<std::pair<std::size_t, std::size_t>> sourceSelection() const { return std::nullopt; }
 
     // Child geometry in host-local coordinates (empty rect = hidden).
     struct Panes {

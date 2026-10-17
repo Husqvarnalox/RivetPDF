@@ -46,20 +46,39 @@ shot 09-edit-initial.png
 click 900 194
 type  more words
 shot 09-edit-typed.png
-# Cmd+B with a collapsed caret, type, Cmd+B again, type.
+assert-md-caret more words
+# Cmd+B with a collapsed caret inserts an empty pair with the caret inside
+# (nothing selected), typing goes in bold, Cmd+B again steps out (bug 5).
 key cmd+b
+assert-md-caret more words**
 shot 09-edit-cmdb.png
 type bold
+assert-md-caret more words**bold
 shot 09-edit-typed-bold.png
 key cmd+b
+assert-md-caret more words**bold**
 type  plain
+assert-md-source more words**bold** plain
 shot 09-edit-cmdb2.png
+# Same for Italic with Cmd+I.
+key cmd+i
+type it
+key cmd+i
+assert-md-source plain*it*
 # Enter at the end of the last list item ("banana") continues the list.
 click 400 253
 type \ncherry
+assert-md-caret cherry
 shot 09-edit-list-enter.png
+# Switching modes keeps the caret (bug 14).
 key cmd+2
+assert-md-caret cherry
 shot 09-edit-source.png
+key cmd+3
+assert-md-caret cherry
+key cmd+1
+assert-md-caret cherry
+key cmd+2
 key cmd+1
 cmd Edit/Undo
 key cmd+2
