@@ -145,7 +145,7 @@ inline Bytes genTimeElement(std::chrono::system_clock::time_point t, int micros)
                   tmv.tm_hour, tmv.tm_min, tmv.tm_sec);
     std::string text = buf;
     if (micros > 0) {
-        char f[8];
+        char f[16];
         std::snprintf(f, sizeof f, "%06d", micros);
         std::string frac = f;
         while (frac.back() == '0') frac.pop_back();

@@ -242,7 +242,10 @@ struct Signer {
     crypto::TrustAnchorSet anchors;
 
     explicit Signer(const std::string& cn = "Rivet Test Signer", const std::string& keyKind = "rsa2048") {
-        key = crypto::testing::makeCert({.cn = cn, .keyKind = keyKind});
+        crypto::testing::CertSpec spec;
+        spec.cn = cn;
+        spec.keyKind = keyKind;
+        key = crypto::testing::makeCert(spec);
         identity = crypto::testing::makeIdentity(*provider, key);
         if (auto c = provider->parseCertificate(crypto::testing::certDer(key))) anchors.add(*c);
     }

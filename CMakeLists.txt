@@ -29,6 +29,11 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 option(RIVET_WITH_PDFIUM "Build with the PDFium-backed PDF engine" OFF)
 option(RIVET_BUILD_TESTS "Build Rivet tests" ON)
 option(RIVET_ENABLE_SANITIZERS "Build with AddressSanitizer and UBSan" OFF)
+option(RIVET_BUILD_FUZZERS "Build the libFuzzer harnesses in tests/fuzz (needs clang with the fuzzer runtime)" OFF)
+
+if(RIVET_BUILD_FUZZERS AND NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+    message(FATAL_ERROR "RIVET_BUILD_FUZZERS=ON needs clang (-fsanitize=fuzzer); the deterministic replay tests need no fuzzer runtime.")
+endif()
 
 find_package(Threads REQUIRED)
 
