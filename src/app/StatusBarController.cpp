@@ -108,7 +108,21 @@ void StatusBarController::layout(const core::Rect& frame) {
         core::Rect{std::max(0.0, fieldX - 52.0 - kSelectionWidth), 3.0, kSelectionWidth, 20.0});
 }
 
-void StatusBarController::setStatus(std::string text) { statusLabel_->setText(std::move(text)); }
+void StatusBarController::setStatus(std::string text) {
+    showingHint_ = false;
+    statusLabel_->setText(std::move(text));
+}
+
+void StatusBarController::setHint(std::string text) {
+    statusLabel_->setText(std::move(text));
+    showingHint_ = true;
+}
+
+void StatusBarController::clearHint() {
+    if (!showingHint_) return;
+    showingHint_ = false;
+    statusLabel_->setText({});
+}
 
 const std::string& StatusBarController::statusText() const { return statusLabel_->text(); }
 

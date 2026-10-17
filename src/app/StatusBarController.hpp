@@ -46,6 +46,11 @@ public:
     void layout(const core::Rect& frame);
 
     void setStatus(std::string text);
+    // A transient tool hint ("Drag the handles to crop…"): shown like a
+    // status, but clearHint() removes it once the tool/selection that asked
+    // for it is gone. Any later setStatus() replaces it for good.
+    void setHint(std::string text);
+    void clearHint();
     const std::string& statusText() const;
 
     // Page-selection summary ("3 pages selected"; empty hides it), shown
@@ -79,6 +84,7 @@ private:
     // Raw pointers into widgets owned by the parent's tree.
     ui::Container* bar_ = nullptr;
     TextLabel* statusLabel_ = nullptr;
+    bool showingHint_ = false;
     TextLabel* selectionLabel_ = nullptr;
     TextLabel* pageCaptionLabel_ = nullptr;
     ui::TextField* pageField_ = nullptr;

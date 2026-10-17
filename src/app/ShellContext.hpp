@@ -78,6 +78,18 @@ struct ShellContext {
     // Uncommitted-edit hooks (see PendingEdits). Last member with a default
     // initializer so aggregate initialization of the sinks above stays valid.
     PendingEdits pendingEdits{};
+    // Transient tool hints (StatusBarController::setHint/clearHint); unset in
+    // tests that do not care. Use showHint()/withdrawHint().
+    std::function<void(std::string)> setHint{};
+    std::function<void()> clearHint{};
+
+    void showHint(std::string text) const {
+        if (setHint) setHint(std::move(text));
+        else if (setStatus) setStatus(std::move(text));
+    }
+    void withdrawHint() const {
+        if (clearHint) clearHint();
+    }
 
     // The active tab when it is a Ready PDF tab (session attached), otherwise
     // null. Every PDF feature controller goes through this, so a Markdown (or

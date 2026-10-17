@@ -146,6 +146,12 @@ void ShellController::buildWidgets() {
         [this](ui::Widget* widget) { setFocus(widget); },
         [this] { layoutShell(); },
     });
+    context_->setHint = [this](std::string text) {
+        if (statusBar_ != nullptr) statusBar_->setHint(std::move(text));
+    };
+    context_->clearHint = [this] {
+        if (statusBar_ != nullptr) statusBar_->clearHint();
+    };
 
     auto tabStrip = std::make_unique<ui::TabStrip>();
     tabStrip_ = tabStrip.get();
@@ -732,6 +738,8 @@ void ShellController::syncToolMode() {
 
 void ShellController::setToolMode(ToolMode mode) {
     if (readyActiveTab() == nullptr) return;
+    // The previous tool's hint does not apply to the next one (QA bug 11).
+    if (statusBar_ != nullptr) statusBar_->clearHint();
     // Leave the current tool (hiding the annotation strip returns to the
     // Select tool and ContentTool::None), then enter the new one.
     if (mode != ToolMode::Annotate && annotationBar_->visible()) annotationBar_->setVisible(false);
