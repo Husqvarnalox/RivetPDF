@@ -85,7 +85,7 @@ target_compile_definitions(rivet_app_tests PRIVATE
 # Phase 8 digital-signature workflow and Set Password controllers (ADR-0048):
 # controller tests with fakes plus an integration test over the real signer
 # and encryptor (needs the crypto backend).
-if(TRUE)
+if(RIVET_ENABLE_CRYPTO)
     find_package(OpenSSL 3 REQUIRED COMPONENTS Crypto)
     add_executable(rivet_app_security_tests
         TestSecurityText.cpp
