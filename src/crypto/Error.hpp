@@ -32,6 +32,8 @@ enum class CryptoErrorCode : std::uint8_t {
     SessionExpired,     // provider session ended (token reset, logout, timeout)
     LicenseInvalid,     // CSP / provider licence missing or expired
     Io,
+    Network,            // time-stamp / online request refused or failed in the network layer (gate, policy, transport)
+    BadResponse,        // the remote answered, but not with an acceptable reply (HTTP status, content type)
     Internal,
 };
 

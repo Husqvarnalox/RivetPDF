@@ -870,7 +870,8 @@ SignResult<std::vector<PdfSignatureInfo>> verifyPdfSignatures(ByteView pdf, cryp
         // An unclassifiable later change must never read as a plain valid signature.
         if (v.modification == ModificationStatus::Unknown &&
             (v.state == crypto::SignatureState::ValidTrusted || v.state == crypto::SignatureState::ValidUntrusted ||
-             v.state == crypto::SignatureState::ValidExpiredNow || v.state == crypto::SignatureState::ValidAtTrustedTimestamp))
+             v.state == crypto::SignatureState::ValidExpiredNow || v.state == crypto::SignatureState::ValidAtTrustedTimestamp ||
+             v.state == crypto::SignatureState::ValidTimestamped || v.state == crypto::SignatureState::ValidTimestampInvalid))
             v.state = crypto::SignatureState::UnableToValidate;
         results.push_back(std::move(info));
     }

@@ -23,6 +23,7 @@ inline constexpr int kMaxDepth = 24;
 inline constexpr std::size_t kMaxInputSize = std::size_t{1} << 30; // 1 GiB hard cap
 inline constexpr std::size_t kMaxChildren = std::size_t{1} << 20;
 
+inline constexpr std::uint8_t kBoolean = 0x01;
 inline constexpr std::uint8_t kInteger = 0x02;
 inline constexpr std::uint8_t kBitString = 0x03;
 inline constexpr std::uint8_t kOctetString = 0x04;

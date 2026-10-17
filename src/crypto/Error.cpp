@@ -23,6 +23,8 @@ std::string_view toString(CryptoErrorCode code) {
     case CryptoErrorCode::SessionExpired: return "SessionExpired";
     case CryptoErrorCode::LicenseInvalid: return "LicenseInvalid";
     case CryptoErrorCode::Io: return "Io";
+    case CryptoErrorCode::Network: return "Network";
+    case CryptoErrorCode::BadResponse: return "BadResponse";
     case CryptoErrorCode::Internal: return "Internal";
     }
     return "Internal";
@@ -48,7 +50,9 @@ core::Error toCoreError(const CryptoError& error) {
     case CryptoErrorCode::NotExportable: code = core::ErrorCode::Unsupported; break;
     case CryptoErrorCode::CertificateNotFound: code = core::ErrorCode::NotFound; break;
     case CryptoErrorCode::Cancelled: code = core::ErrorCode::Cancelled; break;
-    case CryptoErrorCode::Io: code = core::ErrorCode::Io; break;
+    case CryptoErrorCode::Io:
+    case CryptoErrorCode::Network: code = core::ErrorCode::Io; break;
+    case CryptoErrorCode::BadResponse: code = core::ErrorCode::InvalidDocument; break;
     case CryptoErrorCode::Internal: break;
     }
     return core::makeError(code, std::string(toString(error.code)) + ": " + error.message, "crypto");

@@ -89,6 +89,8 @@ std::string_view toString(SignatureState v) {
     case SignatureState::ValidUntrusted: return "valid, untrusted signer";
     case SignatureState::ValidExpiredNow: return "valid, certificate expired now";
     case SignatureState::ValidAtTrustedTimestamp: return "valid at trusted timestamp";
+    case SignatureState::ValidTimestamped: return "valid, timestamp verified";
+    case SignatureState::ValidTimestampInvalid: return "valid, timestamp present but invalid";
     case SignatureState::Revoked: return "revoked";
     case SignatureState::DocumentModified: return "document modified";
     case SignatureState::PermittedModifications: return "valid, permitted modifications";
@@ -120,7 +122,11 @@ SignatureState foldState(const ValidationResult& r) {
     }
     if (r.certificate != CertificateStatus::Valid) return SignatureState::UnableToValidate;
     if (r.modification == ModificationStatus::Permitted) return SignatureState::PermittedModifications;
-    return r.trust == TrustStatus::Trusted ? SignatureState::ValidTrusted : SignatureState::ValidUntrusted;
+    if (r.trust != TrustStatus::Trusted) return SignatureState::ValidUntrusted;
+    if (r.timestamp == TimestampStatus::Valid) return SignatureState::ValidTimestamped;
+    if (r.timestamp == TimestampStatus::Invalid || r.timestamp == TimestampStatus::Untrusted)
+        return SignatureState::ValidTimestampInvalid;
+    return SignatureState::ValidTrusted;
 }
 
 } // namespace rivet::crypto

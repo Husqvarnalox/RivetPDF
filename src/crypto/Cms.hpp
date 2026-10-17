@@ -7,6 +7,7 @@
 #include "crypto/Providers.hpp"
 #include "crypto/Types.hpp"
 #include "crypto/Validation.hpp"
+#include "crypto/timestamp/TimestampInfo.hpp"
 
 #include <chrono>
 #include <cstddef>
@@ -125,6 +126,9 @@ CryptoOk addCountersignature(CmsSignedData& model, std::size_t signerIndex, Cryp
 struct CmsVerifyOptions {
     const TrustAnchorSet* anchors = nullptr; // nullptr: nothing is trusted
     std::chrono::system_clock::time_point validationTime = std::chrono::system_clock::now();
+    // Trust anchors for the TSA chain of an embedded signature time-stamp.
+    // nullptr: the same set as `anchors`.
+    const TrustAnchorSet* timestampAnchors = nullptr;
     std::vector<Bytes> extraCertificates;    // additional chain material
     CancelToken cancel;
 };
@@ -140,6 +144,10 @@ struct SignerVerification {
     std::optional<DigestAlgorithm> digest;
     std::optional<std::chrono::system_clock::time_point> signingTime;
     bool hasTimestampToken = false;
+    // Set when the signer carries a signature time-stamp attribute: genTime,
+    // TSA subject and whether the token verified (validation.timestamp
+    // mirrors timestamp->status).
+    std::optional<SignatureTimestampInfo> timestamp;
     ValidationResult validation;
     std::vector<CountersignatureVerification> countersignatures;
 };

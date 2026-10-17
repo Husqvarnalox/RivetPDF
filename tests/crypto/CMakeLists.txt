@@ -4,6 +4,7 @@ add_executable(rivet_crypto_tests
     TestDer.cpp
     TestMalformedCms.cpp
     TestSecretBuffer.cpp
+    TestTimeStampOff.cpp
 )
 
 if(RIVET_ENABLE_CRYPTO)
@@ -13,6 +14,7 @@ if(RIVET_ENABLE_CRYPTO)
         TestCms.cpp
         TestInterop.cpp
         TestPkcs12.cpp
+        TestTimeStamp.cpp
     )
     target_link_libraries(rivet_crypto_tests PRIVATE OpenSSL::Crypto)
     # Interop tests find the CLI tool by path when available.
@@ -23,7 +25,8 @@ add_test(NAME crypto COMMAND rivet_crypto_tests)
 
 target_link_libraries(rivet_crypto_tests PRIVATE
     rivet::test_harness
-    rivet::crypto
+    rivet::timestamp
+    rivet::net
 )
 
 rivet_set_target_warnings(rivet_crypto_tests)

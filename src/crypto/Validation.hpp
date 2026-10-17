@@ -28,6 +28,8 @@ enum class SignatureState : std::uint8_t {
     ValidUntrusted,
     ValidExpiredNow,         // signature valid, trusted chain, certificate expired at validation time
     ValidAtTrustedTimestamp, // valid at a trusted timestamp even though expired now
+    ValidTimestamped,        // valid and trusted, with a verified signature time-stamp
+    ValidTimestampInvalid,   // valid and trusted, but the signature time-stamp present is not valid / not trusted
     Revoked,
     DocumentModified,
     PermittedModifications,
@@ -63,7 +65,8 @@ struct ValidationResult {
 // Folds the independent statuses into the user-facing state.
 // Precedence: Revoked > DocumentModified > InvalidSignature >
 // UnsupportedAlgorithm > UnableToValidate > WeakLegacyAlgorithm >
-// ValidAtTrustedTimestamp / ValidExpiredNow > ValidTrusted / ValidUntrusted.
+// ValidAtTrustedTimestamp / ValidExpiredNow > ValidTimestamped /
+// ValidTimestampInvalid (trusted signer only) > ValidTrusted / ValidUntrusted.
 SignatureState foldState(const ValidationResult& r);
 
 } // namespace rivet::crypto

@@ -2,6 +2,7 @@
 #include "crypto/Cms.hpp"
 
 #include "crypto/Der.hpp"
+#include "crypto/timestamp/TimeStamp.hpp"
 
 #include <algorithm>
 #include <cstdio>
@@ -327,6 +328,7 @@ std::vector<CertificateInfo> parseCertificates(CryptoProvider& provider, const s
 struct OneResult {
     std::optional<CertificateInfo> signer;
     std::optional<DigestAlgorithm> digest;
+    std::optional<SignatureTimestampInfo> timestamp;
     ValidationResult v;
 };
 
@@ -481,14 +483,43 @@ CryptoResult<OneResult> verifyOne(const CmsSignerInfo& si, std::string_view eCon
         v.notes.push_back("weak legacy algorithm (SHA-1 or RSA below 2048 bits)");
     }
 
-    if (findAttr(si.unsignedAttrs, oid::kSignatureTimeStampToken)) v.timestamp = TimestampStatus::PresentUnverified;
-
     const CertificateValidation cv = validateCertificate(
         cert, pool, opts.anchors ? *opts.anchors : kNoAnchors, provider, opts.validationTime);
     v.certificate = cv.certificate;
     v.trust = cv.trust;
     if (v.trust != TrustStatus::Trusted) v.notes.push_back("signer certificate does not chain to a trusted anchor");
     if (v.certificate == CertificateStatus::Expired) v.notes.push_back("certificate expired at validation time");
+
+    // RFC 5126 signature time-stamp (unsigned attribute). Its TSA chain is
+    // judged against the caller's anchors; the signer certificate is also
+    // re-checked at genTime when it is not valid now.
+    if (findAttr(si.unsignedAttrs, oid::kSignatureTimeStampToken)) {
+        v.timestamp = TimestampStatus::PresentUnverified;
+        std::vector<Bytes> poolDers;
+        poolDers.reserve(pool.size());
+        for (const CertificateInfo& c : pool) poolDers.push_back(c.der);
+        auto ts = verifySignatureTimestamp(si, provider, opts.timestampAnchors ? opts.timestampAnchors : opts.anchors,
+                                           poolDers, opts.cancel);
+        if (!ts) return std::unexpected(ts.error());
+        v.timestamp = ts->status;
+        if (ts->status != TimestampStatus::Valid)
+            v.notes.push_back(ts->status == TimestampStatus::PresentUnverified
+                                  ? "signature time-stamp present but could not be verified"
+                                  : "signature time-stamp is not valid (" + std::string(toString(ts->failure)) + ")");
+        if (ts->status == TimestampStatus::Valid && ts->genTime &&
+            (v.certificate == CertificateStatus::Expired || v.certificate == CertificateStatus::NotYetValid)) {
+            const CertificateValidation atStamp = validateCertificate(
+                cert, pool, opts.anchors ? *opts.anchors : kNoAnchors, provider, *ts->genTime);
+            if (atStamp.certificate != CertificateStatus::Valid) {
+                ts->status = TimestampStatus::Invalid;
+                ts->verified = false;
+                ts->notes.push_back("signer certificate was not valid at the time-stamp time");
+                v.timestamp = TimestampStatus::Invalid;
+                v.notes.push_back("signer certificate was not valid at the time-stamp time");
+            }
+        }
+        r.timestamp = std::move(*ts);
+    }
     return finish();
 }
 
@@ -902,6 +933,7 @@ CryptoResult<std::vector<SignerVerification>> verifyCms(const CmsSignedData& mod
         sv.digest = one->digest;
         sv.signingTime = signingTimeOf(si);
         sv.hasTimestampToken = si.findUnsigned(oid::kSignatureTimeStampToken) != nullptr;
+        sv.timestamp = one->timestamp;
         sv.validation = one->v;
 
         for (const CmsAttribute& a : si.unsignedAttrs) {

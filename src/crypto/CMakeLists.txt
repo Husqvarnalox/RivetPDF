@@ -21,6 +21,8 @@ add_library(rivet_crypto STATIC
     X509Parse.cpp
     Qualification.cpp
     CertificateDisplay.cpp
+    timestamp/TimeStampRequest.cpp
+    timestamp/TimeStampToken.cpp
 )
 add_library(rivet::crypto ALIAS rivet_crypto)
 
@@ -41,6 +43,8 @@ endif()
 option(RIVET_ENABLE_CRYPTOPRO "Build the CryptoPro CSP provider (needs the CSP SDK headers; the library is dlopen'ed at run time)" OFF)
 option(RIVET_ENABLE_PKCS11 "Build the PKCS#11 token provider (module is dlopen'ed at run time)" OFF)
 add_subdirectory(providers)
+# RFC 3161 client (needs rivet::net); the request/token code is part of rivet_crypto.
+add_subdirectory(timestamp)
 
 rivet_set_target_warnings(rivet_crypto)
 rivet_set_target_sanitizers(rivet_crypto)
