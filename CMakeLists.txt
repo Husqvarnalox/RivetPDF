@@ -42,7 +42,9 @@ if(RIVET_WITH_PDFIUM)
             "    -D RIVET_PDFIUM_ROOT=/absolute/path/to/pdfium-install\n"
             "Expected layout:\n"
             "    <root>/include/fpdfview.h   (plus fpdf_*.h headers)\n"
-            "    <root>/lib/libpdfium.a      (macOS/Linux static; .dylib/.so also accepted)")
+            "    <root>/lib/libpdfium.a      (macOS/Linux static; .dylib/.so also accepted)\n"
+            "    <root>/lib/pdfium.lib       (Windows static)\n"
+            "Reproducible build scripts: tools/pdfium/")
     endif()
     message(STATUS "Rivet: PDFium found: ${PDFIUM_LIBRARY}")
 else()
@@ -57,6 +59,7 @@ if(MSVC)
     add_compile_definitions(_CRT_SECURE_NO_WARNINGS _CRT_NONSTDC_NO_WARNINGS)
 endif()
 
+include(RivetMsvcRuntime)
 include(RivetWarnings)
 include(RivetSanitizers)
 
