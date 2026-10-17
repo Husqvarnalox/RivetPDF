@@ -32,6 +32,8 @@ struct Palette {
     Color panelBackground;     // floating panels (find bar, prompts, sheets)
     Color popoverBackground;   // menus and popovers
     Color popoverBorder;
+    Color cardBorder;          // 1 px outline of floating cards (sheets, prompts, find bar)
+    Color cardShadow;          // soft drop shadow under floating cards
     Color tooltipBackground;
     Color tooltipText;
     Color scrim;               // dims content (crop tool)
@@ -126,6 +128,8 @@ inline constexpr double kSidebarMinWidth = 160.0;
 inline constexpr double kSidebarMaxWidth = 420.0;
 inline constexpr double kPageGap = 16.0;
 inline constexpr double kPageShadowRadius = 3.0;
+inline constexpr double kCardShadowRadius = 6.0;  // floating cards (ui::Card)
+inline constexpr double kCardShadowOffsetY = 2.0;
 
 inline constexpr double kHoverFadeSeconds = 0.12; // ADR-0033 §7
 inline constexpr double kTooltipDelaySeconds = 0.6;

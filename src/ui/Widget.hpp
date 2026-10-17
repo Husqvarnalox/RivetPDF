@@ -100,11 +100,17 @@ public:
     // Override point for self painting; default paints nothing.
     virtual void paintSelf(PaintContext&) const {}
 
+    // Painted by the parent just before this widget, in the PARENT's
+    // coordinate space and outside this widget's clip (drop shadows of
+    // floating cards). Default paints nothing.
+    virtual void paintBehind(PaintContext&) const {}
+
     // Paints children in order, each clipped (and origin-translated) to its
     // frame; see the PaintContext contract for push/pop semantics.
     void paintChildren(PaintContext& context) const {
         for (const auto& child : children_) {
             if (child->frame().isEmpty()) continue;
+            child->paintBehind(context);
             context.pushClip(child->frame());
             child->paint(context);
             context.popClip();

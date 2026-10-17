@@ -21,10 +21,10 @@ namespace {
 
 // The sheet swallows every pointer event inside it: nothing reaches the page
 // underneath (a click on its background must not place an annotation).
-class SheetPanel final : public ui::Container {
+class SheetPanel final : public ui::Card {
 public:
     bool onMouse(const ui::PointerEvent& event) override {
-        (void)ui::Container::onMouse(event);
+        (void)ui::Card::onMouse(event);
         return true;
     }
 };

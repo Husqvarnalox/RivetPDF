@@ -23,9 +23,8 @@ constexpr double kPanelHeight = 74.0;
 
 PasswordPromptController::PasswordPromptController(ShellContext& context, ui::Widget& parent)
     : context_(context) {
-    auto panel = std::make_unique<ui::Container>();
+    auto panel = std::make_unique<ui::Card>();
     panel_ = panel.get();
-    panel_->setBackground(&ui::Palette::panelBackground);
     parent.addChild(std::move(panel));
 
     auto message = std::make_unique<TextLabel>(

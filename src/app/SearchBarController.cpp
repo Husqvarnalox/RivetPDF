@@ -25,9 +25,8 @@ constexpr double kBarHeight = 34.0;
 
 SearchBarController::SearchBarController(ShellContext& context, ui::Widget& parent)
     : context_(context) {
-    auto bar = std::make_unique<ui::Container>();
+    auto bar = std::make_unique<ui::Card>();
     bar_ = bar.get();
-    bar_->setBackground(&ui::Palette::panelBackground);
     parent.addChild(std::move(bar));
 
     auto field = std::make_unique<ui::TextField>("Find");
