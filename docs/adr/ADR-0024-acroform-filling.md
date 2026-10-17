@@ -108,3 +108,12 @@ be followed literally):
   whole.
 - Multiline values are stored with LF; PDFium's CR is normalized on read and
   when verifying the applied values.
+- Reset Form (QA #7, October 2026) follows PDF 32000-1 12.7.5.3 instead of
+  "restore the original values": every fillable field goes to its /DV, else
+  to the empty value of its type (text "", check box off, list box no
+  selection), so it is enabled on a freshly opened, filled form. /DV is read
+  from the widget dictionary only (the public API cannot reach a separate
+  parent field's /DV; such fields reset to empty). Radio groups and combo
+  boxes without /DV keep their stored value: PDFium's form filler can turn
+  neither off/empty. List boxes select the clicked row in place (QA #8);
+  only combo boxes use the choice popup.

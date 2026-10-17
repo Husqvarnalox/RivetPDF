@@ -91,6 +91,11 @@ public:
         Font font;
         Color color;
         TextAlign align = TextAlign::Left;
+        // `rect` in the coordinates of the outermost painter (the clip
+        // translations of pushClip undone), and the clip active at the time
+        // in those coordinates (an empty rect when none).
+        core::Rect absoluteRect;
+        core::Rect absoluteClip;
     };
 
     double backingScaleValue = 1.0;
@@ -104,11 +109,25 @@ public:
     std::vector<BitmapRecord> bitmaps;
     std::vector<TextRecord> texts;
     int clipDepth = 0;
+    // pushClip translates the origin (PaintContext contract); tracked so
+    // tests can check where text really lands.
+    std::vector<core::Rect> clipStack; // absolute clip rects
 
     double backingScale() const override { return backingScaleValue; }
 
-    void pushClip(const core::Rect& /*logicalRect*/) override { ++clipDepth; }
-    void popClip() override { --clipDepth; }
+    void pushClip(const core::Rect& logicalRect) override {
+        ++clipDepth;
+        const core::Point o = origin();
+        clipStack.push_back(core::Rect{logicalRect.origin.x + o.x, logicalRect.origin.y + o.y,
+                                       logicalRect.size.width, logicalRect.size.height});
+    }
+    void popClip() override {
+        --clipDepth;
+        if (!clipStack.empty()) clipStack.pop_back();
+    }
+    core::Point origin() const {
+        return clipStack.empty() ? core::Point{0.0, 0.0} : clipStack.back().origin;
+    }
 
     void fillRect(const core::Rect& rect, const Color& color) override {
         fills.push_back(FillRecord{rect, color});
@@ -155,7 +174,11 @@ public:
 
     void drawText(std::string_view text, const core::Rect& rect, const Font& font,
                   const Color& color, TextAlign align) override {
-        texts.push_back(TextRecord{std::string(text), rect, font, color, align});
+        const core::Point o = origin();
+        texts.push_back(TextRecord{std::string(text), rect, font, color, align,
+                                   core::Rect{rect.origin.x + o.x, rect.origin.y + o.y, rect.size.width,
+                                              rect.size.height},
+                                   clipStack.empty() ? core::Rect{} : clipStack.back()});
     }
 };
 

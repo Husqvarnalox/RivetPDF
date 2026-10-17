@@ -38,6 +38,9 @@ click 512 54
 log-state
 key cmd+0
 log-state
+# QA #17: at 100% a page narrower than the viewport is centred.
+assert-state hcentered=yes
+shot 01-actual-size.png
 key cmd++
 log-state
 key cmd+-

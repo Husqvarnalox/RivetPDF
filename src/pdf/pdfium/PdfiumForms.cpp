@@ -236,6 +236,20 @@ std::uint32_t maxLengthOf(FPDF_ANNOTATION annot) {
     return result;
 }
 
+// /DV of the widget dictionary when it is a string or a name. Only the
+// widget's own dictionary is read: the public API reaches a parent field
+// only when it is itself an annotation (FPDFAnnot_GetLinkedAnnot), so /DV of
+// a separate parent field is not seen (that field then resets to its empty
+// value). An array (multi-select defaults) is not supported either.
+std::optional<std::string> defaultValueOf(FPDF_ANNOTATION annot) {
+    if (FPDFAnnot_HasKey(annot, "DV") == 0) return std::nullopt;
+    const int type = FPDFAnnot_GetValueType(annot, "DV");
+    if (type != FPDF_OBJECT_STRING && type != FPDF_OBJECT_NAME) return std::nullopt;
+    return readWide([&](FPDF_WCHAR* buffer, unsigned long length) {
+        return FPDFAnnot_GetStringValue(annot, "DV", buffer, length);
+    }, kMaxFormValueBytes);
+}
+
 bool hasScript(FPDF_FORMHANDLE form, FPDF_ANNOTATION annot) {
     const int events[] = {FPDF_ANNOT_AACTION_KEY_STROKE, FPDF_ANNOT_AACTION_FORMAT,
                           FPDF_ANNOT_AACTION_VALIDATE, FPDF_ANNOT_AACTION_CALCULATE};
@@ -273,6 +287,7 @@ void describeField(FPDF_FORMHANDLE form, FPDF_ANNOTATION annot, PdfFormField& fi
     } else {
         field.overLimit = true;
     }
+    if (auto dv = defaultValueOf(annot)) field.defaultValue = field.multiline ? normalizeBreaks(*dv) : std::move(*dv);
     if (field.isChoice()) {
         const int count = FPDFAnnot_GetOptionCount(form, annot);
         if (count > static_cast<int>(kMaxFormOptions)) {
@@ -343,7 +358,10 @@ bool applyChoice(FPDF_FORMHANDLE form, const Target& target, const PdfFormField&
             return std::find(value.selected.begin(), value.selected.end(), static_cast<std::uint32_t>(index)) !=
                    value.selected.end();
         };
-        if (field.type == PdfFormFieldType::ListBox && field.multiSelect) {
+        // Unwanted selections are cleared first (multi-select list boxes;
+        // a single-selection list or combo box cannot be emptied through
+        // the engine, see defaultFormValue).
+        if (field.type == PdfFormFieldType::ListBox) {
             for (int i = 0; i < count; ++i) {
                 if (!wanted(i) && FPDFAnnot_IsOptionSelected(form, annot.get(), i) != 0) {
                     FORM_SetIndexSelected(form, target.page, i, 0);

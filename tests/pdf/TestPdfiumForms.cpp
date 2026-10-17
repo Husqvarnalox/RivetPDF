@@ -394,3 +394,50 @@ RIVET_TEST(forms_extract_with_values_succeeds) {
     const PdfFormInfoPtr info = readInfo(*extracted);
     CHECK(info != nullptr && info->empty());
 }
+
+// QA #7: /DV is read from the widget and a Reset
+// Form value set saves cleanly: text fields return to /DV or empty, the list
+// box to no selection; the radio group and the combo box (no /DV) keep their
+// stored values.
+RIVET_TEST(forms_reset_values_read_defaults_and_save) {
+    auto engine = pdfiumEngine();
+    if (!engine) return;
+    auto doc = openForm(*engine);
+    if (!doc) return;
+    PdfAssemblyRequest request = saveRequest(*doc, {0, 1});
+    request.formValues = std::make_shared<const PdfFormValues>(filledValues());
+    MemorySink sink;
+    CHECK(engine->assembleDocument(request, sink).has_value());
+    auto filled = openBytes(*engine, sink.bytes().data(), sink.bytes().size());
+    if (!filled) return;
+    const PdfFormInfoPtr info = readInfo(*filled);
+    if (!info) return;
+    const PdfFormField* name = field(*info, "name");
+    CHECK(name != nullptr && name->defaultValue == std::optional<std::string>("Your name"));
+    const PdfFormField* notes = field(*info, "notes");
+    CHECK(notes != nullptr && !notes->defaultValue.has_value());
+
+    const PdfFormValues reset = resetFormValues(*info);
+    CHECK(!reset.empty());
+    PdfAssemblyRequest resetRequest = saveRequest(*filled, {0, 1});
+    resetRequest.formValues = std::make_shared<const PdfFormValues>(reset);
+    std::vector<std::string> failures;
+    resetRequest.formFailures = &failures;
+    MemorySink out;
+    CHECK(engine->assembleDocument(resetRequest, out).has_value());
+    CHECK(failures.empty());
+    auto saved = openBytes(*engine, out.bytes().data(), out.bytes().size());
+    if (!saved) return;
+    const PdfFormInfoPtr after = readInfo(*saved);
+    if (!after) return;
+    CHECK(field(*after, "name") != nullptr && field(*after, "name")->value == "Your name");
+    CHECK(field(*after, "city") != nullptr && field(*after, "city")->value.empty());
+    CHECK(field(*after, "notes") != nullptr && field(*after, "notes")->value.empty());
+    CHECK(field(*after, "agree") != nullptr && originalValue(*field(*after, "agree")) == PdfFormValue::ofToggle(""));
+    CHECK(field(*after, "fruits") != nullptr &&
+          originalValue(*field(*after, "fruits")) == PdfFormValue::ofChoice({}));
+    CHECK(field(*after, "color") != nullptr &&
+          originalValue(*field(*after, "color")) == PdfFormValue::ofToggle("Blue"));
+    CHECK(field(*after, "size") != nullptr && originalValue(*field(*after, "size")) == PdfFormValue::ofChoice({2}));
+    CHECK(resetFormValues(*after).empty()); // nothing left to reset
+}

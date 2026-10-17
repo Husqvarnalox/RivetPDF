@@ -20,6 +20,7 @@
 #include <cstdint>
 #include <map>
 #include <memory>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -81,6 +82,9 @@ struct PdfFormField {
     std::uint32_t maxLength = 0; // text: /MaxLen (0 = unlimited)
     float fontSize = 0.0F;       // default appearance size (0 = auto)
     std::string value;           // current /V as text ("Off" / "" = unchecked)
+    // /DV (the value Reset Form restores) as text when the field or an
+    // ancestor has a string or name /DV; nullopt when absent.
+    std::optional<std::string> defaultValue;
     std::vector<PdfFormOption> options;
     std::vector<PdfFormWidget> widgets; // in page, then /Annots order
     // Format/keystroke/validate/calculate JavaScript is attached (it does
@@ -145,6 +149,19 @@ using PdfFormValuesPtr = std::shared_ptr<const PdfFormValues>;
 // The value a field holds as stored in its file (the baseline edits are
 // compared against).
 PdfFormValue originalValue(const PdfFormField& field);
+
+// The value Reset Form gives `field` (PDF 32000-1, 12.7.5.3): its /DV, else
+// the empty value of its type - "" for text, off for a check box, no
+// selection for a list box. nullopt when the field is not fillable or its
+// empty value cannot be written by the engine (a radio group or a combo box
+// without /DV: PDFium's form filler cannot turn a radio group off or empty
+// a combo box), in which case Reset Form keeps the stored value.
+std::optional<PdfFormValue> defaultFormValue(const PdfFormField& field);
+
+// The edits Reset Form produces for `info`: every fillable field whose
+// default differs from its stored value (fields whose default equals the
+// stored value, or that have none, are absent - their stored value shows).
+PdfFormValues resetFormValues(const PdfFormInfo& info);
 
 // Whether `value` can be written to `field`: the field is fillable, the
 // value kind matches the type, text is valid UTF-8 within kMaxFormValueBytes

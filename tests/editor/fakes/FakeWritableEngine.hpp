@@ -116,7 +116,8 @@ inline std::string fakeMarker(const pdf::PdfDocument& source, std::size_t index)
 
 class FakeWritableEngine final : public pdf::PdfEngine {
 public:
-    bool isAvailable() const override { return true; }
+    bool isAvailable() const override { return available; }
+    bool available = true; // false: behaves like a PDFium-OFF build
     std::string_view backendName() const override { return "fake-writable"; }
 
     core::Result<std::unique_ptr<pdf::PdfDocument>> openDocument(const std::filesystem::path& path,

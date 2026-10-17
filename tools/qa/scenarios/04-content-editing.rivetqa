@@ -25,6 +25,9 @@ shot 04-text-typed.png
 # Escape would cancel the inline editor: commit by clicking outside it.
 clickpage 1 280 20
 log-state
+# QA #13: a one-line block stays one line when it grows (ADR-0015: single
+# lines have no wrap width); nothing extends below the original block.
+assert-not-state extends below the original block
 shot 04-text-committed.png
 
 # Add Text at an empty spot.

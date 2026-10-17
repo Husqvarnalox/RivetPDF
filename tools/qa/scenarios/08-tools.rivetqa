@@ -5,9 +5,14 @@ theme light
 
 # --- Password (tests/pdf/fixtures/password.pdf: user password "rivet").
 open ${QA_FIX}/password.pdf
+# QA #12: the whole sentence, no "1 / 0" page indicator while locked.
+assert-state password='“password.pdf” is protected. Enter its password to open it.'
+assert-state passworderror=''
+assert-state pagecount=''
 shot 08-password-prompt.png
 type wrong\n
 log-state
+assert-state passworderror='Incorrect password. Try again.'
 shot 08-password-wrong.png
 type rivet\n
 log-state

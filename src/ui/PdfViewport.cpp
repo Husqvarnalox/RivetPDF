@@ -183,8 +183,12 @@ core::Point PdfViewport::clampedScrollOffset(const core::Point& offset) const {
         const double maxOffset = std::max(0.0, contentExtent - visibleExtentPoints);
         return std::clamp(value, 0.0, maxOffset);
     };
-    return core::Point{clampAxis(offset.x, content.width, visibleExtent.width),
-                       clampAxis(offset.y, content.height, visibleExtent.height)};
+    // Content narrower than the viewport is centred horizontally (QA #17):
+    // the offset becomes negative by half the slack, so every transform
+    // ((frame.origin - offset) * zoom) places the pages in the middle.
+    const double x = content.width < visibleExtent.width ? (content.width - visibleExtent.width) / 2.0
+                                                         : clampAxis(offset.x, content.width, visibleExtent.width);
+    return core::Point{x, clampAxis(offset.y, content.height, visibleExtent.height)};
 }
 
 core::Rect PdfViewport::visibleContentRectPoints() const {
@@ -337,6 +341,17 @@ void PdfViewport::setOnFocusRequested(std::function<void()> onFocusRequested) {
 }
 
 void PdfViewport::onStateChanged() {
+    // A zoom change does not move the offset by itself: re-clamp it so the
+    // content stays in bounds and narrow content stays centred (QA #17).
+    // The corrected offset re-enters here once and does the rest.
+    if (layout_ != nullptr && state_ != &emptyStateState_ && !frame().isEmpty()) {
+        const core::Point current = state_->scrollOffsetPoints();
+        const core::Point clamped = clampedScrollOffset(current);
+        if (!core::Point::nearlyEqual(current, clamped, 1e-9)) {
+            state_->setScrollOffsetPoints(clamped);
+            return;
+        }
+    }
     const double zoomValue = state_->zoom().zoom();
     if (zoomValue != lastReportedZoom_) {
         // Queued renders were requested at the previous scale; drop them so
@@ -496,13 +511,14 @@ bool PdfViewport::handlePointer(const PointerEvent& event) {
             // content underneath stays approximately stationary. Manual zoom
             // exits an active fit mode.
             const double oldZoom = state_->zoom().zoom();
+            // Captured first: the zoom change re-clamps the offset.
+            const core::Point oldOffset = state_->scrollOffsetPoints();
             state_->zoom().setFitMode(render::ZoomState::FitMode::None);
             const bool changed = event.scrollDelta.y < 0.0 ? state_->zoom().zoomIn()
                                                            : state_->zoom().zoomOut();
             if (changed) {
                 const double newZoom = state_->zoom().zoom();
-                const core::Point contentAnchor =
-                    state_->scrollOffsetPoints() + event.position / oldZoom;
+                const core::Point contentAnchor = oldOffset + event.position / oldZoom;
                 setScrollOffsetPoints(contentAnchor - event.position / newZoom);
             }
             event.accepted = true;
@@ -893,6 +909,19 @@ void PdfViewport::requestTileWithPriority(const render::TileKey& key,
                            });
 }
 
+core::Rect PdfViewport::snapToDevicePixels(const core::Rect& rect, double backingScale) {
+    const double scale = backingScale > 0.0 && std::isfinite(backingScale) ? backingScale : 1.0;
+    // Edges are rounded independently: two tiles sharing an edge compute it
+    // from the same value, so they meet exactly on one device-pixel line -
+    // no gap, no overlap, no half-covered pixel blending with the background
+    // (QA #18 tile seams).
+    const double left = std::round(rect.minX() * scale) / scale;
+    const double top = std::round(rect.minY() * scale) / scale;
+    const double right = std::round(rect.maxX() * scale) / scale;
+    const double bottom = std::round(rect.maxY() * scale) / scale;
+    return core::Rect{left, top, std::max(0.0, right - left), std::max(0.0, bottom - top)};
+}
+
 // Overlay pass (selection highlights, search matches): rects arrive in page
 // display space from the bridge and map to viewport space exactly like tile
 // destinations. Painted AFTER the tiles, never baked into them.
@@ -986,8 +1015,10 @@ void PdfViewport::paintPageTiles(std::size_t pageIndex, const core::Rect& pageFr
             if (clipped.isEmpty()) continue;
 
             const render::TileKey key{documentId_, info.id, physicalKey, tx, ty, info.contentRevision};
-            const core::Rect dest{pageInViewport.origin + clipped.origin * state_->zoom().zoom(),
-                                  clipped.size * state_->zoom().zoom()};
+            const core::Rect dest = snapToDevicePixels(
+                core::Rect{pageInViewport.origin + clipped.origin * state_->zoom().zoom(),
+                           clipped.size * state_->zoom().zoom()},
+                context.backingScale());
             if (const std::shared_ptr<const core::Bitmap> tile = source_->cachedTile(key, revision)) {
                 context.drawBitmap(*tile, dest);
             } else {

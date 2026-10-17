@@ -53,13 +53,15 @@ assert-pages 4
 assert-tabs 1
 assert-enabled File/Save
 assert-disabled Edit/Undo
+assert-state scroll=0,0
+assert-not-state formpopup=open
 log-state
 log hello
 quit
 )",
                                         fakeEnv);
     CHECK(script.errors.empty());
-    CHECK_EQ(script.steps.size(), std::size_t{30});
+    CHECK_EQ(script.steps.size(), std::size_t{32});
     CHECK(script.steps[0].kind == StepKind::Open);
     CHECK_EQ(script.steps[0].text, std::string("/tmp/fix/long.pdf"));
     CHECK_EQ(script.steps[0].line, 2);
@@ -88,7 +90,10 @@ quit
     CHECK_EQ(script.steps[17].answerKind, std::string("save"));
     CHECK_EQ(script.steps[17].text, std::string("/tmp/out.pdf"));
     CHECK_EQ(script.steps[18].answerKind, std::string("confirm"));
-    CHECK(script.steps[29].kind == StepKind::Quit);
+    CHECK(script.steps[27].kind == StepKind::AssertState);
+    CHECK_EQ(script.steps[27].text, std::string("scroll=0,0"));
+    CHECK(script.steps[28].kind == StepKind::AssertNotState);
+    CHECK(script.steps[31].kind == StepKind::Quit);
 }
 
 RIVET_TEST(qaReportsMalformedLines) {

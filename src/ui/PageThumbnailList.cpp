@@ -19,7 +19,6 @@ namespace {
 
 constexpr double kInsertionThickness = 3.0;
 constexpr Font kLabelFont{11.0, Font::Weight::Regular};
-constexpr const char* kEmptyStateText = "No document open";
 constexpr Font kEmptyStateFont{13.0, Font::Weight::Regular};
 
 double thumbnailAspectHeight(const render::PageLayout::PageInfo& page) {
@@ -440,12 +439,18 @@ void PageThumbnailList::layout() {
     syncScrollbar();
 }
 
+void PageThumbnailList::setEmptyText(std::string text) {
+    if (text == emptyText_) return;
+    emptyText_ = std::move(text);
+    invalidate();
+}
+
 void PageThumbnailList::paintSelf(PaintContext& context) const {
     context.fillRect(bounds(), colors().chromeBackground);
     context.pushClip(bounds());
 
     if (layout_ == nullptr || source_ == nullptr || rowCount() == 0) {
-        context.drawText(kEmptyStateText, bounds(), kEmptyStateFont, colors().textSecondary,
+        context.drawText(emptyText_, bounds(), kEmptyStateFont, colors().textSecondary,
                          TextAlign::Center);
         context.popClip();
         return;
@@ -473,6 +478,12 @@ void PageThumbnailList::paintSelf(PaintContext& context) const {
         const render::TileKey tileKey{documentId_, page.id, scaleKey, 0, 0, page.contentRevision};
         if (const std::shared_ptr<const core::Bitmap> bitmap = source_->cachedTile(tileKey, revision)) {
             context.drawBitmap(*bitmap, thumb);
+            if (pageOverlay_ && page.sizePoints.width > 0.0) {
+                context.pushClip(thumb);
+                pageOverlay_(i, core::Rect{0.0, 0.0, thumb.size.width, thumb.size.height},
+                             thumb.size.width / page.sizePoints.width, context);
+                context.popClip();
+            }
         } else {
             context.fillRect(thumb, colors().pagePlaceholder);
             requestThumbnail(i, context.backingScale(),

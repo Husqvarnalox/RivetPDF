@@ -142,3 +142,50 @@ RIVET_TEST(forms_sanitize_text) {
     CHECK_EQ(sanitizeFormText(textField(false, 0), std::string(kMaxFormValueBytes + 10, 'x')).size(),
              kMaxFormValueBytes);
 }
+
+// Reset Form defaults (QA #7): /DV when present, else the type's empty value;
+// radio groups and combo boxes without /DV keep their stored value (the
+// engine cannot turn them off / empty them).
+RIVET_TEST(forms_default_values_for_reset) {
+    PdfFormField text = textField();
+    CHECK(defaultFormValue(text) == PdfFormValue::ofText(""));
+    text.defaultValue = "dflt";
+    CHECK(defaultFormValue(text) == PdfFormValue::ofText("dflt"));
+
+    PdfFormField box;
+    box.name = "x";
+    box.type = PdfFormFieldType::CheckBox;
+    box.widgets.push_back(widget("Yes", true));
+    CHECK(defaultFormValue(box) == PdfFormValue::ofToggle(""));
+    box.defaultValue = "Yes";
+    CHECK(defaultFormValue(box) == PdfFormValue::ofToggle("Yes"));
+
+    PdfFormField radio = radioField();
+    CHECK(!defaultFormValue(radio).has_value());
+    radio.defaultValue = "One";
+    CHECK(defaultFormValue(radio) == PdfFormValue::ofToggle("One"));
+
+    PdfFormField list = choiceField(PdfFormFieldType::ListBox);
+    CHECK(defaultFormValue(list) == PdfFormValue::ofChoice({}));
+    list.defaultValue = "C";
+    CHECK(defaultFormValue(list) == PdfFormValue::ofChoice({2}));
+
+    PdfFormField combo = choiceField(PdfFormFieldType::ComboBox);
+    CHECK(!defaultFormValue(combo).has_value());
+    combo.defaultValue = "A";
+    CHECK(defaultFormValue(combo) == PdfFormValue::ofChoice({0}));
+
+    PdfFormField readOnly = textField();
+    readOnly.readOnly = true;
+    CHECK(!defaultFormValue(readOnly).has_value());
+
+    PdfFormInfo info;
+    info.fields = {textField(), radioField(), choiceField(PdfFormFieldType::ListBox)};
+    info.fields[2].name = "l";
+    const PdfFormValues reset = resetFormValues(info);
+    CHECK_EQ(reset.size(), std::size_t{2}); // text and list; the radio keeps "Two"
+    CHECK(reset.contains("t") && reset.at("t") == PdfFormValue::ofText(""));
+    CHECK(reset.contains("l") && reset.at("l") == PdfFormValue::ofChoice({}));
+    info.hasXfa = true;
+    CHECK(resetFormValues(info).empty());
+}

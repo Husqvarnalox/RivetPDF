@@ -61,8 +61,10 @@ private:
 core::Result<std::unique_ptr<Command>> makeSetFormValue(PageModel& model, const pdf::PdfFormInfo& info,
                                                          const std::string& fieldName, pdf::PdfFormValue value);
 
-// Restores every field's stored value (drops all edits) as one command.
-// nullptr when nothing is edited.
+// Resets every fillable field to its default (pdf::resetFormValues: /DV,
+// else the type's empty value; fields without a writable default keep their
+// stored value) as one command. nullptr when the form already shows exactly
+// that. Also used to decide whether Reset Form is enabled.
 core::Result<std::unique_ptr<Command>> makeResetForm(PageModel& model, const pdf::PdfFormInfo& info);
 
 } // namespace rivet::editor

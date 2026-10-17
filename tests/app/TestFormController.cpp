@@ -458,6 +458,45 @@ RIVET_TEST(formControllerChoicePopupSelectsWithKeys) {
     CHECK_EQ(shell.valueOf("size")->selected, std::vector<std::uint32_t>{2});
 }
 
+// QA #8: a list box selects the clicked row in place (no popup) and the
+// arrow keys move the selection, like a native list.
+RIVET_TEST(formControllerListBoxSelectsInPlace) {
+    auto info = std::make_shared<pdf::PdfFormInfo>(*sampleForm());
+    pdf::PdfFormField fruits;
+    fruits.name = "fruits";
+    fruits.type = pdf::PdfFormFieldType::ListBox;
+    fruits.fontSize = 10.0F; // rows of 11.5 pt from the widget top
+    fruits.options = {{"Apple", "Apple", false}, {"Banana", "Banana", true}, {"Cherry", "Cherry", false}};
+    fruits.value = "Banana";
+    fruits.widgets = {widgetOn(0, 5, {300, 500, 420, 560})}; // display {300, 232, 120, 60}
+    info->fields.push_back(std::move(fruits));
+    Shell shell(info);
+    CHECK(shell.open("list") != nullptr);
+    FormController& forms = *shell.forms;
+
+    CHECK(forms.press(0, core::Point{350.0, 232.0 + 11.5 * 2.5})); // the third row
+    CHECK(!forms.popupOpen());
+    CHECK(forms.focus().has_value());
+    CHECK(shell.valueOf("fruits").has_value());
+    CHECK_EQ(shell.valueOf("fruits")->selected, std::vector<std::uint32_t>{2});
+
+    CHECK(forms.key(keyOf(ui::Key::Up)));
+    CHECK(!shell.valueOf("fruits").has_value()); // back to the stored "Banana"
+    CHECK(forms.key(keyOf(ui::Key::Up)));
+    CHECK_EQ(shell.valueOf("fruits")->selected, std::vector<std::uint32_t>{0});
+    CHECK(forms.key(keyOf(ui::Key::Up))); // stays on the first row
+    CHECK_EQ(shell.valueOf("fruits")->selected, std::vector<std::uint32_t>{0});
+    CHECK(forms.key(keyOf(ui::Key::Down)));
+    CHECK(forms.key(keyOf(ui::Key::Down)));
+    CHECK_EQ(shell.valueOf("fruits")->selected, std::vector<std::uint32_t>{2});
+    CHECK(!forms.popupOpen());
+
+    // A press below the last row changes nothing.
+    const auto state = shell.session().commands().stateId();
+    CHECK(forms.press(0, core::Point{350.0, 232.0 + 11.5 * 4.5}));
+    CHECK_EQ(shell.session().commands().stateId(), state);
+}
+
 RIVET_TEST(formControllerTabTraversesFillableWidgetsInOrder) {
     Shell shell;
     CHECK(shell.open("tab") != nullptr);
@@ -522,7 +561,10 @@ RIVET_TEST(formControllerResetFormAndHighlightCommands) {
     Shell shell;
     CHECK(shell.open("reset") != nullptr);
     FormController& forms = *shell.forms;
-    CHECK(!forms.canPerform(FormCommand::ResetForm)); // nothing edited
+    // QA #7: a freshly opened form whose stored values differ from their
+    // defaults ("name" holds "orig", no /DV) can be reset before any edit.
+    CHECK(shell.values() == nullptr || shell.values()->empty());
+    CHECK(forms.canPerform(FormCommand::ResetForm));
 
     CHECK(forms.press(0, kAgreeCenter));
     CHECK(forms.press(0, kNameCenter));
@@ -531,8 +573,12 @@ RIVET_TEST(formControllerResetFormAndHighlightCommands) {
     CHECK_EQ(shell.values()->size(), std::size_t{2});
     CHECK(forms.canPerform(FormCommand::ResetForm));
 
-    forms.perform(FormCommand::ResetForm); // one step
-    CHECK(shell.values() == nullptr || shell.values()->empty());
+    forms.perform(FormCommand::ResetForm); // one step: every field to its default
+    CHECK(shell.values() != nullptr);
+    CHECK_EQ(shell.values()->size(), std::size_t{1});
+    CHECK(shell.valueOf("name").has_value() && shell.valueOf("name")->text.empty());
+    CHECK(!shell.valueOf("agree").has_value()); // default off = stored off
+    CHECK(!forms.canPerform(FormCommand::ResetForm)); // already at the defaults
     CHECK(shell.session().undo());
     CHECK_EQ(shell.values()->size(), std::size_t{2});
 
@@ -567,7 +613,18 @@ RIVET_TEST(formControllerPaintsEditedValuesHighlightAndPopup) {
     ui::testing::FakePaintContext paint;
     forms.paintPage(*shell.viewport, 0, core::Rect{0.0, 0.0, 612.0 * zoom, 792.0 * zoom}, paint);
     bool text = false;
-    for (const auto& record : paint.texts) text = text || record.text == "Ada";
+    for (const auto& record : paint.texts) {
+        if (record.text != "Ada") continue;
+        text = true;
+        // QA bug 4: the value must land inside its clip (pushClip translates
+        // the origin, so viewport-space geometry inside the clip went off the
+        // widget and the field looked blank).
+        const core::Rect& r = record.absoluteRect;
+        const core::Rect& clip = record.absoluteClip;
+        CHECK(!clip.isEmpty());
+        CHECK(r.minX() >= clip.minX() - 0.5 && r.minX() < clip.maxX());
+        CHECK(r.maxY() > clip.minY() && r.minY() < clip.maxY());
+    }
     CHECK(text);                    // the edited value is drawn by the overlay
     CHECK(paint.lines.size() >= 2); // the check mark
     CHECK(paint.fills.size() >= 4); // the highlight tint on each fillable widget

@@ -237,6 +237,10 @@ void LinuxPaintContext::drawBitmap(const core::Bitmap& bitmap, const core::Rect&
     if (surface == nullptr) return;
 
     cairo_save(cr_);
+    // Aliased clip: adjacent page tiles (rects snapped to device pixels by
+    // the viewport) must not blend with what lies below at their shared
+    // edge, or thin seams show through solid fills (QA #18).
+    cairo_set_antialias(cr_, CAIRO_ANTIALIAS_NONE);
     addRect(cr_, destLogicalRect);
     cairo_clip(cr_);
     cairo_translate(cr_, destLogicalRect.minX(), destLogicalRect.minY());

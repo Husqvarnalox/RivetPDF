@@ -387,7 +387,7 @@ RIVET_TEST(wiringSearchBarClosesOnTabSwitchAndIgnoresBackgroundTabs) {
 RIVET_TEST(wiringStatusBarShowsPageIndicatorAndZoomText) {
     Shell s;
     s.status->updatePageIndicator();
-    CHECK_EQ(s.status->pageCountText(), std::string("/ 0"));
+    CHECK_EQ(s.status->pageCountText(), std::string("") /* QA #12: no "1 / 0" without pages */);
     CHECK_EQ(s.status->pageField().text(), std::string(""));
     CHECK_EQ(s.status->statusText(), std::string("Ready"));
 
@@ -431,6 +431,10 @@ RIVET_TEST(wiringPasswordPromptRoutesSubmitAndCancel) {
     CHECK(tab->state() == DocumentTab::State::NeedsPassword);
     CHECK(s.password->visible());
     CHECK(s.focused == &s.password->field());
+    // QA #12: the full sentence names the file; no error before a retry.
+    CHECK(s.password->messageText().find("is protected. Enter its password to open it.") != std::string::npos);
+    CHECK(s.password->errorText().empty());
+    CHECK(!tab->passwordRejected());
 
     // Escape only drops focus; the prompt stays for the locked tab.
     Shell::press(s.password->field(), Key::Escape);
@@ -445,6 +449,9 @@ RIVET_TEST(wiringPasswordPromptRoutesSubmitAndCancel) {
     CHECK(s.dispatcher.waitUntil([tab] { return tab->state() != DocumentTab::State::Loading; }));
     CHECK(tab->state() == DocumentTab::State::NeedsPassword);
     CHECK(s.password->visible());
+    // QA #12: a wrong password is reported, not just cleared.
+    CHECK(tab->passwordRejected());
+    CHECK_EQ(s.password->errorText(), std::string("Incorrect password. Try again."));
 
     // The right password unlocks; the prompt hides and releases focus.
     s.typeInto(s.password->field(), "secret");
@@ -460,6 +467,19 @@ RIVET_TEST(wiringPasswordPromptRoutesSubmitAndCancel) {
     s.password->submit();
     CHECK(tab->state() == DocumentTab::State::Ready);
     CHECK_EQ(s.password->field().text(), std::string("secret"));
+}
+
+RIVET_TEST(passwordPromptShortensLongNamesInTheMiddle) {
+    CHECK_EQ(PasswordPromptController::shortenName("short.pdf", 34), std::string("short.pdf"));
+    const std::string longName = "a-very-long-file-name-that-would-not-fit-in-the-panel.pdf";
+    const std::string shortened = PasswordPromptController::shortenName(longName, 20);
+    CHECK(shortened.find("\xE2\x80\xA6") != std::string::npos);
+    CHECK(shortened.starts_with("a-very-lo"));
+    CHECK(shortened.ends_with("panel.pdf"));
+    // Multi-byte code points are never split.
+    const std::string accents = "\xC3\xA9\xC3\xA9\xC3\xA9\xC3\xA9\xC3\xA9\xC3\xA9";
+    CHECK_EQ(PasswordPromptController::shortenName(accents, 5),
+             std::string("\xC3\xA9\xC3\xA9\xE2\x80\xA6\xC3\xA9\xC3\xA9"));
 }
 
 RIVET_TEST(wiringTextInteractionIsNoOpWithoutReadyTab) {

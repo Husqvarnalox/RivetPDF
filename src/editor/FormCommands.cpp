@@ -2,6 +2,9 @@
 #include "editor/FormCommands.hpp"
 
 #include <algorithm>
+#include <memory>
+#include <string>
+#include <vector>
 #include <utility>
 
 namespace rivet::editor {
@@ -104,15 +107,30 @@ core::Result<std::unique_ptr<Command>> makeSetFormValue(PageModel& model, const 
 
 core::Result<std::unique_ptr<Command>> makeResetForm(PageModel& model, const pdf::PdfFormInfo& info) {
     const pdf::PdfFormValuesPtr before = model.formValues();
-    if (before == nullptr || before->empty()) return std::unique_ptr<Command>{};
+    pdf::PdfFormValues reset = pdf::resetFormValues(info);
+    const bool unchanged = before != nullptr ? reset == *before : reset.empty();
+    if (unchanged) return std::unique_ptr<Command>{};
+    // Pages of every field whose presentation changes: the edits dropped and
+    // the defaults written.
     std::vector<std::size_t> pages;
-    for (const auto& [name, value] : *before) {
-        (void)value;
+    const auto addField = [&](const std::string& name) {
         const std::size_t index = info.find(name);
         if (index != pdf::PdfFormInfo::npos) addPagesOf(info.fields[index], pages);
+    };
+    if (before != nullptr) {
+        for (const auto& [name, value] : *before) {
+            (void)value;
+            addField(name);
+        }
     }
+    for (const auto& [name, value] : reset) {
+        (void)value;
+        addField(name);
+    }
+    pdf::PdfFormValuesPtr after =
+        reset.empty() ? nullptr : std::make_shared<const pdf::PdfFormValues>(std::move(reset));
     return std::unique_ptr<Command>(
-        std::make_unique<FormValuesCommand>(model, before, nullptr, std::move(pages), "Reset Form"));
+        std::make_unique<FormValuesCommand>(model, before, std::move(after), std::move(pages), "Reset Form"));
 }
 
 } // namespace rivet::editor

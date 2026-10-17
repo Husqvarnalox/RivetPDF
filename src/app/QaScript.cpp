@@ -165,6 +165,8 @@ const std::map<std::string, Spec, std::less<>>& specs() {
         {"assert-clipboard", {StepKind::AssertClipboard, 0, false, true, false}},
         {"assert-pages", {StepKind::AssertPages, 1, false, false, false}},
         {"assert-tabs", {StepKind::AssertTabs, 1, false, false, false}},
+        {"assert-state", {StepKind::AssertState, 0, false, true, false}},
+        {"assert-not-state", {StepKind::AssertNotState, 0, false, true, false}},
         {"log-state", {StepKind::LogState, 0, false, false, false}},
         {"log", {StepKind::Log, 0, false, true, false}},
         {"quit", {StepKind::Quit, 0, false, false, false}},
@@ -415,6 +417,8 @@ std::optional<std::string> environmentValue(std::string_view name) {
 } // namespace
 
 struct QaSession::Impl {
+    // Title of the last error alert shown (log-state: lastalert).
+    std::string lastAlert;
     // Answers queued by `answer` lines, consumed by the doubles.
     std::map<std::string, std::deque<std::string>, std::less<>> answers;
     int failures = 0;
@@ -498,6 +502,7 @@ struct QaSession::Impl {
         }
         void showError(std::string_view title, std::string_view message) override {
             qaLog(std::format("alert: error '{}': {}", title, message));
+            owner_.lastAlert = std::string(title);
         }
         std::optional<std::string> promptForText(std::string_view title, std::string_view message,
                                                  std::string_view defaultText) override {
@@ -983,6 +988,18 @@ struct QaSession::Impl {
             else fail(step, std::format("tab count is {}", count));
             return;
         }
+        case StepKind::AssertState: {
+            const std::string state = describeState();
+            if (state.find(step.text) != std::string::npos) ok(step);
+            else fail(step, std::format("state is {}", state));
+            return;
+        }
+        case StepKind::AssertNotState: {
+            const std::string state = describeState();
+            if (state.find(step.text) == std::string::npos) ok(step);
+            else fail(step, std::format("state is {}", state));
+            return;
+        }
         case StepKind::LogState:
             qaLog(std::format("line {}: state {}", step.line, describeState()));
             return;
@@ -1008,13 +1025,30 @@ struct QaSession::Impl {
                 out << " pages=" << tab->session()->pageCount() << " page=" << (viewport.currentPageIndex() + 1)
                     << std::format(" zoom={:.0f}%", viewport.zoom().zoom() * 100.0)
                     << std::format(" scroll={:.0f},{:.0f}", viewport.scrollOffsetPoints().x,
-                                   viewport.scrollOffsetPoints().y);
+                                   viewport.scrollOffsetPoints().y)
+                    << std::format(" scrolly={:.0f}", viewport.scrollOffsetPoints().y);
+                // Horizontal placement of the current page: "yes" when it is
+                // narrower than the viewport and centred, "no" when narrower
+                // but off-centre, "wide" when it does not fit.
+                if (const auto rect = viewport.pageRectInViewport(viewport.currentPageIndex())) {
+                    const double width = viewport.bounds().size.width;
+                    const char* centred = rect->size.width >= width - 1.0 ? "wide"
+                                          : std::abs(rect->minX() - (width - rect->maxX())) <= 1.5 ? "yes"
+                                                                                                  : "no";
+                    out << " hcentered=" << centred;
+                }
             }
         }
         out << " tool=" << static_cast<int>(shell->toolMode());
+        out << " formpopup=" << (shell->forms().popupOpen() ? "open" : "closed");
+        out << " pagecount='" << shell->statusBar().pageCountText() << "'";
+        if (PasswordPromptController& prompt = shell->passwordPrompt(); prompt.visible()) {
+            out << " password='" << prompt.messageText() << "' passworderror='" << prompt.errorText() << "'";
+        }
         const core::Size size = shell->rootWidget().frame().size;
         out << std::format(" root={:.0f}x{:.0f}", size.width, size.height);
         out << " status='" << shell->statusText() << "'";
+        if (!lastAlert.empty()) out << " lastalert='" << lastAlert << "'";
         if (const std::string find = shell->searchCountText(); !find.empty()) out << " find='" << find << "'";
         return out.str();
     }

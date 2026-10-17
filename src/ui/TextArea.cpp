@@ -144,6 +144,23 @@ void TextArea::measureNewGlyphs(const PaintContext& context) const {
     if (added) ++glyphRevision_;
 }
 
+double TextArea::naturalWidth() const {
+    double widest = 0.0;
+    double line = 0.0;
+    for (std::size_t at = 0; at < text_.size();) {
+        const char32_t codePoint = utf8::decodeAt(text_, at);
+        if (codePoint == U'\n') {
+            widest = std::max(widest, line);
+            line = 0.0;
+        } else {
+            const auto it = glyphWidths_.find(codePoint);
+            line += it != glyphWidths_.end() ? it->second : std::max(kEstimatedGlyphWidth, fontSize_ * 0.6);
+        }
+        at = utf8::nextBoundary(text_, at);
+    }
+    return std::max(widest, line) + 2.0 * padding_;
+}
+
 double TextArea::spanWidth(std::size_t from, std::size_t to) const {
     double width = 0.0;
     for (std::size_t at = from; at < to;) {

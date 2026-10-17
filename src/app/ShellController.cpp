@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 #include "app/ShellController.hpp"
 
+#include "app/AnnotationPainter.hpp"
 #include "app/MarkdownParseCoordinator.hpp"
 #include "app/MarkdownPreviewView.hpp"
 #include "app/RedactionController.hpp"
@@ -105,6 +106,9 @@ ShellController::ShellController(const platform::ShellServices& services, std::u
 
 ShellController::~ShellController() {
     alive_.reset(); // no tooltip delay runs from here on
+    // The thumbnail overlay calls into controllers that die before the
+    // widget tree.
+    if (sidebar_ != nullptr) sidebar_->thumbnails().setPageOverlayPainter({});
     delayScope_.closeAndWait();
     if (services_.appearance != nullptr) services_.appearance->onChange(nullptr);
     // The Markdown exporter's workers use the engine and hand documents to
@@ -217,7 +221,7 @@ void ShellController::buildWidgets() {
     passwordPrompt_ = std::make_unique<PasswordPromptController>(*context_, *root_);
     statusBar_ = std::make_unique<StatusBarController>(
         *context_, *root_,
-        engine_->isAvailable() ? "Ready" : "Ready — PDF support is not built into this binary");
+        engine_->isAvailable() ? "Ready" : "Ready — PDF support is not available in this build");
     // The page indicator lives in the toolbar's page navigation.
     statusBar_->attachPageIndicator(*pageNavigator_);
 
@@ -246,6 +250,19 @@ void ShellController::buildWidgets() {
 
     // Form filling: its layer sits below the annotation layer (Select tool).
     forms_ = std::make_unique<FormController>(*context_, *root_, *annotations_);
+    // Thumbnails show what the viewport layers draw over the raster (edited
+    // annotations, a placed signature, edited form values; QA bugs 4, 20).
+    sidebar_->thumbnails().setPageOverlayPainter(
+        [this](std::size_t page, const core::Rect& pageRect, double zoom, ui::PaintContext& paint) {
+            if (annotations_ != nullptr) {
+                if (const auto views = annotations_->pageAnnotations(page)) {
+                    for (const editor::AnnotationView& view : *views) {
+                        AnnotationPainter::paintAnnotation(paint, view, pageRect, zoom);
+                    }
+                }
+            }
+            if (forms_ != nullptr) forms_->paintThumbnail(page, pageRect, zoom, paint);
+        });
     // Redaction marks (Redact tool, Apply Redactions): part of the content
     // tool state.
     redaction_ = std::make_unique<RedactionController>(*context_, *content_);
@@ -988,7 +1005,7 @@ void ShellController::bindActiveTab() {
 
     if (tab == nullptr || tab->state() != DocumentTab::State::Ready) {
         viewport_->clearDocument();
-        sidebar_->bindTab(nullptr);
+        sidebar_->bindTab(tab); // shows why there are no pages
         pageEditing_->bindTab(nullptr);
         annotations_->bindTab(nullptr);
         content_->bindTab(nullptr);
@@ -1167,7 +1184,16 @@ void ShellController::handleOpenRequest() {
 void ShellController::openDocument(const std::filesystem::path& path) {
     // Availability is per kind: Markdown never needs the PDF engine.
     if (documentKindForPath(path) == DocumentKind::Pdf && !engine_->isAvailable()) {
-        setStatus("PDF support is not built into this binary (RIVET_WITH_PDFIUM=OFF)");
+        // An alert, not only a status line that is easy to miss (QA #21):
+        // this is how the Linux and Windows builds ship today.
+        constexpr std::string_view kTitle = "PDF support is not available in this build";
+        setStatus(std::string(kTitle));
+        if (services_.alerts != nullptr) {
+            services_.alerts->showError(
+                kTitle, std::format("\u201C{}\u201D cannot be opened because this build of Rivet does not include "
+                                    "a PDF engine. Markdown documents open normally.",
+                                    path.filename().string()));
+        }
         return;
     }
     // Recent files (welcome view): paths only, existing files only.

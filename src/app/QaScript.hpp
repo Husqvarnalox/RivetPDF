@@ -53,6 +53,9 @@
 //   assert-find <substring>     find-bar result text contains <substring>
 //   assert-clipboard <substring>
 //   assert-pages <n> | assert-tabs <n>
+//   assert-state <substring>    the log-state line contains <substring>
+//                               (e.g. "scroll=0,0", "hcentered=yes")
+//   assert-not-state <substring> ... does not contain it
 //   log-state | log <text> | quit
 //
 // Output goes to stderr with a `[qa]` prefix; the process exit code is 0
@@ -91,6 +94,8 @@ enum class StepKind : std::uint8_t {
     AssertClipboard,
     AssertPages,
     AssertTabs,
+    AssertState,
+    AssertNotState,
     LogState,
     Log,
     Quit,

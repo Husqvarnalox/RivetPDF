@@ -416,6 +416,39 @@ RIVET_TEST(markdownQuitSavesDirtyTabsBeforeReplying) {
 
 // --- ShellController: binding when kinds alternate ------------------------------------
 
+// QA #21: in a build without a PDF engine, opening a PDF shows an alert (not
+// only a status line) and opens no tab; Markdown still opens.
+RIVET_TEST(shellWithoutPdfEngineAlertsWhenOpeningAPdf) {
+    auto engine = std::make_unique<FakeWritableEngine>();
+    engine->available = false;
+    WaitDispatcher dispatcher;
+    FakeAlerts alerts;
+    rivet::platform::ShellServices services;
+    services.mainDispatcher = &dispatcher;
+    services.alerts = &alerts;
+    TempDir dir;
+    writeBytes(dir("doc.pdf"), "placeholder\n");
+    writeBytes(dir("note.md"), "# n\n");
+
+    auto shell = ShellController::createWithEngine(services, std::move(engine));
+    shell->rootWidget().setFrame(rivet::core::Rect{0, 0, 1000, 700});
+    shell->openDocument(dir("doc.pdf"));
+    CHECK_EQ(shell->workspace().tabCount(), std::size_t{0});
+    CHECK_EQ(alerts.errors.size(), std::size_t{1});
+    if (!alerts.errors.empty()) {
+        CHECK(alerts.errors.front().find("doc.pdf") != std::string::npos);
+        CHECK(alerts.errors.front().find("does not include a PDF engine") != std::string::npos);
+    }
+    CHECK(shell->statusText().find("PDF support is not available in this build") != std::string::npos);
+
+    shell->openDocument(dir("note.md"));
+    CHECK(dispatcher.waitUntil([&] {
+        DocumentTab* tab = shell->workspace().activeTab();
+        return tab != nullptr && tab->state() == DocumentTab::State::Ready;
+    }));
+    CHECK_EQ(alerts.errors.size(), std::size_t{1});
+}
+
 RIVET_TEST(shellSwitchingKindsLeavesNoStaleBindings) {
     FakeWritableEngine* raw = nullptr;
     auto engine = std::make_unique<FakeWritableEngine>();
