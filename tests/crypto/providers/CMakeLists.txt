@@ -32,7 +32,26 @@ add_test(NAME crypto_cryptopro COMMAND rivet_crypto_cryptopro_tests)
 add_executable(rivet_crypto_pkcs11_tests
     TestPkcs11.cpp
 )
-target_link_libraries(rivet_crypto_pkcs11_tests PRIVATE rivet::test_harness rivet::crypto_providers)
+target_link_libraries(rivet_crypto_pkcs11_tests PRIVATE rivet::test_harness rivet::crypto_providers ${CMAKE_DL_LIBS})
+if(RIVET_ENABLE_PKCS11 AND RIVET_ENABLE_CRYPTO)
+    find_package(OpenSSL 3 REQUIRED COMPONENTS Crypto)
+    # Software PKCS#11 token (OpenSSL EVP), loaded through dlopen like a vendor module.
+    add_library(rivet_mock_pkcs11 SHARED mock_pkcs11/MockPkcs11Module.cpp)
+    target_include_directories(rivet_mock_pkcs11 PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/..
+        ${CMAKE_SOURCE_DIR}/src
+        ${CMAKE_SOURCE_DIR}/src/crypto/providers/pkcs11)
+    target_link_libraries(rivet_mock_pkcs11 PRIVATE OpenSSL::Crypto)
+    set_target_properties(rivet_mock_pkcs11 PROPERTIES CXX_VISIBILITY_PRESET hidden VISIBILITY_INLINES_HIDDEN ON)
+    rivet_set_target_warnings(rivet_mock_pkcs11)
+    rivet_set_target_sanitizers(rivet_mock_pkcs11)
+    add_dependencies(rivet_crypto_pkcs11_tests rivet_mock_pkcs11)
+    target_include_directories(rivet_crypto_pkcs11_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/..)
+    target_link_libraries(rivet_crypto_pkcs11_tests PRIVATE OpenSSL::Crypto)
+    target_compile_definitions(rivet_crypto_pkcs11_tests PRIVATE
+        RIVET_TEST_PKCS11_MOCK=1
+        "RIVET_TEST_PKCS11_MOCK_PATH=\"$<TARGET_FILE:rivet_mock_pkcs11>\"")
+endif()
 rivet_set_target_warnings(rivet_crypto_pkcs11_tests)
 rivet_set_target_sanitizers(rivet_crypto_pkcs11_tests)
 add_test(NAME crypto_pkcs11 COMMAND rivet_crypto_pkcs11_tests)
