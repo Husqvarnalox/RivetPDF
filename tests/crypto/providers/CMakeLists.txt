@@ -42,6 +42,13 @@ add_executable(rivet_crypto_platform_tests
     TestPlatformStore.cpp
 )
 target_link_libraries(rivet_crypto_platform_tests PRIVATE rivet::test_harness rivet::crypto_providers)
+if(RIVET_ENABLE_CRYPTO)
+    # Keychain tests fabricate identities with OpenSSL and verify signatures with it.
+    find_package(OpenSSL 3 REQUIRED COMPONENTS Crypto)
+    target_include_directories(rivet_crypto_platform_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/..)
+    target_link_libraries(rivet_crypto_platform_tests PRIVATE OpenSSL::Crypto)
+    target_compile_definitions(rivet_crypto_platform_tests PRIVATE RIVET_TEST_CRYPTO_OPENSSL=1)
+endif()
 rivet_set_target_warnings(rivet_crypto_platform_tests)
 rivet_set_target_sanitizers(rivet_crypto_platform_tests)
 add_test(NAME crypto_platform COMMAND rivet_crypto_platform_tests)
