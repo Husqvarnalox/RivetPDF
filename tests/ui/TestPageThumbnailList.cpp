@@ -86,3 +86,48 @@ RIVET_TEST(pageThumbnailListClickAfterScrollHitsVisibleRow) {
         list.onMouse(up);
     }
 }
+
+// QA bugs 4 and 20: unsaved overlays (edited form values, a placed
+// signature) are painted over the thumbnail, in thumbnail-local coordinates
+// with the thumbnail's zoom, inside a clip.
+RIVET_TEST(pageThumbnailListPaintsThePageOverlayOverCachedThumbnails) {
+    PageLayout layout;
+    layout.setPages({PageLayout::PageInfo{PageId{7}, Size{600.0, 800.0}}});
+    FakeRenderSource source;
+    PageThumbnailList list;
+    list.setFrame(Rect{0.0, 0.0, 200.0, 640.0});
+    list.setDocument(DocumentId{1}, &layout, &source, [] { return std::uint64_t{1}; });
+
+    struct Call {
+        std::size_t page;
+        Rect rect;
+        double zoom;
+        int clipDepth;
+    };
+    std::vector<Call> calls;
+    list.setPageOverlayPainter(
+        [&calls](std::size_t page, const Rect& rect, double zoom, rivet::ui::PaintContext& context) {
+            const auto* fake = dynamic_cast<rivet::ui::testing::FakePaintContext*>(&context);
+            calls.push_back(Call{page, rect, zoom, fake != nullptr ? fake->clipDepth : -1});
+        });
+
+    rivet::ui::testing::FakePaintContext first;
+    list.paint(first); // no cached thumbnail yet: a placeholder, no overlay
+    CHECK(calls.empty());
+    CHECK(!source.requests.empty());
+    if (source.requests.empty()) return;
+    source.insertTile(source.requests.back().request.key, 4, 4);
+
+    rivet::ui::testing::FakePaintContext second;
+    list.paint(second);
+    CHECK(!second.bitmaps.empty());
+    CHECK_EQ(calls.size(), std::size_t{1});
+    if (calls.empty()) return;
+    const Call& call = calls.back();
+    CHECK_EQ(call.page, std::size_t{0});
+    CHECK_NEAR(call.rect.minX(), 0.0, 1e-9);
+    CHECK_NEAR(call.rect.minY(), 0.0, 1e-9);
+    CHECK_NEAR(call.rect.size.width, PageThumbnailList::kThumbnailWidth, 1e-9);
+    CHECK_NEAR(call.zoom, PageThumbnailList::kThumbnailWidth / 600.0, 1e-9);
+    CHECK(call.clipDepth >= 2); // the list clip plus the thumbnail clip
+}

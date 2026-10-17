@@ -67,6 +67,10 @@ public:
     void perform(FormCommand command);
     std::optional<bool> isChecked(FormCommand command) const;
     bool highlightFields() const { return highlight_; }
+    // Paints the edited values of page `page` (layout index) without the
+    // interactive decorations (highlight, focus, hover): the thumbnail
+    // overlay (the raster hides edited widgets, QA bug 4).
+    void paintThumbnail(std::size_t page, const core::Rect& pageRect, double zoom, ui::PaintContext& context) const;
 
     // Esc priority hook for the shell: cancels the editor, closes the popup
     // or drops the focus. False when there was nothing to do.
@@ -161,6 +165,8 @@ private:
     void announce(DocumentTab& tab);
     void reportUnfillable(const pdf::PdfFormInfo& info, const pdf::PdfFormField& field);
     void repaint();
+    void paintWidgets(std::size_t page, const core::Rect& pageRect, double zoom, ui::PaintContext& context,
+                      bool decorations) const;
 
     ShellContext& context_;
     AnnotationController& annotations_;

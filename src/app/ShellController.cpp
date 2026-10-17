@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 #include "app/ShellController.hpp"
 
+#include "app/AnnotationPainter.hpp"
 #include "app/MarkdownParseCoordinator.hpp"
 #include "app/MarkdownPreviewView.hpp"
 #include "app/RedactionController.hpp"
@@ -105,6 +106,9 @@ ShellController::ShellController(const platform::ShellServices& services, std::u
 
 ShellController::~ShellController() {
     alive_.reset(); // no tooltip delay runs from here on
+    // The thumbnail overlay calls into controllers that die before the
+    // widget tree.
+    if (sidebar_ != nullptr) sidebar_->thumbnails().setPageOverlayPainter({});
     delayScope_.closeAndWait();
     if (services_.appearance != nullptr) services_.appearance->onChange(nullptr);
     // The Markdown exporter's workers use the engine and hand documents to
@@ -246,6 +250,19 @@ void ShellController::buildWidgets() {
 
     // Form filling: its layer sits below the annotation layer (Select tool).
     forms_ = std::make_unique<FormController>(*context_, *root_, *annotations_);
+    // Thumbnails show what the viewport layers draw over the raster (edited
+    // annotations, a placed signature, edited form values; QA bugs 4, 20).
+    sidebar_->thumbnails().setPageOverlayPainter(
+        [this](std::size_t page, const core::Rect& pageRect, double zoom, ui::PaintContext& paint) {
+            if (annotations_ != nullptr) {
+                if (const auto views = annotations_->pageAnnotations(page)) {
+                    for (const editor::AnnotationView& view : *views) {
+                        AnnotationPainter::paintAnnotation(paint, view, pageRect, zoom);
+                    }
+                }
+            }
+            if (forms_ != nullptr) forms_->paintThumbnail(page, pageRect, zoom, paint);
+        });
     // Redaction marks (Redact tool, Apply Redactions): part of the content
     // tool state.
     redaction_ = std::make_unique<RedactionController>(*context_, *content_);

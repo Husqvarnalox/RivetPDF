@@ -473,6 +473,12 @@ void PageThumbnailList::paintSelf(PaintContext& context) const {
         const render::TileKey tileKey{documentId_, page.id, scaleKey, 0, 0, page.contentRevision};
         if (const std::shared_ptr<const core::Bitmap> bitmap = source_->cachedTile(tileKey, revision)) {
             context.drawBitmap(*bitmap, thumb);
+            if (pageOverlay_ && page.sizePoints.width > 0.0) {
+                context.pushClip(thumb);
+                pageOverlay_(i, core::Rect{0.0, 0.0, thumb.size.width, thumb.size.height},
+                             thumb.size.width / page.sizePoints.width, context);
+                context.popClip();
+            }
         } else {
             context.fillRect(thumb, colors().pagePlaceholder);
             requestThumbnail(i, context.backingScale(),

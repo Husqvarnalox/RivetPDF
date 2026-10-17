@@ -567,7 +567,18 @@ RIVET_TEST(formControllerPaintsEditedValuesHighlightAndPopup) {
     ui::testing::FakePaintContext paint;
     forms.paintPage(*shell.viewport, 0, core::Rect{0.0, 0.0, 612.0 * zoom, 792.0 * zoom}, paint);
     bool text = false;
-    for (const auto& record : paint.texts) text = text || record.text == "Ada";
+    for (const auto& record : paint.texts) {
+        if (record.text != "Ada") continue;
+        text = true;
+        // QA bug 4: the value must land inside its clip (pushClip translates
+        // the origin, so viewport-space geometry inside the clip went off the
+        // widget and the field looked blank).
+        const core::Rect& r = record.absoluteRect;
+        const core::Rect& clip = record.absoluteClip;
+        CHECK(!clip.isEmpty());
+        CHECK(r.minX() >= clip.minX() - 0.5 && r.minX() < clip.maxX());
+        CHECK(r.maxY() > clip.minY() && r.minY() < clip.maxY());
+    }
     CHECK(text);                    // the edited value is drawn by the overlay
     CHECK(paint.lines.size() >= 2); // the check mark
     CHECK(paint.fills.size() >= 4); // the highlight tint on each fillable widget

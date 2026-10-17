@@ -34,6 +34,13 @@ core::Rect toViewport(const core::Rect& pageRect, double zoom, const core::Rect&
     return AnnotationPainter::toViewport(pageRect, zoom, display);
 }
 
+// `r` relative to `origin`: pushClip(rect) translates the origin to
+// rect.origin (PaintContext contract), so geometry drawn inside the clip must
+// be expressed relative to the clip rect.
+core::Rect relativeTo(const core::Rect& origin, const core::Rect& r) {
+    return core::Rect{r.origin.x - origin.origin.x, r.origin.y - origin.origin.y, r.size.width, r.size.height};
+}
+
 bool contains(const core::Rect& rect, core::Point p) {
     return p.x >= rect.minX() && p.x <= rect.maxX() && p.y >= rect.minY() && p.y <= rect.maxY();
 }
@@ -648,6 +655,16 @@ void FormController::placeEditor(const ui::ViewportToolHost& host) {
 
 void FormController::paintPage(const ui::ViewportToolHost& host, std::size_t page, const core::Rect& pageRect,
                                ui::PaintContext& context) const {
+    paintWidgets(page, pageRect, host.zoomFactor(), context, true);
+}
+
+void FormController::paintThumbnail(std::size_t page, const core::Rect& pageRect, double zoom,
+                                    ui::PaintContext& context) const {
+    paintWidgets(page, pageRect, zoom, context, false);
+}
+
+void FormController::paintWidgets(std::size_t page, const core::Rect& pageRect, double zoom,
+                                  ui::PaintContext& context, bool decorations) const {
     DocumentTab* tab = activeTab();
     if (tab == nullptr || page >= tab->session()->pageCount()) return;
     editor::DocumentSession& session = *tab->session();
@@ -656,9 +673,9 @@ void FormController::paintPage(const ui::ViewportToolHost& host, std::size_t pag
     const core::PageId pageId = session.pageId(page);
     const std::vector<editor::FormWidgetView> widgets = session.forms().widgets(pageId);
     if (widgets.empty()) return;
-    const double zoom = host.zoomFactor();
-    const std::optional<Target> hovered =
-        hover_.has_value() && hover_->first == page ? widgetAt(hover_->first, hover_->second) : std::nullopt;
+    const std::optional<Target> hovered = decorations && hover_.has_value() && hover_->first == page
+                                              ? widgetAt(hover_->first, hover_->second)
+                                              : std::nullopt;
     const FormTextMeasure measure = [&context](std::string_view text, double size) {
         return context.measureText(text, ui::Font{size}).width;
     };
@@ -666,12 +683,12 @@ void FormController::paintPage(const ui::ViewportToolHost& host, std::size_t pag
         const pdf::PdfFormField& field = info->fields[view.field];
         const core::Rect rect = toViewport(pageRect, zoom, view.displayRect);
         const bool fillable = info->fillable() && field.fillable();
-        if (highlight_ && fillable) context.fillRect(rect, highlightColor());
-        const bool editing = editing_.has_value() && editing_->target.pageId == pageId &&
+        if (decorations && highlight_ && fillable) context.fillRect(rect, highlightColor());
+        const bool editing = decorations && editing_.has_value() && editing_->target.pageId == pageId &&
                              editing_->target.field == view.field && editing_->target.widget == view.widget;
         if (view.edited && !editing) {
             // The raster hides this widget: draw the edited value.
-            context.strokeRect(rect, editedBorder(), 1.0);
+            if (decorations) context.strokeRect(rect, editedBorder(), 1.0);
             const auto value = session.forms().currentValue(view.field);
             if (value.has_value()) {
                 if (field.isToggle()) {
@@ -694,8 +711,8 @@ void FormController::paintPage(const ui::ViewportToolHost& host, std::size_t pag
                         if (row.minY() > view.displayRect.maxY()) break;
                         const bool on = std::find(value->selected.begin(), value->selected.end(),
                                                   static_cast<std::uint32_t>(i)) != value->selected.end();
-                        const core::Rect viewRow = toViewport(pageRect, zoom, row);
-                        if (on) context.fillRect(viewRow, highlightColor());
+                        const core::Rect viewRow = relativeTo(rect, toViewport(pageRect, zoom, row));
+                        if (on) context.fillRect(viewRow, ui::colors().formOptionHighlight);
                         const core::Rect textRow{viewRow.origin.x + kFormTextPadding * zoom, viewRow.origin.y,
                                                  std::max(0.0, viewRow.size.width - 2.0 * kFormTextPadding * zoom),
                                                  viewRow.size.height};
@@ -711,7 +728,7 @@ void FormController::paintPage(const ui::ViewportToolHost& host, std::size_t pag
                     const FormTextLayout layout = layoutFormText(layoutField, view.displayRect, text, measure);
                     context.pushClip(rect);
                     for (const FormTextLine& line : layout.lines) {
-                        context.drawText(line.text, toViewport(pageRect, zoom, line.rect),
+                        context.drawText(line.text, relativeTo(rect, toViewport(pageRect, zoom, line.rect)),
                                          ui::Font{layout.fontSize * zoom}, inkColor(),
                                          line.centered ? ui::TextAlign::Center : ui::TextAlign::Left);
                     }
@@ -719,6 +736,7 @@ void FormController::paintPage(const ui::ViewportToolHost& host, std::size_t pag
                 }
             }
         }
+        if (!decorations) continue;
         const bool focused = focus_.has_value() && focus_->tab == tab->id() && focus_->page == pageId &&
                              focus_->field == view.field && focus_->widget == view.widget;
         if (focused) {
