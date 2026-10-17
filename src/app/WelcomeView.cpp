@@ -3,12 +3,14 @@
 
 #include "ui/Button.hpp"
 #include "ui/Icons.hpp"
+#include "ui/TextElision.hpp"
 #include "ui/Theme.hpp"
 
 #include <algorithm>
 #include <cstdlib>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <system_error>
 #include <utility>
 
@@ -155,29 +157,27 @@ void WelcomeView::paintSelf(ui::PaintContext& context) const {
             const ui::Color nameColor = entry.exists ? palette.textPrimary : palette.textDisabled;
             const ui::Color dirColor = entry.exists ? palette.textSecondary : palette.textDisabled;
             ui::drawIcon(context, ui::Icon::Document, core::Rect{row.minX() + 8.0, row.minY() + 7.0, 16.0, 16.0}, dirColor);
-            const std::string name = utf8(entry.path.filename());
-            const double nameWidth = std::min(context.measureText(name, ui::fonts::kBody).width, row.size.width * 0.55);
-            context.drawText(name, core::Rect{row.minX() + 32.0, row.minY(), nameWidth, row.size.height}, ui::fonts::kBody,
+            const auto measure = [&](std::string_view text, const ui::Font& font) {
+                return context.measureText(std::string(text), font).width;
+            };
+            const double textLeft = row.minX() + 32.0;
+            const double available = std::max(0.0, row.maxX() - 8.0 - textLeft);
+            // The file name stays fully visible unless it alone would take
+            // most of the row; the directory is elided in the middle.
+            const std::string fullName = utf8(entry.path.filename());
+            const std::string name = ui::elideMiddle(fullName, available * 0.6, [&](std::string_view t) {
+                return measure(t, ui::fonts::kBody);
+            });
+            const double nameWidth = std::min(measure(name, ui::fonts::kBody), available);
+            context.drawText(name, core::Rect{textLeft, row.minY(), nameWidth + 2.0, row.size.height}, ui::fonts::kBody,
                              nameColor, ui::TextAlign::Left);
-            const double whereX = row.minX() + 32.0 + nameWidth + 10.0;
+            const double whereX = textLeft + nameWidth + 10.0;
             const double whereWidth = std::max(0.0, row.maxX() - 8.0 - whereX);
             std::string where = abbreviateHome(utf8(entry.path.parent_path()));
             if (!entry.exists) where = "Missing \xE2\x80\x94 " + where;
-            // Too long: keep the end of the path (the nearest folders).
-            if (context.measureText(where, ui::fonts::kSmall).width > whereWidth) {
-                std::string tail = where;
-                while (!tail.empty() &&
-                       context.measureText("\xE2\x80\xA6" + tail, ui::fonts::kSmall).width > whereWidth) {
-                    std::size_t cut = 1;
-                    while (cut < tail.size() && (static_cast<unsigned char>(tail[cut]) & 0xC0) == 0x80) ++cut;
-                    tail.erase(0, cut);
-                }
-                where = "\xE2\x80\xA6" + tail;
-            }
-            context.pushClip(core::Rect{whereX, row.minY(), whereWidth, row.size.height});
-            context.drawText(where, core::Rect{0.0, 0.0, 2000.0, row.size.height}, ui::fonts::kSmall, dirColor,
-                             ui::TextAlign::Left);
-            context.popClip();
+            where = ui::elideMiddle(where, whereWidth, [&](std::string_view t) { return measure(t, ui::fonts::kSmall); });
+            context.drawText(where, core::Rect{whereX, row.minY(), whereWidth, row.size.height}, ui::fonts::kSmall,
+                             dirColor, ui::TextAlign::Left);
         }
     }
     const double hintY = recent_.empty() ? openButton_->frame().maxY() + 28.0 : listTop() + static_cast<double>(recent_.size()) * kRowHeight + 18.0;

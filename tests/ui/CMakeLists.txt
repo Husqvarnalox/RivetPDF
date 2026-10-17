@@ -10,6 +10,7 @@ add_executable(rivet_ui_tests
     TestTabStrip.cpp
     TestTextArea.cpp
     TestTextBuffer.cpp
+    TestTextElision.cpp
     TestTextField.cpp
     TestTheme.cpp
     TestNoHardcodedColors.cpp
