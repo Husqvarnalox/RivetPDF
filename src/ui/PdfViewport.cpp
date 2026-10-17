@@ -741,15 +741,17 @@ void PdfViewport::resolveFitMode() {
         return;
     }
     if (mode == render::ZoomState::FitMode::Width) {
-        double widest = 0.0;
-        for (const render::PageLayout::PageInfo& page : layout_->pages()) {
-            widest = std::max(widest, page.sizePoints.width);
-        }
-        state_->zoom().setZoom(state_->zoom().fitWidthZoom(frame().size.width, widest));
+        // The layout's content width includes the page margin on both sides:
+        // fitting the bare page width would overflow horizontally by the
+        // margins and show a horizontal scrollbar.
+        state_->zoom().setZoom(
+            state_->zoom().fitWidthZoom(frame().size.width, layout_->contentSizePoints().width));
     } else { // FitMode::Page: fit the current page within the viewport
         const std::size_t index = std::min(currentPage_, layout_->pageCount() - 1);
+        const double margin = 2.0 * layout_->pageMarginPoints();
+        const core::Size page = layout_->pages()[index].sizePoints;
         state_->zoom().setZoom(state_->zoom().fitPageZoom(
-            frame().size.width, frame().size.height, layout_->pages()[index].sizePoints));
+            frame().size.width, frame().size.height, core::Size{page.width + margin, page.height + margin}));
     }
     // Fit modes are modes: the intent survives this layout pass and keeps
     // recomputing on resize until manual zoom exits the mode.

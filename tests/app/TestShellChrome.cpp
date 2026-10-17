@@ -13,6 +13,7 @@
 #include "core/async/IMainThreadDispatcher.hpp"
 #include "platform/AppDataLocation.hpp"
 #include "platform/PlatformKit.hpp"
+#include "render/ZoomState.hpp"
 #include "ui/PdfViewport.hpp"
 #include "ui/PopupMenu.hpp"
 #include "ui/Theme.hpp"
@@ -245,6 +246,25 @@ RIVET_TEST(shellMarkdownTabGetsFormatContextBarAndNoSidebar) {
     using namespace rivet::ui::metrics;
     CHECK(host.origin.x == 0.0);
     CHECK(host.origin.y == kTabStripHeight + kToolbarHeight + kContextBarHeight);
+}
+
+RIVET_TEST(newTabOpensFitWidthAndKeepsAnExplicitZoomPerTab) {
+    Shell s;
+    using FitMode = rivet::render::ZoomState::FitMode;
+    CHECK(s.openPdf("a.pdf"));
+    CHECK(s.shell->pdfViewport().zoom().fitMode() == FitMode::Width);
+
+    // The user zooms explicitly in tab A; a new tab B opens fit-width.
+    CHECK(s.shell->pdfViewport().zoomInStep());
+    const double zoomA = s.shell->pdfViewport().zoom().zoom();
+    CHECK(s.shell->pdfViewport().zoom().fitMode() == FitMode::None);
+    CHECK(s.openPdf("b.pdf"));
+    CHECK(s.shell->pdfViewport().zoom().fitMode() == FitMode::Width);
+
+    // Back on tab A the explicit zoom is remembered (no re-fit).
+    s.shell->workspace().activateTab(0);
+    CHECK(s.shell->pdfViewport().zoom().fitMode() == FitMode::None);
+    CHECK(s.shell->pdfViewport().zoom().zoom() == zoomA);
 }
 
 RIVET_TEST(shellOverflowMenuMirrorsTheMenuBar) {

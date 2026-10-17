@@ -558,13 +558,16 @@ RIVET_TEST(resizeReclampsScrollAndKeepsFitWidthSticky) {
     CHECK(f.viewport.zoom().setZoom(1.25)); // manual zoom first
     f.viewport.setFitMode(ZoomState::FitMode::Width);
     CHECK(f.viewport.zoom().fitMode() == ZoomState::FitMode::Width);
-    f.viewport.setFrame(Rect{0.0, 0.0, 612.0, 700.0});
-    CHECK_NEAR(f.viewport.zoom().zoom(), 1.0, 1e-9); // 612 / 612
+    // The fit accounts for the 24pt page margin on both sides, so the page
+    // never overflows horizontally: (612 + 48) / 660 = 1.0.
+    f.viewport.setFrame(Rect{0.0, 0.0, 660.0, 700.0});
+    CHECK_NEAR(f.viewport.zoom().zoom(), 1.0, 1e-9);
+    CHECK(f.layout.contentSizePoints().width * f.viewport.zoom().zoom() <= 660.0 + 1e-9);
     CHECK(f.viewport.zoom().fitMode() == ZoomState::FitMode::Width);
 
     // Still active on the next resize: narrower window -> smaller zoom
     // (306 / 612 = 0.5), recomputed live.
-    f.viewport.setFrame(Rect{0.0, 0.0, 306.0, 700.0});
+    f.viewport.setFrame(Rect{0.0, 0.0, 330.0, 700.0});
     CHECK_NEAR(f.viewport.zoom().zoom(), 0.5, 1e-9);
     CHECK(f.viewport.zoom().fitMode() == ZoomState::FitMode::Width);
 
@@ -577,17 +580,20 @@ RIVET_TEST(resizeReclampsScrollAndKeepsFitWidthSticky) {
 RIVET_TEST(fitPageFollowsTheCurrentPageAndStaysSticky) {
     Fixture f;
     // Viewport 800x600; the tracked page is 0 (612x792) -> fit page zoom =
-    // min(800/612, 600/792) = 600/792 = 0.757575...
+    // with the 24pt margin on every side: min(800/660, 600/840) = 600/840.
     f.viewport.setFitMode(ZoomState::FitMode::Page);
-    CHECK_NEAR(f.viewport.zoom().zoom(), 600.0 / 792.0, 1e-9);
+    CHECK_NEAR(f.viewport.zoom().zoom(), 600.0 / 840.0, 1e-9);
     CHECK(f.viewport.zoom().fitMode() == ZoomState::FitMode::Page);
 
-    // Scroll to page 1 (top at y=832): the tracked page changes and the next
-    // layout pass refits page 1 (400x400) -> min(800/400, 600/400) = 1.5.
+    // Track page 1 (manual 100% zoom, scrolled to the bottom), then refit:
+    // page 1 is 400x400 -> 448x448 with margins -> min(800/448, 600/448).
+    CHECK(f.viewport.setManualZoom(1.0));
     f.viewport.goToPage(1);
     CHECK_EQ(f.viewport.currentPageIndex(), std::size_t{1});
+    f.viewport.setFitMode(ZoomState::FitMode::Page);
+    CHECK_NEAR(f.viewport.zoom().zoom(), 600.0 / 448.0, 1e-9);
     f.viewport.layout();
-    CHECK_NEAR(f.viewport.zoom().zoom(), 1.5, 1e-9);
+    CHECK_NEAR(f.viewport.zoom().zoom(), 600.0 / 448.0, 1e-9);
     CHECK(f.viewport.zoom().fitMode() == ZoomState::FitMode::Page);
 }
 
