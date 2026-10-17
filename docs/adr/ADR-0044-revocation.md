@@ -114,8 +114,9 @@ request carries no document data and the user agent is fixed.
   distribution points (skipped with a note).
 - OCSP stapling in TLS, OCSP GET, multiple CertIDs per request, OCSP response
   caching (responses are cheap; the evidence is stored in the document).
-- `ldap://` and `file://` locations; `caIssuers` is parsed but not fetched.
-- Certificate path building from `caIssuers`; the caller supplies the chain.
+- `ldap://` and `file://` locations.
+- Delta CRLs. (Path building from `caIssuers` now exists: `crypto/PathBuilder`
+  with `crypto/revocation/AiaFetcher`, over `rivet::net` only, see ADR-0045.)
 
 ## Consequences
 

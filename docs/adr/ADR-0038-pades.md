@@ -35,8 +35,9 @@ confirmed before external claims of conformance.
 
 ## Not in scope
 
-B-LT (`/DSS` with validation data) and B-LTA (an archive time-stamp over the
-DSS). B-T and plain document time-stamps are described in "Timestamps" below.
+Nothing of the PAdES baseline levels: B-B, B-T, B-LT and B-LTA are all
+produced and verified. B-T and document time-stamps are described in
+"Timestamps" below; `/DSS`, `/VRI` and B-LTA in ADR-0045.
 
 ## Timestamps
 
@@ -82,5 +83,6 @@ token against the ByteRange digest and rejects a wrong digest.
 online-validation gate On: passing the URL is the user's consent. Without a
 network transport the command reports `BackendUnavailable`.
 
-**Not done (later step):** LTV / `/DSS`, B-LT and B-LTA. A DocTimeStamp is a
-building block for B-LTA but is not by itself B-LTA.
+A DocTimeStamp is a building block for B-LTA but is not by itself B-LTA: B-LT
+and B-LTA (the `/DSS`, the `/VRI` entries and a document time-stamp covering the
+validation data) are described in ADR-0045.
