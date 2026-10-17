@@ -242,8 +242,9 @@ inline Bytes buildResponseFor(CryptoProvider& provider, const Tsa& tsa, ByteView
             int top = 0;
             for (int b = 0; b < 32; ++b)
                 if (cfg.failInfo & (1u << b)) top = b;
-            Bytes bits(static_cast<std::size_t>(top / 8 + 2), 0);
-            bits[0] = static_cast<std::uint8_t>(7 - top % 8);
+            Bytes bits;
+            bits.push_back(static_cast<std::uint8_t>(7 - top % 8));
+            bits.resize(static_cast<std::size_t>(top / 8 + 2), 0);
             for (int b = 0; b <= top; ++b)
                 if (cfg.failInfo & (1u << b)) bits[1 + static_cast<std::size_t>(b / 8)] |= static_cast<std::uint8_t>(0x80 >> (b % 8));
             info.push_back(der::tlv(der::kBitString, bits));
