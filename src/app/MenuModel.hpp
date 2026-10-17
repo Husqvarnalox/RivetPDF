@@ -24,6 +24,9 @@ namespace rivet::app {
 // Main-thread only; pure value types.
 
 // A tagged value identifying any shell command reachable from a menu.
+// View-menu zoom commands (PDF and comparison tabs).
+enum class ViewCommand : std::uint8_t { ZoomIn, ZoomOut, ActualSize, FitWidth, FitPage };
+
 struct AppCommand {
     enum class Kind : std::uint8_t {
         Open,
@@ -36,6 +39,7 @@ struct AppCommand {
         Form,
         Redact,
         MarkdownFormat,
+        View,
     };
 
     Kind kind = Kind::Open;
@@ -51,6 +55,7 @@ struct AppCommand {
     static AppCommand of(ContentCommand c) { return {Kind::Content, static_cast<std::uint8_t>(c)}; }
     static AppCommand of(FormCommand c) { return {Kind::Form, static_cast<std::uint8_t>(c)}; }
     static AppCommand of(RedactCommand c) { return {Kind::Redact, static_cast<std::uint8_t>(c)}; }
+    static AppCommand of(ViewCommand c) { return {Kind::View, static_cast<std::uint8_t>(c)}; }
     static AppCommand of(MarkdownDisplayMode m) { return {Kind::MarkdownMode, static_cast<std::uint8_t>(m)}; }
     static AppCommand of(MarkdownFormatCommand f) { return {Kind::MarkdownFormat, static_cast<std::uint8_t>(f)}; }
 
@@ -60,6 +65,7 @@ struct AppCommand {
     ContentCommand content() const { return static_cast<ContentCommand>(value); }
     FormCommand form() const { return static_cast<FormCommand>(value); }
     RedactCommand redact() const { return static_cast<RedactCommand>(value); }
+    ViewCommand view() const { return static_cast<ViewCommand>(value); }
     MarkdownDisplayMode markdownMode() const { return static_cast<MarkdownDisplayMode>(value); }
     MarkdownFormatCommand markdownFormat() const { return static_cast<MarkdownFormatCommand>(value); }
 

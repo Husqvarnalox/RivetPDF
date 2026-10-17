@@ -51,6 +51,29 @@ RIVET_TEST(menuCommandsAreUniqueAndFlatIndexRoundTrips) {
     }
 }
 
+RIVET_TEST(viewMenuHasZoomCommandsWithDistinctShortcuts) {
+    const Menu* view = nullptr;
+    const auto bar = buildMenuBar();
+    for (const Menu& menu : bar) {
+        if (menu.title == "View") view = &menu;
+    }
+    CHECK(view != nullptr);
+    const auto find = [&](ViewCommand command) -> const MenuItem* {
+        for (const MenuItem& entry : view->items) {
+            if (entry.command == AppCommand::of(command)) return &entry;
+        }
+        return nullptr;
+    };
+    const MenuItem* zoomIn = find(ViewCommand::ZoomIn);
+    const MenuItem* zoomOut = find(ViewCommand::ZoomOut);
+    const MenuItem* actual = find(ViewCommand::ActualSize);
+    CHECK(zoomIn != nullptr && zoomIn->shortcut.has_value() && zoomIn->shortcut->key == "=");
+    CHECK(zoomOut != nullptr && zoomOut->shortcut.has_value() && zoomOut->shortcut->key == "-");
+    CHECK(actual != nullptr && actual->shortcut.has_value() && actual->shortcut->key == "0");
+    CHECK(find(ViewCommand::FitWidth) != nullptr);
+    CHECK(find(ViewCommand::FitPage) != nullptr);
+}
+
 RIVET_TEST(menuHasOpenAndQuitWithRole) {
     bool open = false;
     bool quit = false;

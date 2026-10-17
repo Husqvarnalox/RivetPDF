@@ -1264,6 +1264,31 @@ bool ShellController::canPerformFile(FileCommand command) const {
     return fileLifecycle_ != nullptr && fileLifecycle_->canPerform(command);
 }
 
+bool ShellController::canPerformView() const {
+    if (context_ == nullptr) return false;
+    if (chromeComparison_) return workspace_.activeTab() != nullptr;
+    return !chromeMarkdown_ && context_->readyActiveTab() != nullptr;
+}
+
+void ShellController::performView(ViewCommand command) {
+    if (!canPerformView()) return;
+    const auto apply = [command](ui::PdfViewport& viewport) {
+        switch (command) {
+        case ViewCommand::ZoomIn: viewport.zoomInStep(); break;
+        case ViewCommand::ZoomOut: viewport.zoomOutStep(); break;
+        case ViewCommand::ActualSize: viewport.zoomActualSize(); break;
+        case ViewCommand::FitWidth: viewport.setFitMode(render::ZoomState::FitMode::Width); break;
+        case ViewCommand::FitPage: viewport.setFitMode(render::ZoomState::FitMode::Page); break;
+        }
+    };
+    if (chromeComparison_) {
+        apply(comparisonView_->leftViewport());
+        apply(comparisonView_->rightViewport());
+    } else {
+        apply(*viewport_);
+    }
+}
+
 void ShellController::perform(const AppCommand& command) {
     switch (command.kind) {
     case AppCommand::Kind::Open: handleOpenRequest(); break;
@@ -1275,6 +1300,7 @@ void ShellController::perform(const AppCommand& command) {
     case AppCommand::Kind::Annotation: performAnnotation(command.annotation()); break;
     case AppCommand::Kind::Content: performContent(command.content()); break;
     case AppCommand::Kind::MarkdownMode: performMarkdownMode(command.markdownMode()); break;
+    case AppCommand::Kind::View: performView(command.view()); break;
     case AppCommand::Kind::MarkdownFormat:
         if (context_ != nullptr && context_->readyMarkdownTab() != nullptr) {
             markdownView_->applyFormat(command.markdownFormat());
@@ -1298,6 +1324,7 @@ bool ShellController::canPerform(const AppCommand& command) const {
     case AppCommand::Kind::Annotation: return canPerformAnnotation(command.annotation());
     case AppCommand::Kind::Content: return canPerformContent(command.content());
     case AppCommand::Kind::MarkdownMode: return canPerformMarkdownMode();
+    case AppCommand::Kind::View: return canPerformView();
     case AppCommand::Kind::MarkdownFormat: {
         const DocumentTab* tab = context_ != nullptr ? context_->readyMarkdownTab() : nullptr;
         return tab != nullptr && !tab->markdown()->isEditingLocked();

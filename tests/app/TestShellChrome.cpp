@@ -267,6 +267,39 @@ RIVET_TEST(newTabOpensFitWidthAndKeepsAnExplicitZoomPerTab) {
     CHECK(s.shell->pdfViewport().zoom().zoom() == zoomA);
 }
 
+RIVET_TEST(viewMenuZoomCommandsFollowTheActiveTab) {
+    Shell s;
+    using FitMode = rivet::render::ZoomState::FitMode;
+    const auto cmd = [](ViewCommand c) { return AppCommand::of(c); };
+    // No document: disabled.
+    CHECK(!s.shell->canPerform(cmd(ViewCommand::ZoomIn)));
+    CHECK(s.openPdf("a.pdf"));
+    for (ViewCommand c : {ViewCommand::ZoomIn, ViewCommand::ZoomOut, ViewCommand::ActualSize, ViewCommand::FitWidth,
+                          ViewCommand::FitPage}) {
+        CHECK(s.shell->canPerform(cmd(c)));
+    }
+    auto& zoom = s.shell->pdfViewport().zoom();
+    s.shell->perform(cmd(ViewCommand::ActualSize));
+    CHECK(zoom.zoom() == 1.0 && zoom.fitMode() == FitMode::None);
+    s.shell->perform(cmd(ViewCommand::ZoomIn));
+    CHECK(zoom.zoom() > 1.0);
+    s.shell->perform(cmd(ViewCommand::ZoomOut));
+    CHECK(zoom.zoom() == 1.0);
+    s.shell->perform(cmd(ViewCommand::FitPage));
+    CHECK(zoom.fitMode() == FitMode::Page);
+    s.shell->perform(cmd(ViewCommand::FitWidth));
+    CHECK(zoom.fitMode() == FitMode::Width);
+
+    // Markdown tabs have no zoom mechanism: disabled.
+    writeFile(s.dir("note.md"), "# Title\n");
+    s.shell->openDocument(s.dir("note.md"));
+    CHECK(s.dispatcher.waitUntil([&] {
+        DocumentTab* tab = s.shell->workspace().activeTab();
+        return tab != nullptr && tab->isMarkdown() && tab->state() == DocumentTab::State::Ready;
+    }));
+    CHECK(!s.shell->canPerform(cmd(ViewCommand::ZoomIn)));
+}
+
 RIVET_TEST(shellOverflowMenuMirrorsTheMenuBar) {
     Shell s;
     CHECK(s.openPdf("doc.pdf"));

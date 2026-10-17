@@ -139,6 +139,9 @@ public:
     // buttons, View menu). Inert for other tabs.
     void performMarkdownMode(MarkdownDisplayMode mode);
     bool canPerformMarkdownMode() const;
+    // View-menu zoom commands: PDF viewport, or both comparison viewports.
+    void performView(ViewCommand command);
+    bool canPerformView() const;
     // The mode of the active Ready Markdown tab, if any (menu check marks).
     std::optional<MarkdownDisplayMode> activeMarkdownMode() const;
 

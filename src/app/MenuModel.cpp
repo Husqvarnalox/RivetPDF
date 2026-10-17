@@ -72,6 +72,13 @@ std::vector<Menu> buildMenuBar() {
         m.checkable = true;
         view.items.push_back(std::move(m));
     }
+    // Zoom (PDF / comparison tabs). Zoom In is bound to the unshifted '=' key
+    // (Cmd/Ctrl+= and, via the shell's own key handling, Cmd/Ctrl++).
+    view.items.push_back(item("Zoom In", AppCommand::of(ViewCommand::ZoomIn), cmd("="), true));
+    view.items.push_back(item("Zoom Out", AppCommand::of(ViewCommand::ZoomOut), cmd("-")));
+    view.items.push_back(item("Actual Size", AppCommand::of(ViewCommand::ActualSize), cmd("0")));
+    view.items.push_back(item("Fit Width", AppCommand::of(ViewCommand::FitWidth)));
+    view.items.push_back(item("Fit Page", AppCommand::of(ViewCommand::FitPage)));
     MenuItem highlight =
         item("Highlight Form Fields", AppCommand::of(FormCommand::HighlightFields), std::nullopt, true);
     highlight.checkable = true;
