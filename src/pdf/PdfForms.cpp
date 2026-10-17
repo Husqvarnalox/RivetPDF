@@ -62,6 +62,62 @@ std::size_t PdfFormInfo::find(const std::string& name) const {
     return npos;
 }
 
+std::optional<PdfFormValue> defaultFormValue(const PdfFormField& field) {
+    if (!field.fillable()) return std::nullopt;
+    switch (field.type) {
+    case PdfFormFieldType::Text:
+        return PdfFormValue::ofText(sanitizeFormText(field, field.defaultValue.value_or(std::string{})));
+    case PdfFormFieldType::CheckBox:
+    case PdfFormFieldType::RadioButton: {
+        if (field.defaultValue.has_value()) {
+            for (const PdfFormWidget& widget : field.widgets) {
+                if (!widget.onState.empty() && widget.onState == *field.defaultValue) {
+                    return PdfFormValue::ofToggle(widget.onState);
+                }
+            }
+            if (field.type == PdfFormFieldType::CheckBox) return PdfFormValue::ofToggle({});
+            return std::nullopt; // a radio group cannot be turned off
+        }
+        if (field.type == PdfFormFieldType::CheckBox) return PdfFormValue::ofToggle({});
+        return std::nullopt;
+    }
+    case PdfFormFieldType::ComboBox:
+    case PdfFormFieldType::ListBox: {
+        if (field.defaultValue.has_value()) {
+            for (std::size_t i = 0; i < field.options.size(); ++i) {
+                if (field.options[i].label == *field.defaultValue) {
+                    return PdfFormValue::ofChoice({static_cast<std::uint32_t>(i)});
+                }
+            }
+            if (field.type == PdfFormFieldType::ComboBox && field.editable && !field.defaultValue->empty()) {
+                PdfFormValue value = PdfFormValue::ofChoice({});
+                value.text = sanitizeFormText(field, *field.defaultValue);
+                return value;
+            }
+        }
+        if (field.type == PdfFormFieldType::ListBox) return PdfFormValue::ofChoice({});
+        return std::nullopt; // a combo box cannot be emptied
+    }
+    case PdfFormFieldType::Unknown:
+    case PdfFormFieldType::PushButton:
+    case PdfFormFieldType::Signature:
+        break;
+    }
+    return std::nullopt;
+}
+
+PdfFormValues resetFormValues(const PdfFormInfo& info) {
+    PdfFormValues values;
+    if (!info.fillable()) return values;
+    for (const PdfFormField& field : info.fields) {
+        std::optional<PdfFormValue> value = defaultFormValue(field);
+        if (!value.has_value() || *value == originalValue(field)) continue;
+        if (!validateFormValue(field, *value).has_value()) continue;
+        values.emplace(field.name, std::move(*value));
+    }
+    return values;
+}
+
 PdfFormValue originalValue(const PdfFormField& field) {
     if (field.isToggle()) {
         for (const PdfFormWidget& widget : field.widgets) {

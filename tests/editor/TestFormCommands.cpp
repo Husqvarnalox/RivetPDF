@@ -169,7 +169,7 @@ RIVET_TEST(forms_refuse_read_only_unknown_and_invalid) {
     CHECK(!makeSetFormValue(model, xfa, "a", pdf::PdfFormValue::ofText("x")).has_value());
 }
 
-RIVET_TEST(forms_reset_restores_stored_values_as_one_step) {
+RIVET_TEST(forms_reset_sets_defaults_as_one_step) {
     FormFixture f;
     const std::uint64_t r2 = f.raster(2);
     CHECK(f.set("a", pdf::PdfFormValue::ofText("1")));
@@ -177,20 +177,29 @@ RIVET_TEST(forms_reset_restores_stored_values_as_one_step) {
     const pdf::PdfFormValuesPtr edited = f.session->pageSnapshot()->formValues();
     CHECK(edited != nullptr && edited->size() == 2);
 
+    // Defaults (no /DV): "a" empty (its stored "orig" is replaced), "b" off
+    // (= stored, so its edit is dropped and the raster draws it again).
     auto reset = makeResetForm(f.session->pageModel(), *f.session->forms().info());
     CHECK(reset.has_value() && *reset != nullptr);
     CHECK(f.session->execute(std::move(*reset)).has_value());
-    CHECK(f.session->pageSnapshot()->formValues() == nullptr);
-    CHECK(f.hidden(0).empty() && f.hidden(2).empty());
+    const pdf::PdfFormValuesPtr after = f.session->pageSnapshot()->formValues();
+    CHECK(after != nullptr && after->size() == 1);
+    CHECK(after != nullptr && after->contains("a") && after->at("a") == pdf::PdfFormValue::ofText(""));
+    CHECK(f.hidden(2).empty());
+    CHECK(!f.hidden(0).empty());
     CHECK(f.raster(2) != r2);
+    // Already at the defaults: no further reset.
+    auto again = makeResetForm(f.session->pageModel(), *f.session->forms().info());
+    CHECK(again.has_value() && *again == nullptr);
 
     CHECK(f.session->undo());
     CHECK(f.session->pageSnapshot()->formValues() == edited);
-    // Nothing edited: no reset command.
+    // QA #7: nothing edited, but the stored "orig" is not the default: a
+    // freshly opened filled form can be reset.
     CHECK(f.session->undo());
     CHECK(f.session->undo());
-    auto none = makeResetForm(f.session->pageModel(), *f.session->forms().info());
-    CHECK(none.has_value() && *none == nullptr);
+    auto fresh = makeResetForm(f.session->pageModel(), *f.session->forms().info());
+    CHECK(fresh.has_value() && *fresh != nullptr);
 }
 
 RIVET_TEST(forms_duplicated_pages_follow_the_field) {

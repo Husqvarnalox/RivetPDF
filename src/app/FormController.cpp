@@ -778,8 +778,13 @@ bool FormController::canPerform(FormCommand command) const {
     case FormCommand::ResetForm: {
         DocumentTab* tab = activeTab();
         if (tab == nullptr || tab->session()->isEditingLocked()) return false;
+        // Enabled whenever resetting would change what the form shows - also
+        // on a freshly opened, filled form (QA #7).
+        const pdf::PdfFormInfoPtr info = tab->session()->forms().info();
+        if (info == nullptr || !info->fillable()) return false;
         const pdf::PdfFormValuesPtr& values = tab->session()->pageSnapshot()->formValues();
-        return values != nullptr && !values->empty();
+        const pdf::PdfFormValues reset = pdf::resetFormValues(*info);
+        return values != nullptr ? reset != *values : !reset.empty();
     }
     }
     return false;

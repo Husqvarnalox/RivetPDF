@@ -522,7 +522,10 @@ RIVET_TEST(formControllerResetFormAndHighlightCommands) {
     Shell shell;
     CHECK(shell.open("reset") != nullptr);
     FormController& forms = *shell.forms;
-    CHECK(!forms.canPerform(FormCommand::ResetForm)); // nothing edited
+    // QA #7: a freshly opened form whose stored values differ from their
+    // defaults ("name" holds "orig", no /DV) can be reset before any edit.
+    CHECK(shell.values() == nullptr || shell.values()->empty());
+    CHECK(forms.canPerform(FormCommand::ResetForm));
 
     CHECK(forms.press(0, kAgreeCenter));
     CHECK(forms.press(0, kNameCenter));
@@ -531,8 +534,12 @@ RIVET_TEST(formControllerResetFormAndHighlightCommands) {
     CHECK_EQ(shell.values()->size(), std::size_t{2});
     CHECK(forms.canPerform(FormCommand::ResetForm));
 
-    forms.perform(FormCommand::ResetForm); // one step
-    CHECK(shell.values() == nullptr || shell.values()->empty());
+    forms.perform(FormCommand::ResetForm); // one step: every field to its default
+    CHECK(shell.values() != nullptr);
+    CHECK_EQ(shell.values()->size(), std::size_t{1});
+    CHECK(shell.valueOf("name").has_value() && shell.valueOf("name")->text.empty());
+    CHECK(!shell.valueOf("agree").has_value()); // default off = stored off
+    CHECK(!forms.canPerform(FormCommand::ResetForm)); // already at the defaults
     CHECK(shell.session().undo());
     CHECK_EQ(shell.values()->size(), std::size_t{2});
 
