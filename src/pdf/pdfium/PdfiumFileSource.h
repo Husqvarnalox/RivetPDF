@@ -26,8 +26,10 @@ namespace rivet::pdf {
 // Truncating the file IN PLACE would still be visible; reads past the
 // observed size or short reads fail cleanly instead of returning garbage.
 //
-// POSIX-only (open/fstat/pread): a Windows port needs a ReadFile-based
-// equivalent. Shared via std::shared_ptr; the owner of every FPDF_DOCUMENT
+// POSIX uses open/fstat/pread; Windows uses CreateFileW (share read|write|
+// delete, so an atomic replace of the path still works and the open handle
+// keeps reading the original bytes) and ReadFile with an OVERLAPPED offset
+// (no shared file pointer). Shared via std::shared_ptr; the owner of every FPDF_DOCUMENT
 // loaded from a source must keep the source alive until that document is
 // closed (PDFium calls back into it lazily while parsing).
 //
@@ -53,13 +55,19 @@ public:
     FPDF_FILEACCESS fileAccess() const;
 
 private:
+#ifdef _WIN32
+    using NativeHandle = void*; // HANDLE; kept out of this header to avoid <windows.h>
+    PdfiumFileSource(NativeHandle handle, std::uint64_t size) : handle_(handle), size_(size) {}
+    NativeHandle handle_;
+#else
     PdfiumFileSource(int fd, std::uint64_t size) : fd_(fd), size_(size) {}
+    int fd_ = -1;
+#endif
 
     // FPDF_FILEACCESS::m_GetBlock. Returns non-zero on success; never throws
     // (it is called from inside PDFium).
     static int readBlock(void* param, unsigned long position, unsigned char* buffer, unsigned long size);
 
-    int fd_ = -1;
     std::uint64_t size_ = 0;
 };
 

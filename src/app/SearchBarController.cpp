@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 #include "app/SearchBarController.hpp"
+#include "ui/Theme.hpp"
 
 #include "app/TextLabel.hpp"
 #include "ui/Button.hpp"
@@ -24,9 +25,8 @@ constexpr double kBarHeight = 34.0;
 
 SearchBarController::SearchBarController(ShellContext& context, ui::Widget& parent)
     : context_(context) {
-    auto bar = std::make_unique<ui::Container>();
+    auto bar = std::make_unique<ui::Card>();
     bar_ = bar.get();
-    bar_->setBackgroundColor(ui::Color::rgba(0.97, 0.97, 0.97, 1.0));
     parent.addChild(std::move(bar));
 
     auto field = std::make_unique<ui::TextField>("Find");
@@ -34,6 +34,7 @@ SearchBarController::SearchBarController(ShellContext& context, ui::Widget& pare
     field_->setFrame(core::Rect{8.0, 5.0, 180.0, 24.0});
     field_->setOnFocusRequested([this] { context_.setFocus(field_); });
     field_->setOnTextChanged([this](const std::string& text) {
+        pendingStep_ = 0;
         if (context_.readyMarkdownTab() != nullptr) {
             if (ISearchTarget* target = markdownTarget(); target != nullptr) target->startSearch(text);
             return;
@@ -56,7 +57,7 @@ SearchBarController::SearchBarController(ShellContext& context, ui::Widget& pare
     next->setOnClick([this] { step(+1); });
     bar_->addChild(std::move(next));
 
-    auto count = std::make_unique<TextLabel>("", ui::Font{12.0}, ui::Color::gray(0.35),
+    auto count = std::make_unique<TextLabel>("", ui::Font{12.0}, &ui::Palette::textSecondary,
                                              ui::TextAlign::Right);
     count->setFrame(core::Rect{264.0, 5.0, 90.0, 24.0});
     countLabel_ = count.get();
@@ -78,6 +79,7 @@ ISearchTarget* SearchBarController::markdownTarget() {
         hookedTarget_ = target;
         target->setOnSearchResultsChanged([this] {
             if (context_.readyMarkdownTab() == nullptr) return;
+            applyPendingStep();
             updateSearchUi();
             context_.viewport.invalidate();
         });
@@ -100,6 +102,7 @@ void SearchBarController::bindTab(DocumentTab& tab) {
         DocumentTab* bound = &tab;
         tab.search()->setOnResultsChanged([this, bound] {
             if (context_.workspace.activeTab() != bound) return;
+            applyPendingStep();
             updateSearchUi();
             revealActiveMatch();
             context_.viewport.invalidate();
@@ -122,6 +125,7 @@ void SearchBarController::layout(const core::Rect& viewportFrame) {
 
 void SearchBarController::setVisible(bool visible) {
     visible_ = visible;
+    pendingStep_ = 0;
     if (!visible) {
         if (field_->isFocused()) context_.setFocus(nullptr);
         if (context_.readyMarkdownTab() != nullptr) {
@@ -141,7 +145,10 @@ void SearchBarController::setVisible(bool visible) {
 
 void SearchBarController::toggle() {
     setVisible(!visible_);
-    if (visible_) context_.setFocus(field_);
+    if (visible_) {
+        context_.setFocus(field_);
+        field_->selectAll(); // QA bug 10: typing replaces the previous query
+    }
 }
 
 bool SearchBarController::handleEscape() {
@@ -155,6 +162,11 @@ const std::string& SearchBarController::countText() const { return countLabel_->
 void SearchBarController::step(int delta) {
     if (context_.readyMarkdownTab() != nullptr) {
         if (ISearchTarget* target = markdownTarget(); target != nullptr) {
+            if (target->matchCount() == 0 && target->searching()) {
+                pendingStep_ = delta; // QA bug 9: step once the first match arrives
+                return;
+            }
+            pendingStep_ = 0;
             if (delta < 0) {
                 target->previousMatch();
             } else {
@@ -166,12 +178,41 @@ void SearchBarController::step(int delta) {
     }
     DocumentTab* tab = context_.readyActiveTab();
     if (tab == nullptr || tab->search() == nullptr) return;
+    if (tab->search()->matches().empty() && tab->search()->searching()) {
+        pendingStep_ = delta; // QA bug 9: step once the first match arrives
+        return;
+    }
+    pendingStep_ = 0;
     if (delta < 0) {
         tab->search()->previous();
     } else {
         tab->search()->next();
     }
     revealActiveMatch();
+}
+
+void SearchBarController::applyPendingStep() {
+    if (pendingStep_ == 0) return;
+    const int delta = pendingStep_;
+    if (context_.readyMarkdownTab() != nullptr) {
+        const ISearchTarget* target = markdownTarget();
+        if (target == nullptr) {
+            pendingStep_ = 0;
+        } else if (target->matchCount() > 0) {
+            step(delta);
+        } else if (!target->searching()) {
+            pendingStep_ = 0; // finished without a match
+        }
+        return;
+    }
+    DocumentTab* tab = context_.readyActiveTab();
+    if (tab == nullptr || tab->search() == nullptr) {
+        pendingStep_ = 0;
+    } else if (!tab->search()->matches().empty()) {
+        step(delta); // notifies again (re-entrant), with pendingStep_ cleared
+    } else if (!tab->search()->searching()) {
+        pendingStep_ = 0;
+    }
 }
 
 void SearchBarController::updateSearchUi() {

@@ -252,3 +252,56 @@ RIVET_TEST(contentValidateTooManyBlocks) {
     edits.textBlocks.push_back(block(kMaxTextBlocksPerPage + 1));
     CHECK(isInvalidArgument(validate(edits, 0)));
 }
+
+RIVET_TEST(contentValidateInvisibleRuns) {
+    const auto run = [](const char* text) {
+        PdfInvisibleTextRun r;
+        r.text = text;
+        r.placement = core::Matrix::translation(10, 20);
+        return r;
+    };
+    PdfPageContentEdits edits;
+    edits.invisibleRuns.push_back(run("word"));
+    CHECK(!edits.empty());
+    CHECK(isInvalidArgument(validate(edits, 0))); // tag missing
+    edits.invisibleTag = 5;
+    CHECK(validate(edits, 0).has_value());
+
+    // The tag must not collide with a block tag.
+    PdfPageContentEdits clash = edits;
+    clash.textBlocks.push_back(block(5));
+    CHECK(isInvalidArgument(validate(clash, 0)));
+
+    // Text: empty, control character, too long.
+    PdfPageContentEdits bad = edits;
+    bad.invisibleRuns[0].text = "";
+    CHECK(isInvalidArgument(validate(bad, 0)));
+    bad = edits;
+    bad.invisibleRuns[0].text = "a\nb";
+    CHECK(isInvalidArgument(validate(bad, 0)));
+    bad = edits;
+    bad.invisibleRuns[0].text = std::string(kMaxInvisibleRunBytes, 'a');
+    CHECK(validate(bad, 0).has_value());
+    bad.invisibleRuns[0].text += 'a';
+    CHECK(isInvalidArgument(validate(bad, 0)));
+
+    // Numbers: font size, horizontal scale, placement.
+    bad = edits;
+    bad.invisibleRuns[0].fontSize = std::nan("");
+    CHECK(isInvalidArgument(validate(bad, 0)));
+    bad = edits;
+    bad.invisibleRuns[0].horizontalScale = kMaxInvisibleHorizontalScale * 2;
+    CHECK(isInvalidArgument(validate(bad, 0)));
+    bad.invisibleRuns[0].horizontalScale = kMinInvisibleHorizontalScale / 2;
+    CHECK(isInvalidArgument(validate(bad, 0)));
+    bad = edits;
+    bad.invisibleRuns[0].placement = core::Matrix::scaling(2, 2);
+    CHECK(isInvalidArgument(validate(bad, 0)));
+
+    // Count.
+    bad = edits;
+    bad.invisibleRuns.assign(kMaxInvisibleRunsPerPage, run("w"));
+    CHECK(validate(bad, 0).has_value());
+    bad.invisibleRuns.push_back(run("w"));
+    CHECK(isInvalidArgument(validate(bad, 0)));
+}

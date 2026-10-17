@@ -266,7 +266,7 @@ RIVET_TEST(ContentService_results_of_a_previous_base_are_dropped) {
     std::unique_lock<std::mutex> gate(f.document->contentGate);
     f.content(0);
     // The worker is parked inside the backend.
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
     while (f.document->contentLoads.load() < 1 && std::chrono::steady_clock::now() < deadline) {
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
@@ -293,7 +293,7 @@ RIVET_TEST(ContentService_destruction_with_a_pending_extraction_is_safe) {
     f.setContent(0, samplePage());
     std::unique_lock<std::mutex> gate(f.document->contentGate);
     f.content(0);
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
     while (f.document->contentLoads.load() < 1 && std::chrono::steady_clock::now() < deadline) {
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }

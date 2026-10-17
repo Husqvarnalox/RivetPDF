@@ -13,6 +13,7 @@
 // Strings (contents, author, ...) are UTF-8 and UNTRUSTED (they come from
 // arbitrary files): never log them, never interpret them.
 
+#include "core/Bitmap.hpp"
 #include "pdf/PdfPageGeometry.hpp"
 
 #include <cstddef>
@@ -38,6 +39,7 @@ enum class PdfAnnotationKind : std::uint8_t {
     Line,      // Rivet line (persisted as /Ink + RivetShape, see ADR-0012)
     Arrow,     // Rivet arrow (idem)
     Stamp,
+    Signature, // Rivet visual signature (persisted as /Stamp + /Name RivetSignature, ADR-0025)
     Other,
 };
 
@@ -85,6 +87,72 @@ inline constexpr std::size_t kMaxInkPointsTotal = 50000;
 inline constexpr std::size_t kMaxContentsBytes = 64 * 1024; // UTF-8 bytes
 inline constexpr std::size_t kMaxAuthorBytes = 1024;
 
+// --- Visual signatures (ADR-0025) -----------------------------------------
+
+enum class PdfSignatureSource : std::uint8_t {
+    Ink,   // strokes drawn on the signature pad
+    Text,  // a typed name set in the bundled serif face (Tinos Regular)
+    Image, // a decoded PNG/JPEG
+};
+
+// The /Name a Rivet visual signature carries (its /Subtype is /Stamp).
+inline constexpr const char* kRivetSignatureName = "RivetSignature";
+
+// Limits of one signature appearance (also the SignatureStore caps).
+inline constexpr std::size_t kMaxSignatureStrokes = 256;
+inline constexpr std::size_t kMaxSignaturePoints = 8000; // all strokes together
+inline constexpr std::size_t kMaxSignatureTextBytes = 256;
+inline constexpr std::uint32_t kMaxSignatureImageSide = 1024;
+// Aspect ratios (width / height) are kept inside this range: a pad stroke
+// that is a flat line still gets a usable box.
+inline constexpr double kMinSignatureAspect = 0.1;
+inline constexpr double kMaxSignatureAspect = 20.0;
+
+// What a signature looks like, independent of where it is placed. Immutable
+// once built and shared between annotations (PdfAnnotationData::signature).
+struct PdfSignatureAppearance {
+    PdfSignatureSource source = PdfSignatureSource::Ink;
+    // Ink: strokes in a box of height 1 and width `aspect` (y-up, origin
+    // bottom-left). `inkWidth` is the pen width as a fraction of the box
+    // height, so the line scales with the placed signature.
+    std::vector<std::vector<PdfPoint>> strokes;
+    double aspect = 1.0;
+    float inkWidth = 0.04F;
+    // Text: UTF-8, <= kMaxSignatureTextBytes, one line.
+    std::string text;
+    // Image: straight-alpha BGRA, each side <= kMaxSignatureImageSide.
+    std::shared_ptr<const core::Bitmap> image;
+};
+
+using PdfSignatureAppearancePtr = std::shared_ptr<const PdfSignatureAppearance>;
+
+// Pad strokes (any y-DOWN coordinate space, e.g. pad-local points) -> an Ink
+// signature: the tight box of the points, padded by half the pen and to the
+// aspect limits, mapped to height 1 (y flipped up). nullopt when there is no
+// point or a limit (kMaxSignatureStrokes / kMaxSignaturePoints, non-finite
+// coordinates) is exceeded.
+std::optional<PdfSignatureAppearance> makeInkSignature(const std::vector<std::vector<PdfPoint>>& padStrokes,
+                                                       double penWidth);
+
+// Width / height of the signature's natural box (ink: `aspect`; text: the
+// set line's advance over its ascent - descent; image: pixel aspect),
+// clamped into [kMinSignatureAspect, kMaxSignatureAspect]; 1 when unknown.
+double signatureAspect(const PdfSignatureAppearance& signature);
+
+// Whether a signature is within its limits and drawable (non-empty strokes
+// / text with at least one glyph / valid image).
+bool isValidSignature(const PdfSignatureAppearance& signature);
+
+// The largest box of `aspect` (content width / height) centered in
+// `available`, where the content is turned `rotation` clockwise quarter
+// turns (the content width then runs along user y for 90/270). Returned in
+// the same space as `available` (normalized).
+PdfBox fitSignatureBox(double aspect, const PdfBox& available, int rotation);
+
+// The typed signature's font size that makes the line exactly fill a box of
+// `width` x `height` (content orientation) without overflowing either side.
+double signatureFontSize(std::string_view text, double width, double height);
+
 // The editable description of one annotation. Which fields are meaningful
 // depends on `kind`:
 //   Highlight/Underline/StrikeOut: quads, color, opacity, contents.
@@ -95,6 +163,8 @@ inline constexpr std::size_t kMaxAuthorBytes = 1024;
 //   Line/Arrow: lineStart, lineEnd, color, opacity, borderWidth (Arrow has
 //           an open arrow head at lineEnd).
 //   Stamp:  rect, stampName, color, rotation, contents.
+//   Signature: rect, signature (the appearance source), color (ink/text),
+//           rotation (like Stamp: reads upright on the page it was placed on).
 // `rect` is ALWAYS the bounding box of the drawn appearance (normalized,
 // left<right, bottom<top) - for markup/ink/line it is derived (see
 // normalizeAnnotation) and is what /Rect is written as.
@@ -113,6 +183,8 @@ struct PdfAnnotationData {
     // Clockwise quarter turns (0/90/180/270) of the appearance INSIDE rect,
     // so a stamp placed on a rotated page reads upright on screen.
     int rotation = 0;
+    // Signature only (null for every other kind).
+    PdfSignatureAppearancePtr signature;
     std::string contents; // UTF-8, <= kMaxContentsBytes
     std::string author;   // /T, UTF-8
     std::string name;     // /NM (unique name; Rivet writes a random UUID)
@@ -206,6 +278,14 @@ struct PdfAppearancePath {
     bool roundJoins = false; // round caps + joins (ink) vs butt/miter
 };
 
+// A raster image (signatures): `bitmap` drawn into `box`, its content turned
+// `rotation` clockwise quarter turns (y-up user space) inside the box.
+struct PdfAppearanceImage {
+    std::shared_ptr<const core::Bitmap> bitmap;
+    PdfBox box;
+    int rotation = 0;
+};
+
 // A single line of text in a standard font, laid out to fit `box` (after
 // rotating the box content by `rotation` clockwise quarter turns, centered).
 struct PdfAppearanceText {
@@ -217,6 +297,7 @@ struct PdfAppearanceText {
 };
 
 struct PdfAppearance {
+    std::vector<PdfAppearanceImage> images; // painted first
     std::vector<PdfAppearancePath> paths; // painted in order, below texts
     std::vector<PdfAppearanceText> texts;
     float opacity = 1.0F; // constant alpha for the whole appearance
@@ -226,7 +307,8 @@ struct PdfAppearance {
 // Note icons, stamp frames, arrow heads, markup bars are all expressed here.
 PdfAppearance buildAppearance(const PdfAnnotationData& data);
 
-// Content stream for an appearance WITHOUT texts (all kinds but Stamp):
+// Content stream for an appearance WITHOUT texts or images (all kinds but
+// Stamp and Signature):
 // pure ASCII PDF operators in user-space coordinates; begins with `/GS gs`
 // when opacity < 1 (the writer sets /CA so PDFium adds that ExtGState).
 std::string appearanceContentStream(const PdfAppearance& appearance);

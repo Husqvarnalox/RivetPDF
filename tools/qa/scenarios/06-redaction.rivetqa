@@ -1,0 +1,34 @@
+# Scenario 6: redaction - mark an area over a word, apply (confirm yes),
+# save, reopen; the word is gone from page 1 (pages 2-4 still have it).
+resize 1280 850
+theme light
+open ${QA_FIX}/sample.pdf
+cmd Content/Redact
+log-state
+# SECRETWORD on page 1: baseline y 630, x 72..~172 at 14 pt.
+dragpage 1 68 645 178 624
+log-state
+shot 06-marked.png
+answer confirm yes
+# A second confirmation asks about removing document metadata.
+answer confirm yes
+cmd Content/Apply Redactions…
+log-state
+shot 06-applied.png
+
+answer save ${QA_WORK}/06-redacted.pdf
+cmd File/Save As…
+log-state
+key cmd+w
+open ${QA_WORK}/06-redacted.pdf
+shot 06-reopened.png
+key cmd+f
+type SECRETWORD
+key return
+key return
+log-state
+# 4 pages had it; only page 1 was redacted.
+assert-find / 3
+shot 06-search.png
+key escape
+quit

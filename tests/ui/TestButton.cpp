@@ -6,6 +6,7 @@
 #include "core/geometry/Rect.hpp"
 #include "core/geometry/Size.hpp"
 #include "ui/Button.hpp"
+#include "ui/Theme.hpp"
 #include "ui/UiTypes.hpp"
 
 #include <algorithm>
@@ -38,10 +39,10 @@ bool sameColor(const Color& a, const Color& b) {
            std::fabs(a.b - b.b) <= 1e-9 && std::fabs(a.a - b.a) <= 1e-9;
 }
 
-// Matches the fill constants used by Button::paintSelf.
-constexpr Color kNormalFill = Color::rgba(231.0 / 255.0, 231.0 / 255.0, 231.0 / 255.0, 1.0); // #E7E7E7
-constexpr Color kHoverFill = Color::rgba(220.0 / 255.0, 220.0 / 255.0, 220.0 / 255.0, 1.0); // #DCDCDC
-constexpr Color kPressedFill = Color::rgba(201.0 / 255.0, 201.0 / 255.0, 201.0 / 255.0, 1.0); // #C9C9C9
+// The theme tokens Button::paintSelf uses (ADR-0033).
+const Color kNormalFill = rivet::ui::colors().controlFill;
+const Color kHoverFill = rivet::ui::colors().controlFillHover;
+const Color kPressedFill = rivet::ui::colors().controlFillPressed;
 
 } // namespace
 
@@ -118,11 +119,11 @@ RIVET_TEST(buttonPaintsPressAndHoverStates) {
     button.setFrame(Rect{0.0, 0.0, 80.0, 28.0});
     FakePaintContext context;
 
-    // Normal: filled rounded rect, subtle border, centered label.
+    // Normal: filled rounded rect (borderless, ADR-0033), centered label.
     button.paint(context);
     CHECK_EQ(context.roundedFills.size(), std::size_t{1});
     CHECK(sameColor(context.roundedFills.back().color, kNormalFill));
-    CHECK_EQ(context.strokes.size(), std::size_t{1});
+    CHECK_EQ(context.strokes.size(), std::size_t{0});
     CHECK_EQ(context.texts.size(), std::size_t{1});
     CHECK_EQ(context.texts.back().text, "Go");
     CHECK(context.texts.back().align == rivet::ui::TextAlign::Center);

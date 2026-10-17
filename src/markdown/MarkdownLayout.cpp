@@ -2,6 +2,9 @@
 #include "markdown/MarkdownLayout.hpp"
 
 #include "markdown/Utf8.hpp"
+#include "markdown/math/MathScene.hpp"
+#include "markdown/mermaid/DiagramScene.hpp"
+#include "markdown/mermaid/Mermaid.hpp"
 
 #include <algorithm>
 #include <bit>
@@ -18,6 +21,11 @@ constexpr std::size_t kNpos = static_cast<std::size_t>(-1);
 constexpr std::size_t kMaxCacheEntries = 400'000;
 constexpr int kMaxInlineRecursion = 128;
 constexpr int kMaxBlockRecursion = 256;
+// Rendered diagrams/formulas kept by a MeasureCache (entries and key bytes).
+constexpr std::size_t kMaxCachedGraphics = 4096;
+constexpr std::size_t kMaxCachedGraphicBytes = 32u * 1024u * 1024u;
+// The body size the default mermaid::DiagramStyle is designed for.
+constexpr double kDiagramDesignBodySize = 15.0;
 
 std::uint64_t styleKey(const TextStyle& s) {
     const auto size = std::bit_cast<std::uint32_t>(static_cast<float>(s.size));
@@ -67,6 +75,23 @@ StyleMetrics MeasureCache::styleMetrics(const ITextMeasurer& m, const TextStyle&
 void MeasureCache::clear() {
     widths_.clear();
     styles_.clear();
+    graphics_.clear();
+    graphicBytes_ = 0;
+}
+
+std::shared_ptr<const CachedGraphic> MeasureCache::graphic(const std::string& key) const {
+    const auto it = graphics_.find(key);
+    return it != graphics_.end() ? it->second : nullptr;
+}
+
+void MeasureCache::storeGraphic(std::string key, std::shared_ptr<const CachedGraphic> graphic) {
+    ++graphicsRendered_;
+    if (graphics_.size() >= kMaxCachedGraphics || graphicBytes_ + key.size() > kMaxCachedGraphicBytes) {
+        graphics_.clear();
+        graphicBytes_ = 0;
+    }
+    graphicBytes_ += key.size();
+    graphics_.insert_or_assign(std::move(key), std::move(graphic));
 }
 
 namespace {
@@ -74,7 +99,7 @@ namespace {
 // ------------------------------------------------------------------- engine
 
 struct Token {
-    enum class Type : std::uint8_t { Word, Space, HardBreak, Image };
+    enum class Type : std::uint8_t { Word, Space, HardBreak, Image, Math };
     Type type = Type::Word;
     std::string_view text;
     TextStyle style;
@@ -82,7 +107,74 @@ struct Token {
     double width = 0.0;
     SourceRange src;
     bool exact = false; // src.size() == text.size() and maps 1:1
+    // Provenance of Word/Space tokens cut from a Text/Code inline: the token
+    // covers [at, at+len) of the inline's text, mapped through `spans`.
+    // Other tokens (images, soft breaks, unmapped text) are atomic over src.
+    const std::vector<TextSpan>* spans = nullptr;
+    std::uint32_t at = 0;
+    std::uint32_t len = 0;
+    std::string_view raw; // Space tokens: the whitespace as decoded (" ", "\t", "  ")
+    // Math tokens: the formula, its scale and unscaled extents; `text` views
+    // `mathSource` (the delimited source, owned here so tokens stay valid).
+    std::shared_ptr<const math::MathScene> math;
+    std::shared_ptr<const std::string> mathSource;
+    double scale = 1.0;
+    double ascent = 0.0;
+    double descent = 0.0;
+    bool display = false;
 };
+
+// IMathMeasurer over the layout's text measurer when none is given: every
+// font role in the body face, font-wide extents.
+class TextMathMeasurer final : public math::IMathMeasurer {
+public:
+    explicit TextMathMeasurer(const ITextMeasurer& m) : m_(m) {}
+    math::MathGlyphMetrics measure(std::string_view utf8, math::MathFont font, double size) const override {
+        TextStyle style;
+        style.size = size;
+        style.bold = font == math::MathFont::TextBold;
+        const TextMetrics t = m_.measure(utf8, style);
+        return {t.width, t.ascent, t.descent};
+    }
+
+private:
+    const ITextMeasurer& m_;
+};
+
+mermaid::DiagramStyle scaledDiagramStyle(double k) {
+    mermaid::DiagramStyle s;
+    for (double* v : {&s.fontSize, &s.margin, &s.nodePadX, &s.nodePadY, &s.nodeSep, &s.rankSep, &s.edgeSep,
+                      &s.clusterPad, &s.strokeWidth, &s.thickStrokeWidth, &s.arrowLength, &s.arrowWidth,
+                      &s.actorGap, &s.messageGap, &s.noteWidthMin, &s.selfLoopWidth}) {
+        *v *= k;
+    }
+    return s;
+}
+
+void appendKeyDouble(std::string& key, double v) {
+    const auto bits = std::bit_cast<std::uint64_t>(v);
+    key.append(reinterpret_cast<const char*>(&bits), sizeof bits);
+}
+
+// Source offset of inline-text position x. A position that starts a piece
+// maps to that piece's start (so a caret before a word lands before its
+// source bytes); a position inside an exact piece maps 1:1; inside an atomic
+// piece or past the last piece, to the piece's end.
+std::size_t mapTextPos(const std::vector<TextSpan>& spans, std::size_t x, std::size_t fallback) {
+    if (spans.empty()) return fallback;
+    auto it = std::upper_bound(spans.begin(), spans.end(), x,
+                               [](std::size_t v, const TextSpan& sp) { return v < sp.textEnd(); });
+    if (it == spans.end()) return spans.back().sourceEnd();
+    if (x < it->text) return it->source;
+    if (x == it->text) return it->source;
+    if (it->exact()) return it->source + (x - it->text);
+    return it->sourceEnd();
+}
+
+std::size_t tokenSourceStart(const Token& t) {
+    if (t.spans != nullptr) return mapTextPos(*t.spans, t.at, t.src.start);
+    return t.src.start;
+}
 
 struct Ctx {
     double x = 0.0;
@@ -94,8 +186,8 @@ struct Ctx {
 class Engine {
 public:
     Engine(const MarkdownDocument& doc, double viewportWidth, const ITextMeasurer& m, const IImageSizeProvider* images,
-           const Typography& t, MeasureCache& cache, MarkdownLayout& out)
-        : doc_(doc), viewport_(viewportWidth), m_(m), images_(images), t_(t), cache_(cache), out_(out) {}
+           const Typography& t, MeasureCache& cache, MarkdownLayout& out, const math::IMathMeasurer& mm)
+        : doc_(doc), viewport_(viewportWidth), m_(m), images_(images), t_(t), cache_(cache), out_(out), mm_(mm) {}
 
     void run() {
         out_.viewportWidth = viewport_;
@@ -149,6 +241,12 @@ private:
             tok.link = link;
             tok.exact = exact;
             tok.src = exact ? SourceRange{in.range.start + a, in.range.start + i} : in.range;
+            tok.raw = t.substr(a, i - a);
+            if (!in.spans.empty()) {
+                tok.spans = &in.spans;
+                tok.at = static_cast<std::uint32_t>(a);
+                tok.len = static_cast<std::uint32_t>(i - a);
+            }
             if (ws) {
                 tok.type = Token::Type::Space;
                 tok.text = " ";
@@ -215,6 +313,33 @@ private:
                 toks.push_back(tok);
                 break;
             }
+            case InlineKind::Math: {
+                const std::string delimiter = in.display ? "$$" : "$";
+                const std::shared_ptr<const CachedGraphic> g = typesetCached(in.text, in.display, base.size);
+                if (g->math == nullptr) { // over the engine's limits: the source as text
+                    auto literal = std::make_unique<Inline>(in);
+                    literal->kind = InlineKind::Text;
+                    literal->spans.clear();
+                    literal->text = delimiter + in.text + delimiter;
+                    literals_.push_back(std::move(literal));
+                    tokenizeText(*literals_.back(), base, link, toks);
+                    break;
+                }
+                Token tok;
+                tok.type = Token::Type::Math;
+                tok.mathSource = std::make_shared<const std::string>(delimiter + in.text + delimiter);
+                tok.text = *tok.mathSource;
+                tok.style = base;
+                tok.link = link;
+                tok.math = g->math;
+                tok.display = in.display;
+                tok.width = g->math->width;
+                tok.ascent = g->math->ascent;
+                tok.descent = g->math->descent;
+                tok.src = in.range;
+                toks.push_back(std::move(tok));
+                break;
+            }
             case InlineKind::SoftBreak: {
                 Token tok;
                 tok.type = Token::Type::Space;
@@ -235,6 +360,179 @@ private:
                 break;
             }
             }
+        }
+    }
+
+    // ------------------------------------------------- diagrams and math
+    std::shared_ptr<const CachedGraphic> typesetCached(std::string_view tex, bool display, double size) {
+        std::string key(display ? "D" : "I");
+        appendKeyDouble(key, size);
+        key.append(tex);
+        if (std::shared_ptr<const CachedGraphic> hit = cache_.graphic(key)) return hit;
+        auto g = std::make_shared<CachedGraphic>();
+        math::MathOptions options;
+        options.fontSize = size;
+        auto scene = math::typesetMath(tex, display, mm_, options);
+        if (scene && std::isfinite(scene->width) && std::isfinite(scene->ascent) && std::isfinite(scene->descent)) {
+            g->math = std::make_shared<const math::MathScene>(std::move(*scene));
+        } else {
+            g->error = scene ? std::string("the formula has no finite size") : scene.error();
+        }
+        cache_.storeGraphic(std::move(key), g);
+        return g;
+    }
+    std::shared_ptr<const CachedGraphic> diagramCached(std::string_view source) {
+        const double k = t_.bodySize / kDiagramDesignBodySize;
+        std::string key("G");
+        appendKeyDouble(key, k);
+        key.append(source);
+        if (std::shared_ptr<const CachedGraphic> hit = cache_.graphic(key)) return hit;
+        auto g = std::make_shared<CachedGraphic>();
+        auto scene = mermaid::renderMermaid(source, m_, scaledDiagramStyle(k));
+        if (scene && std::isfinite(scene->width) && std::isfinite(scene->height) && scene->width > 0.0 &&
+            scene->height > 0.0) {
+            g->diagram = std::make_shared<const mermaid::DiagramScene>(std::move(*scene));
+        } else {
+            g->error = scene ? std::string("the diagram is empty") : scene.error();
+        }
+        cache_.storeGraphic(std::move(key), g);
+        return g;
+    }
+    std::uint32_t addGraphic(LayoutGraphic g) {
+        out_.graphics.push_back(std::move(g));
+        return static_cast<std::uint32_t>(out_.graphics.size());
+    }
+    // A Mermaid / display-math block: the rendered graphic, centered and
+    // scaled down to fit; on failure the source as a code block below a notice.
+    bool layoutSpecial(const Block& b, const Ctx& ctx, double top, double& bottom) {
+        const bool diagram = b.special == SpecialBlock::Mermaid;
+        const std::shared_ptr<const CachedGraphic> g =
+            diagram ? diagramCached(b.text) : typesetCached(trimmedTex(b.text), true, t_.bodySize);
+        double w = 0.0;
+        double h = 0.0;
+        double gap = 0.0;
+        if (g->diagram != nullptr) {
+            w = g->diagram->width;
+            h = g->diagram->height;
+        } else if (g->math != nullptr) {
+            w = g->math->width;
+            h = g->math->ascent + g->math->descent;
+            gap = t_.displayMathGap;
+        } else {
+            const std::string what = diagram ? "Diagram not rendered: " : "Formula not typeset: ";
+            return layoutCode(b, ctx, top, bottom, what + g->error);
+        }
+        double scale = 1.0;
+        if (w > ctx.width) scale = ctx.width / w;
+        if (t_.maxGraphicHeight > 0.0 && h * scale > t_.maxGraphicHeight) scale = t_.maxGraphicHeight / h;
+        if (!(scale > 0.0) || !std::isfinite(scale)) scale = 1.0;
+        const double sw = w * scale;
+        const double sh = h * scale;
+        const double x = ctx.x + std::max(0.0, (ctx.width - sw) * 0.5);
+        LayoutGraphic lg;
+        lg.diagram = g->diagram;
+        lg.math = g->math;
+        lg.scale = scale;
+        lg.blockId = b.id;
+        lg.display = true;
+        lg.bounds = core::Rect(x, top + gap, sw, sh);
+        lg.origin = g->math != nullptr ? core::Point{x, top + gap + g->math->ascent * scale} : core::Point{x, top + gap};
+        const std::size_t idx = out_.blocks.size();
+        LayoutBlock& lb = beginLeaf(b, LayoutBlockKind::Graphic);
+        lb.graphic = addGraphic(std::move(lg));
+        const double height = sh + 2.0 * gap;
+        endLeaf(idx, core::Rect(ctx.x, top, ctx.width, height), ctx.width);
+        bottom = top + height;
+        return true;
+    }
+    static std::string_view trimmedTex(std::string_view tex) {
+        while (!tex.empty() && isWs(tex.front())) tex.remove_prefix(1);
+        while (!tex.empty() && isWs(tex.back())) tex.remove_suffix(1);
+        return tex;
+    }
+    // `text` shortened with an ellipsis to fit `width` in `style`.
+    std::string fitted(std::string text, const TextStyle& style, double width) {
+        if (cache_.width(m_, text, style) <= width) return text;
+        const std::string ellipsis = "\u2026";
+        while (!text.empty()) {
+            std::size_t cut = text.size() - 1;
+            while (cut > 0 && (static_cast<unsigned char>(text[cut]) & 0xC0u) == 0x80u) --cut;
+            text.resize(cut);
+            if (cache_.width(m_, text + ellipsis, style) <= width) break;
+        }
+        return text + ellipsis;
+    }
+
+    // ------------------------------------------------------- provenance
+    void pushSpan(TextSpan span) {
+        if (!out_.runSpans.empty()) {
+            TextSpan& last = out_.runSpans.back();
+            // Merge only within the run being built (callers start a run's
+            // range after the previous run's last span).
+            if (out_.runs.size() > 0 && out_.runSpans.size() > out_.runs.back().spanBegin && last.exact() &&
+                span.exact() && last.textEnd() == span.text && last.sourceEnd() == span.source) {
+                last.textLength += span.textLength;
+                last.sourceLength += span.sourceLength;
+                return;
+            }
+        }
+        out_.runSpans.push_back(span);
+    }
+    // Provenance of tok.text[from, to) placed at run text offset `runOffset`.
+    void appendSpans(const Token& tok, std::size_t from, std::size_t to, std::uint32_t runOffset) {
+        if (to <= from) return;
+        const auto length = static_cast<std::uint32_t>(to - from);
+        if (tok.spans == nullptr || tok.type != Token::Type::Word) {
+            TextSpan sp;
+            sp.text = runOffset;
+            sp.textLength = length;
+            if (tok.spans != nullptr) { // collapsed whitespace inside a text inline
+                const std::size_t s = mapTextPos(*tok.spans, tok.at, tok.src.start);
+                const std::size_t e = mapTextPos(*tok.spans, static_cast<std::size_t>(tok.at) + tok.len, s);
+                sp.source = s;
+                sp.sourceLength = static_cast<std::uint32_t>(e >= s ? e - s : 0);
+                sp.opaque = tok.raw != " ";
+            } else {
+                if (tok.src.empty() && tok.type == Token::Type::Word) return; // unmapped
+                sp.source = tok.src.start;
+                sp.sourceLength = static_cast<std::uint32_t>(tok.src.size());
+                sp.opaque = tok.type != Token::Type::Word; // soft breaks, images
+            }
+            pushSpan(sp);
+            return;
+        }
+        const std::vector<TextSpan>& spans = *tok.spans;
+        const std::size_t lo = static_cast<std::size_t>(tok.at) + from;
+        const std::size_t hi = static_cast<std::size_t>(tok.at) + to;
+        auto it = std::upper_bound(spans.begin(), spans.end(), lo,
+                                   [](std::size_t v, const TextSpan& sp) { return v < sp.textEnd(); });
+        for (; it != spans.end() && it->text < hi; ++it) {
+            const std::size_t cs = std::max<std::size_t>(it->text, lo);
+            const std::size_t ce = std::min<std::size_t>(it->textEnd(), hi);
+            if (ce <= cs) continue;
+            TextSpan sp;
+            sp.text = runOffset + static_cast<std::uint32_t>(cs - lo);
+            sp.textLength = static_cast<std::uint32_t>(ce - cs);
+            if (it->exact()) {
+                sp.source = it->source + (cs - it->text);
+                sp.sourceLength = sp.textLength;
+            } else {
+                sp.source = it->source;
+                sp.sourceLength = it->sourceLength;
+                sp.opaque = true;
+            }
+            pushSpan(sp);
+        }
+    }
+    // A soft break's source runs to the next token's first byte (it covers the
+    // next line's container prefix too), so deleting the rendered space joins
+    // the lines cleanly.
+    static void extendSoftBreaks(std::vector<Token>& toks) {
+        for (std::size_t k = 0; k + 1 < toks.size(); ++k) {
+            Token& t = toks[k];
+            if (t.type != Token::Type::Space || t.spans != nullptr || t.src.empty()) continue;
+            const std::size_t next = tokenSourceStart(toks[k + 1]);
+            if (next > t.src.end) t.src.end = next;
         }
     }
 
@@ -270,10 +568,13 @@ private:
         };
 
         const auto place = [&](std::string_view text, const TextStyle& st, std::uint32_t link, bool image, double w,
-                               SourceRange src) {
+                               SourceRange src, const Token& tok, std::size_t from, std::size_t to) {
+            const bool atom = image || tok.type == Token::Type::Math;
             if (out_.runs.size() > runStart) {
                 LayoutRun& last = out_.runs.back();
-                if (last.style == st && last.link == link && !last.isImage && !image) {
+                if (last.style == st && last.link == link && !last.isImage && last.graphic == 0 && !atom) {
+                    appendSpans(tok, from, to, static_cast<std::uint32_t>(last.text.size()));
+                    last.spanEnd = static_cast<std::uint32_t>(out_.runSpans.size());
                     last.text.append(text);
                     last.width += w;
                     last.source = unite(last.source, src);
@@ -284,6 +585,9 @@ private:
                 }
             }
             LayoutRun& r = out_.runs.emplace_back();
+            r.spanBegin = static_cast<std::uint32_t>(out_.runSpans.size());
+            appendSpans(tok, from, to, 0);
+            r.spanEnd = static_cast<std::uint32_t>(out_.runSpans.size());
             r.text.assign(text);
             r.style = st;
             r.link = link;
@@ -291,6 +595,16 @@ private:
             r.x = x + used;
             r.width = w;
             r.source = src;
+            if (tok.type == Token::Type::Math) {
+                LayoutGraphic g;
+                g.math = tok.math;
+                g.scale = tok.scale;
+                g.display = tok.display;
+                g.blockId = blockId_;
+                r.graphic = addGraphic(std::move(g));
+                asc = std::max(asc, tok.ascent * tok.scale);
+                desc = std::max(desc, tok.descent * tok.scale);
+            }
             used += w;
             noteStyle(st);
             lineHasContent = true;
@@ -317,7 +631,13 @@ private:
                 r.baseline = baseline;
                 r.x += shift;
                 r.line = lineIndex;
-                r.exactSource = !r.source.empty() && r.source.size() == r.text.size();
+                r.exactSource = !r.source.empty() && r.source.size() == r.text.size() && r.graphic == 0;
+                if (r.graphic != 0) {
+                    LayoutGraphic& g = out_.graphics[r.graphic - 1];
+                    g.origin = core::Point{r.x, baseline};
+                    g.bounds = core::Rect(r.x, baseline - g.math->ascent * g.scale, r.width,
+                                          (g.math->ascent + g.math->descent) * g.scale);
+                }
             }
             LayoutLine& ln = out_.lines.emplace_back();
             ln.top = y;
@@ -350,7 +670,7 @@ private:
                     SourceRange src = tok.src;
                     if (tok.exact) src = {tok.src.start + fragStart, tok.src.start + end};
                     place(text.substr(fragStart, end - fragStart), tok.style, tok.link, tok.type == Token::Type::Image,
-                          fragWidth, src);
+                          fragWidth, src, tok, fragStart, end);
                 }
                 fragStart = end;
                 fragWidth = 0.0;
@@ -380,19 +700,31 @@ private:
                 finishLine(LineEnd::HardBreak, true);
                 break;
             case Token::Type::Word:
-            case Token::Type::Image: {
+            case Token::Type::Image:
+            case Token::Type::Math: {
                 const bool image = tok.type == Token::Type::Image;
                 const double gap = (lineHasContent && hasPending) ? pending.width : 0.0;
                 if (lineHasContent && used + gap + tok.width > width + eps) finishLine(LineEnd::Wrap, false);
+                if (tok.type == Token::Type::Math && tok.width > width + eps) {
+                    // A formula wider than a whole line: scaled down to fit it.
+                    Token scaled = tok;
+                    scaled.scale = width / tok.width;
+                    scaled.width = width;
+                    hasPending = false;
+                    place(scaled.text, scaled.style, scaled.link, false, scaled.width, scaled.src, scaled, 0,
+                          scaled.text.size());
+                    break;
+                }
                 if (!lineHasContent && tok.width > width + eps) {
                     placeLongWord(tok);
                     break;
                 }
                 if (lineHasContent && hasPending) {
-                    place(pending.text, pending.style, pending.link, false, pending.width, pending.src);
+                    place(pending.text, pending.style, pending.link, false, pending.width, pending.src, pending, 0,
+                          pending.text.size());
                 }
                 hasPending = false;
-                place(tok.text, tok.style, tok.link, image, tok.width, tok.src);
+                place(tok.text, tok.style, tok.link, image, tok.width, tok.src, tok, 0, tok.text.size());
                 break;
             }
             }
@@ -430,6 +762,7 @@ private:
         lb.blockId = b.id;
         lb.kind = kind;
         lb.source = b.range;
+        lb.special = b.special;
         lb.lineBegin = lb.lineEnd = static_cast<std::uint32_t>(out_.lines.size());
         lb.cellBegin = lb.cellEnd = static_cast<std::uint32_t>(out_.tableCells.size());
         lb.decoBegin = lb.decoEnd = static_cast<std::uint32_t>(out_.decorations.size());
@@ -455,6 +788,8 @@ private:
         case BlockKind::Heading:
             return layoutText(b, ctx, top, bottom);
         case BlockKind::CodeBlock:
+            if (b.special != SpecialBlock::None) return layoutSpecial(b, ctx, top, bottom);
+            return layoutCode(b, ctx, top, bottom);
         case BlockKind::HtmlBlock:
             return layoutCode(b, ctx, top, bottom);
         case BlockKind::HorizontalRule:
@@ -477,7 +812,9 @@ private:
         std::vector<Token> toks;
         tokenize(b.inlines, base, 0, toks, 0);
         if (toks.empty()) return false;
+        extendSoftBreaks(toks);
         const std::size_t idx = out_.blocks.size();
+        blockId_ = b.id;
         LayoutBlock& lb = beginLeaf(b, heading ? LayoutBlockKind::Heading : LayoutBlockKind::Paragraph);
         lb.headingLevel = heading ? b.level : 0;
         const FlowResult r = flow(toks, ctx.x, top, ctx.width, base, ColumnAlign::Default, LineEnd::BlockEnd);
@@ -493,7 +830,8 @@ private:
     }
 
     // Splits code text into lines (tabs expanded) and lays them out without wrapping.
-    bool layoutCode(const Block& b, const Ctx& ctx, double top, double& bottom) {
+    // `notice` (non-empty): a one-line Notice decoration above the code box.
+    bool layoutCode(const Block& b, const Ctx& ctx, double blockTop, double& bottom, const std::string& notice = {}) {
         const bool html = b.kind == BlockKind::HtmlBlock;
         TextStyle style;
         style.kind = TextKind::Code;
@@ -505,6 +843,22 @@ private:
 
         const std::size_t idx = out_.blocks.size();
         beginLeaf(b, html ? LayoutBlockKind::Html : LayoutBlockKind::Code);
+        double top = blockTop;
+        if (!notice.empty()) {
+            TextStyle ns;
+            ns.size = t_.noticeSize;
+            ns.italic = true;
+            const StyleMetrics nm = cache_.styleMetrics(m_, ns);
+            const double nh = lineHeightFor(ns.size, nm);
+            Decoration& d = out_.decorations.emplace_back();
+            d.kind = DecorationKind::Notice;
+            d.text = fitted(notice, ns, ctx.width);
+            d.style = ns;
+            d.rect = core::Rect(ctx.x, top, std::min(ctx.width, cache_.width(m_, d.text, ns)), nh);
+            d.baseline = top + (nh - (nm.ascent + nm.descent)) * 0.5 + nm.ascent;
+            d.blockId = b.id;
+            top += nh + t_.tightGap;
+        }
 
         std::string_view text = b.text;
         if (!text.empty() && text.back() == '\n') text.remove_suffix(1);
@@ -523,6 +877,7 @@ private:
             }
             std::string_view line = text.substr(pos, nl - pos);
             if (!line.empty() && line.back() == '\r') line.remove_suffix(1);
+            const std::size_t lineStart = pos;
             pos = nl + 1;
 
             std::string_view shown = line;
@@ -548,7 +903,10 @@ private:
             const double w = shown.empty() ? 0.0 : cache_.width(m_, shown, style);
             const auto lineIndex = static_cast<std::uint32_t>(out_.lines.size());
             const auto runIndex = static_cast<std::uint32_t>(out_.runs.size());
-            if (!shown.empty()) {
+            // An empty line gets an empty run when its position in the source
+            // is known, so the editor has a caret stop there.
+            const bool emptyMapped = shown.empty() && !b.textSpans.empty() && lineStart < b.text.size();
+            if (!shown.empty() || emptyMapped) {
                 LayoutRun& r = out_.runs.emplace_back();
                 r.text.assign(shown);
                 r.style = style;
@@ -556,9 +914,12 @@ private:
                 r.width = w;
                 r.line = lineIndex;
                 r.source = b.range;
+                r.spanBegin = static_cast<std::uint32_t>(out_.runSpans.size());
+                appendCodeLineSpans(b.textSpans, line, lineStart);
+                out_.runs.back().spanEnd = static_cast<std::uint32_t>(out_.runSpans.size());
             }
             const double baseline = y + (lineHeight - (sm.ascent + sm.descent)) * 0.5 + sm.ascent;
-            if (!shown.empty()) out_.runs.back().baseline = baseline;
+            if (runIndex < out_.runs.size()) out_.runs.back().baseline = baseline;
             LayoutLine& ln = out_.lines.emplace_back();
             ln.top = y;
             ln.height = lineHeight;
@@ -577,9 +938,76 @@ private:
         d.kind = DecorationKind::CodeBackground;
         d.rect = rect;
         d.blockId = b.id;
-        endLeaf(idx, rect, std::max(ctx.width, maxWidth + 2.0 * pad));
+        endLeaf(idx, core::Rect(ctx.x, blockTop, ctx.width, top + height - blockTop),
+                std::max(ctx.width, maxWidth + 2.0 * pad));
         bottom = top + height;
         return true;
+    }
+
+    // Provenance of one code line (block text [lineStart, lineStart+line.size()))
+    // as drawn: tabs expand to spaces (atomic), everything else maps through
+    // the block's spans. An empty line gets one empty span at its position.
+    void appendCodeLineSpans(const std::vector<TextSpan>& spans, std::string_view line, std::size_t lineStart) {
+        if (line.empty()) {
+            TextSpan sp;
+            sp.source = mapTextPos(spans, lineStart, 0);
+            out_.runSpans.push_back(sp);
+            return;
+        }
+        const std::size_t tab = static_cast<std::size_t>(std::max(1, t_.tabSize));
+        std::size_t col = 0;   // column in the shown text
+        std::size_t shown = 0; // byte offset in the shown text
+        std::size_t i = 0;
+        while (i < line.size()) {
+            const std::size_t abs = lineStart + i;
+            auto it = std::upper_bound(spans.begin(), spans.end(), abs,
+                                       [](std::size_t v, const TextSpan& sp) { return v < sp.textEnd(); });
+            if (line[i] == '\t') {
+                const std::size_t n = tab - (col % tab);
+                TextSpan sp;
+                sp.text = static_cast<std::uint32_t>(shown);
+                sp.textLength = static_cast<std::uint32_t>(n);
+                sp.source = mapTextPos(spans, abs, 0);
+                sp.sourceLength = (it != spans.end() && it->text <= abs && it->exact()) ? 1u : 0u;
+                sp.opaque = true;
+                out_.runSpans.push_back(sp);
+                col += n;
+                shown += n;
+                ++i;
+                continue;
+            }
+            // A stretch without tabs inside one piece (or an unmapped gap).
+            std::size_t end = line.size();
+            const std::size_t tabAt = line.find('\t', i);
+            if (tabAt != std::string_view::npos) end = tabAt;
+            if (it != spans.end() && it->text <= abs) {
+                end = std::min(end, it->textEnd() - lineStart);
+            } else if (it != spans.end()) {
+                end = std::min(end, it->text - lineStart);
+            }
+            if (end <= i) end = i + 1;
+            std::size_t cps = 0;
+            for (std::size_t k = i; k < end; k += utf8::decode(line, k).length) ++cps;
+            TextSpan sp;
+            sp.text = static_cast<std::uint32_t>(shown);
+            sp.textLength = static_cast<std::uint32_t>(end - i);
+            if (it != spans.end() && it->text <= abs) {
+                if (it->exact()) {
+                    sp.source = it->source + (abs - it->text);
+                    sp.sourceLength = sp.textLength;
+                } else {
+                    sp.source = it->source;
+                    sp.sourceLength = it->sourceLength;
+                }
+            } else {
+                sp.source = mapTextPos(spans, abs, 0);
+                sp.sourceLength = 0;
+            }
+            pushSpan(sp);
+            shown += end - i;
+            col += cps;
+            i = end;
+        }
     }
 
     bool layoutRule(const Block& b, const Ctx& ctx, double top, double& bottom) {
@@ -706,6 +1134,7 @@ private:
         }
 
         const std::size_t idx = out_.blocks.size();
+        blockId_ = b.id;
         beginLeaf(b, LayoutBlockKind::Table);
         const StyleMetrics minMetrics = cache_.styleMetrics(m_, baseStyle(TextKind::Table));
         const double minRowHeight = lineHeightFor(t_.tableSize, minMetrics) + 2.0 * padY;
@@ -856,19 +1285,25 @@ private:
     const Typography& t_;
     MeasureCache& cache_;
     MarkdownLayout& out_;
+    const math::IMathMeasurer& mm_;
     double maxRight_ = 0.0;
+    std::uint32_t blockId_ = 0; // block whose inlines are being placed
+    // Literal stand-ins for formulas over the engine's limits (tokens view their text).
+    std::vector<std::unique_ptr<Inline>> literals_;
 };
 
 } // namespace
 
 MarkdownLayout layoutMarkdown(const MarkdownDocument& doc, double viewportWidth, const ITextMeasurer& measurer,
-                              const IImageSizeProvider* images, const Typography& typography, MeasureCache* cache) {
+                              const IImageSizeProvider* images, const Typography& typography, MeasureCache* cache,
+                              const math::IMathMeasurer* math) {
     MarkdownLayout out;
     MeasureCache local;
     MeasureCache& c = cache != nullptr ? *cache : local;
+    const TextMathMeasurer fallbackMath(measurer);
     // Rough reservations: avoids repeated growth on large documents.
     out.blocks.reserve(doc.blockCount);
-    Engine(doc, viewportWidth, measurer, images, typography, c, out).run();
+    Engine(doc, viewportWidth, measurer, images, typography, c, out, math != nullptr ? *math : fallbackMath).run();
     return out;
 }
 
@@ -923,6 +1358,7 @@ namespace {
 double prefixWidth(const LayoutRun& r, std::size_t offset, const ITextMeasurer& m) {
     if (offset == 0) return 0.0;
     if (offset >= r.text.size()) return r.width;
+    if (r.graphic != 0) return 2 * offset >= r.text.size() ? r.width : 0.0; // an atom: its edges only
     return std::min(r.width, m.measure(std::string_view(r.text).substr(0, offset), r.style).width);
 }
 
@@ -1011,6 +1447,8 @@ HitResult MarkdownLayout::hitTest(core::Point p, const ITextMeasurer& measurer) 
         offset = 0;
     } else if (dx >= run.width) {
         offset = run.text.size();
+    } else if (run.graphic != 0) {
+        offset = 2.0 * dx < run.width ? 0 : run.text.size(); // an atom: the nearer edge
     } else {
         // Caret between code points: binary search over boundaries.
         std::vector<std::size_t> bounds;

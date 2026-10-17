@@ -86,6 +86,7 @@ struct PageContentView {
     bool truncated = false;     // > kMaxContentObjectsPerPage: nothing editable
     bool regenerationSafe = true;
     std::string regenerationIssue;
+    bool hasEmbeddedThumbnail = false; // the page has a /Thumb Rivet cannot remove
     // Top-level objects of the SOURCE page (the bound content edits are
     // validated against, pdf::validate). 0 until loaded or when truncated.
     std::size_t sourceObjectCount = 0;

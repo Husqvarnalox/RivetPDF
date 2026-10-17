@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 #include "app/CropTool.hpp"
+#include "ui/Theme.hpp"
 
 #include <algorithm>
 #include <array>
@@ -9,12 +10,6 @@
 namespace rivet::app {
 namespace {
 
-constexpr ui::Color kDimColor = ui::Color::rgba(0.0, 0.0, 0.0, 0.35);
-constexpr ui::Color kMediaOutline = ui::Color::rgba(0.25, 0.25, 0.25, 0.8);
-constexpr ui::Color kCropOutline = ui::Color::rgba(0.20, 0.45, 0.95, 1.0);
-constexpr ui::Color kHandleFill = ui::Color::white();
-constexpr ui::Color kBarFill = ui::Color::rgba(0.15, 0.15, 0.15, 0.88);
-constexpr ui::Color kBarText = ui::Color::white();
 constexpr ui::Font kBarFont{12.0, ui::Font::Weight::Semibold};
 
 bool isFiniteRect(const core::Rect& rect) { return rect.isFinite(); }
@@ -280,18 +275,18 @@ void CropTool::paint(const ui::ViewportToolHost& host, ui::PaintContext& context
     // Dim the media area outside the crop (four bands), outline both.
     context.fillRect(core::Rect{media.minX(), media.minY(), media.size.width,
                                 std::max(0.0, crop.minY() - media.minY())},
-                     kDimColor);
+                     ui::colors().scrim);
     context.fillRect(core::Rect{media.minX(), crop.maxY(), media.size.width,
                                 std::max(0.0, media.maxY() - crop.maxY())},
-                     kDimColor);
+                     ui::colors().scrim);
     context.fillRect(core::Rect{media.minX(), crop.minY(), std::max(0.0, crop.minX() - media.minX()),
                                 crop.size.height},
-                     kDimColor);
+                     ui::colors().scrim);
     context.fillRect(core::Rect{crop.maxX(), crop.minY(), std::max(0.0, media.maxX() - crop.maxX()),
                                 crop.size.height},
-                     kDimColor);
-    context.strokeRect(media, kMediaOutline, 1.0);
-    context.strokeRect(crop, kCropOutline, 2.0);
+                     ui::colors().scrim);
+    context.strokeRect(media, ui::colors().objectReadOnly, 1.0);
+    context.strokeRect(crop, ui::colors().accent, 2.0);
 
     const double half = kHandleSize / 2.0;
     const double xm = (crop.minX() + crop.maxX()) / 2.0;
@@ -304,15 +299,15 @@ void CropTool::paint(const ui::ViewportToolHost& host, ui::PaintContext& context
     };
     for (const core::Point& center : handles) {
         const core::Rect square{center.x - half, center.y - half, kHandleSize, kHandleSize};
-        context.fillRect(square, kHandleFill);
-        context.strokeRect(square, kCropOutline, 1.0);
+        context.fillRect(square, ui::colors().editorPaper);
+        context.strokeRect(square, ui::colors().accent, 1.0);
     }
 
     const BarRects bar = barRects(host);
-    context.fillRoundedRect(bar.bar, kBarFill, 6.0);
-    context.drawText("Apply", bar.apply, kBarFont, kBarText, ui::TextAlign::Center);
-    context.drawText("Reset", bar.reset, kBarFont, kBarText, ui::TextAlign::Center);
-    context.drawText("Cancel", bar.cancel, kBarFont, kBarText, ui::TextAlign::Center);
+    context.fillRoundedRect(bar.bar, ui::colors().hudBackground, 6.0);
+    context.drawText("Apply", bar.apply, kBarFont, ui::colors().hudText, ui::TextAlign::Center);
+    context.drawText("Reset", bar.reset, kBarFont, ui::colors().hudText, ui::TextAlign::Center);
+    context.drawText("Cancel", bar.cancel, kBarFont, ui::colors().hudText, ui::TextAlign::Center);
 }
 
 } // namespace rivet::app

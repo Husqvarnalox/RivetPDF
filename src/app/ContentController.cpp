@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 #include "app/ContentController.hpp"
+#include "ui/Theme.hpp"
 
 #include "core/Error.hpp"
 #include "editor/DocumentSession.hpp"
@@ -119,7 +120,7 @@ ContentController::ContentController(ShellContext& context, ui::Widget& parent, 
 
     auto area = std::make_unique<ui::TextArea>();
     editorArea_ = area.get();
-    editorArea_->setBackground(ui::Color::white());
+    editorArea_->setBackground(ui::colors().editorPaper);
     editorArea_->setOnFocusRequested([this] { context_.setFocus(editorArea_); });
     editorArea_->setOnCommit([this] { commitEditor(); });
     editorArea_->setOnEscape([this] { cancelEditor(); });
@@ -185,6 +186,7 @@ void ContentController::setTool(ContentTool next) {
     interaction_.setTool(next); // cancels a running gesture, clears hover
     if (DocumentTab* tab = activeTab(); tab != nullptr) selected_.erase(tab->id());
     interaction_.setSelection(std::nullopt);
+    context_.withdrawHint();
     nudge_.valid = false;
     overflowCheck_.reset();
     if (next != ContentTool::None) {
@@ -339,6 +341,7 @@ void ContentController::select(std::optional<ContentInteraction::Selected> selec
     } else {
         selected_.erase(tab->id());
         interaction_.setSelection(std::nullopt);
+        context_.withdrawHint(); // the selection's hint no longer applies (QA bug 11)
     }
     notifyState();
     repaint();
@@ -355,17 +358,17 @@ void ContentController::announceSelection(const HitInfo& info) {
     const std::string suffix = info.reason.empty() ? std::string() : std::format(" — {}", info.reason);
     switch (info.capability) {
     case editor::ContentCapability::ReadOnly:
-        context_.setStatus(std::format("Edit: read-only{}", suffix));
+        context_.showHint(std::format("Edit: read-only{}", suffix));
         break;
     case editor::ContentCapability::MoveOnly:
-        context_.setStatus(std::format("Edit: can be moved or deleted{}", suffix));
+        context_.showHint(std::format("Edit: can be moved or deleted{}", suffix));
         break;
     case editor::ContentCapability::Replaceable:
-        context_.setStatus(std::format("Edit: text can be retyped; a bundled font will be used{}", suffix));
+        context_.showHint(std::format("Edit: text can be retyped; a bundled font will be used{}", suffix));
         break;
     case editor::ContentCapability::FullyEditable:
         if (info.kind == ContentInteraction::Kind::Text) {
-            context_.setStatus("Edit: double-click or press Return to edit the text");
+            context_.showHint("Edit: double-click or press Return to edit the text");
         }
         break;
     }
@@ -660,7 +663,13 @@ void ContentController::checkOverflow() {
     const std::optional<editor::TextBlockView> block = backend_->findBlock(*tab->session(), check.page, check.block);
     if (!block.has_value() || !(block->edited || block->tag != 0)) return; // not resolved yet: wait
     overflowCheck_.reset();
-    if (block->bounds.maxY() > check.originalMaxY + 0.5) {
+    // Re-set text is measured with the font's line box, which can sit a
+    // little lower than the original glyph bounds: only a real extra line
+    // (or a markedly taller line) counts as overflow, not that difference
+    // (QA #13 reported "extends below" for a one-line edit).
+    const double line = block->lineAdvance > 0.0 ? block->lineAdvance : block->fontSize;
+    const double tolerance = std::max(0.5, 0.5 * line);
+    if (block->bounds.maxY() > check.originalMaxY + tolerance) {
         context_.setStatus("Edit: Text extends below the original block");
     }
 }
@@ -743,7 +752,7 @@ void ContentController::openEditorForNew(std::size_t pageIndex, core::Point topL
 void ContentController::showEditor() {
     editorArea_->setText(editing_->original);
     editorArea_->setTextColor(uiColor(editing_->color));
-    editorArea_->setBackground(ui::Color::white());
+    editorArea_->setBackground(ui::colors().editorPaper);
     editorArea_->setMetrics(editing_->fontSize * context_.viewport.zoomFactor(),
                             editing_->lineAdvance * context_.viewport.zoomFactor(), kEditorPadding);
     placeEditor(context_.viewport);
@@ -783,7 +792,18 @@ void ContentController::placeEditor(const ui::ViewportToolHost& host) {
                      kEditorPadding;
     const double y = viewportFrame_.origin.y + pageRect->origin.y + editing_->displayRect.origin.y * zoom -
                      kEditorPadding;
-    const double width = editing_->displayRect.size.width * zoom + 2.0 * kEditorPadding;
+    double width = editing_->displayRect.size.width * zoom + 2.0 * kEditorPadding;
+    if (!editing_->wrapped && editing_->requestedWrap <= 0.0) {
+        // A single-line block has no wrap width (ADR-0015): the editor grows
+        // to the right with the text instead of soft-wrapping it (QA #13 -
+        // the wrap was then recorded as the block's wrap width and a longer
+        // line landed below the original block). It wraps only at the page's
+        // right edge, where the commit records that width.
+        const double needed = editorArea_->naturalWidth() + editing_->fontSize * zoom;
+        const double toPageEdge =
+            pageRect->maxX() - (pageRect->origin.x + editing_->displayRect.origin.x * zoom) + 2.0 * kEditorPadding;
+        width = std::max(width, std::min(needed, toPageEdge));
+    }
     const double minHeight = editing_->displayRect.size.height * zoom + 2.0 * kEditorPadding;
     // Wrapping depends on the width: set it, then grow the height to the lines.
     editorArea_->setFrame(core::Rect{x, y, width, minHeight});
@@ -841,7 +861,10 @@ bool ContentController::commitEditor() {
     }
 
     // The editor soft-wrapped the text: record its width as the block's wrap
-    // width so the page layout matches what was typed.
+    // width so the page layout matches what was typed. Placed first: a
+    // single-line editor grows with its text, and text set or typed since
+    // the last paint must not count as wrapped at the old width.
+    placeEditor(context_.viewport);
     const std::size_t hardLines = static_cast<std::size_t>(std::count(text.begin(), text.end(), '\n')) + 1;
     const bool softWrapped = editorArea_->lineCount() > hardLines;
 
@@ -972,6 +995,8 @@ void ContentController::perform(ContentCommand command) {
     case ContentCommand::ReplaceImage: replaceSelectedImage(); break;
     case ContentCommand::BringToFront: bringSelectedToFront(); break;
     case ContentCommand::DeleteObject: deleteSelected(); break;
+    case ContentCommand::RecognizeTextMissing:
+    case ContentCommand::RecognizeTextAll: break; // OcrController (routed by the shell)
     }
 }
 

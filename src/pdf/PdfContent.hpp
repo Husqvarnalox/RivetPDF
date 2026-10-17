@@ -40,6 +40,15 @@ inline constexpr std::size_t kMaxTextBlocksPerPage = 4096;
 inline constexpr std::uint32_t kMaxImageSide = 10000;
 inline constexpr std::uint64_t kMaxImagePixels = 50'000'000;
 inline constexpr std::size_t kMaxImageEncodedBytes = 64u * 1024u * 1024u;
+// Most redaction areas one page's edits may carry (ADR-0026).
+inline constexpr std::size_t kMaxRedactionsPerPage = 1024;
+// Most invisible (OCR) word runs one page's edits may carry (ADR-0027) and
+// the longest word a run may hold (UTF-8 bytes).
+inline constexpr std::size_t kMaxInvisibleRunsPerPage = 8192;
+inline constexpr std::size_t kMaxInvisibleRunBytes = 256;
+// Horizontal scale an invisible run accepts.
+inline constexpr double kMinInvisibleHorizontalScale = 0.01;
+inline constexpr double kMaxInvisibleHorizontalScale = 100.0;
 // Font sizes a text edit accepts (effective size, user-space points).
 inline constexpr double kMinFontSize = 1.0;
 inline constexpr double kMaxFontSize = 500.0;
@@ -52,8 +61,12 @@ enum class PdfContentObjectType : std::uint8_t { Text, Image, Path, Shading, For
 //   Source:  the top-level object at `sourceIndex` of the SOURCE page as
 //            stored in its file (possibly modified in place by an edit).
 //   Created: appended by the text block edit whose tag is `tag`.
+//   Redaction: produced by applying the redactions (ADR-0026): a surviving
+//            run of a redacted text object (`sourceIndex` = the source
+//            index of that object, or 0 when it was created by an edit) or
+//            an opaque fill box. Never addressable by object edits.
 struct PdfContentOrigin {
-    enum class Kind : std::uint8_t { Source, Created };
+    enum class Kind : std::uint8_t { Source, Created, Redaction };
     Kind kind = Kind::Source;
     std::uint32_t sourceIndex = 0; // Source only
     std::uint64_t tag = 0;         // Created only
@@ -128,6 +141,9 @@ struct PdfPageContent {
     // short human-readable reason (no document content).
     bool regenerationSafe = true;
     std::string regenerationIssue;
+    // The page dictionary carries a /Thumb image. It cannot be removed
+    // through PDFium and would leak unredacted content (ADR-0026).
+    bool hasEmbeddedThumbnail = false;
 };
 using PdfPageContentPtr = std::shared_ptr<const PdfPageContent>;
 
@@ -143,7 +159,14 @@ enum class PdfBundledFont : std::uint8_t {
     SerifBold,
     MonoRegular,
     MonoBold,
+    // Noto Sans Math Regular subset (SIL OFL 1.1; ADR-0032): math symbols,
+    // Greek and the mathematical alphanumeric letters for Markdown math. Not
+    // offered for Add Text; never a fallbackFor() result.
+    MathRegular,
 };
+
+// Number of PdfBundledFont enumerators.
+inline constexpr std::size_t kBundledFontCount = 7;
 
 // Which font a text block edit uses.
 //   FromObject: the font of source object `sourceIndex` of the same page,
@@ -193,6 +216,29 @@ struct PdfImageData {
     std::vector<std::uint8_t> bytes;
 };
 
+// Consistency of image data with its format: dimensions within
+// kMaxImageSide / kMaxImagePixels, a JPEG of plausible size starting with
+// the SOI marker, a BGRA buffer large enough for its stride and rows.
+// InvalidArgument otherwise. Shared by content edits and document builds.
+core::Status validateImageData(const PdfImageData& image);
+
+// One word of an OCR text layer (ADR-0027): invisible text (render mode 3)
+// in the bundled Sans face, so the page looks the same but its text becomes
+// searchable and selectable.
+//
+// Run frame: x along the baseline, y up, origin at the START of the word's
+// baseline; `placement` maps it to user space and must be rigid (like a text
+// block's). The text is set at `fontSize` and stretched along x by
+// `horizontalScale` so the word's natural advance fills the recognized word
+// box. Every character must be covered by the bundled face
+// (bundledFontCovers) and printable: the planner drops the others.
+struct PdfInvisibleTextRun {
+    std::string text;                 // UTF-8, one word, no control characters
+    core::Matrix placement;
+    double fontSize = 12.0;           // [kMinFontSize, kMaxFontSize]
+    double horizontalScale = 1.0;     // [kMinInvisibleHorizontalScale, kMaxInvisibleHorizontalScale]
+};
+
 // A change of one existing (source) top-level object.
 struct PdfObjectEdit {
     std::uint32_t sourceIndex = 0;
@@ -205,17 +251,55 @@ struct PdfObjectEdit {
     std::shared_ptr<const PdfImageData> replaceImage;
 };
 
+// One area to redact (ADR-0026), user space of the source page. Everything
+// painted inside it is removed from the page content (not covered), and an
+// opaque rectangle in `fill` is painted over it.
+struct PdfRedaction {
+    PdfBox area;   // normalized, positive width and height
+    PdfColor fill; // default black
+    bool operator==(const PdfRedaction&) const = default;
+};
+
 // All content edits of one page, against its SOURCE page. Immutable once
 // shared (the page model and the backend caches hold it by pointer).
 //
 // Application order (ADR-0017): object edits (removals, transforms, image
-// replacements) in source order, then text blocks in vector order. Objects a
-// text block creates are appended on top of the page (new content is always
-// in front); members reused by a block keep their z-position.
+// replacements) in source order, then text blocks in vector order, then the
+// redactions over EVERY object the page then has (ADR-0026). Objects a text
+// block creates are appended on top of the page (new content is always in
+// front); members reused by a block keep their z-position.
+//
+// Redaction semantics (the backend never under-redacts; when it cannot do
+// better it removes more):
+//   - text: glyphs whose box intersects an area are removed; the surviving
+//     glyphs of the object are rewritten as one new text object per
+//     contiguous run (same font, size, matrix, render mode and colors), or
+//     the whole object is removed when its glyphs cannot be rewritten
+//     faithfully (unmappable characters, Type 3 font, clipped text, failed
+//     round trip);
+//   - images: the pixels intersecting an area are set to the fill color in
+//     the decoded image, which is re-embedded; an image that cannot be
+//     decoded is removed;
+//   - paths, shadings, form XObjects and unknown objects intersecting an
+//     area are removed whole;
+//   - one opaque filled rectangle per area is appended on top.
+// Invisible text runs (ADR-0027) are appended after the text blocks and
+// before the redactions, so an OCR layer under a redaction area is removed
+// like any other text.
+// Annotations are not touched here: the editor removes the intersecting
+// ones through the page's annotation edits.
 struct PdfPageContentEdits {
     std::vector<PdfObjectEdit> objects;       // sorted by sourceIndex, unique
     std::vector<PdfTextBlockEdit> textBlocks; // creation order
-    bool empty() const { return objects.empty() && textBlocks.empty(); }
+    std::vector<PdfRedaction> redactions;     // application order
+    // OCR text layer; the objects it creates carry origin Created with
+    // `invisibleTag` (non-zero and distinct from every block tag when
+    // `invisibleRuns` is not empty).
+    std::vector<PdfInvisibleTextRun> invisibleRuns;
+    std::uint64_t invisibleTag = 0;
+    bool empty() const {
+        return objects.empty() && textBlocks.empty() && redactions.empty() && invisibleRuns.empty();
+    }
 };
 using PdfPageContentEditsPtr = std::shared_ptr<const PdfPageContentEdits>;
 
@@ -224,7 +308,12 @@ using PdfPageContentEditsPtr = std::shared_ptr<const PdfPageContentEdits>;
 // not removed or claimed by another block and are not transformed by an
 // object edit, tags non-zero and unique, finite rigid placements, font sizes
 // in [kMinFontSize, kMaxFontSize], positive line advance, the size limits
-// above, image data consistent with its format. InvalidArgument otherwise.
+// above, image data consistent with its format, at most
+// kMaxRedactionsPerPage finite, normalized, non-empty redaction areas with
+// fill components in [0, 1], at most kMaxInvisibleRunsPerPage invisible runs
+// with a distinct non-zero tag, a non-empty text of at most
+// kMaxInvisibleRunBytes without control characters, rigid placements, font
+// sizes and horizontal scales in range. InvalidArgument otherwise.
 core::Status validate(const PdfPageContentEdits& edits, std::size_t sourceObjectCount);
 
 // Per output page of an assembly with content edits: the origin of every

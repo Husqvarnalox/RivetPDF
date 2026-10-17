@@ -4,10 +4,12 @@
 #include "core/geometry/Rect.hpp"
 #include "core/geometry/Size.hpp"
 #include "ui/PaintContext.hpp"
+#include "ui/Icons.hpp"
 #include "ui/Widget.hpp"
 
 #include <cstddef>
 #include <functional>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -45,15 +47,21 @@ public:
     // Replaces the text, clears the selection and puts the caret at the end.
     // Does not fire onTextChanged (programmatic change, not user input).
     void setText(std::string text);
+    // Selects the whole text (caret at the end); no onTextChanged.
+    void selectAll();
 
     std::size_t caret() const { return caret_; } // byte offset on a code-point boundary
     Selection selection() const;
     const std::string& placeholder() const { return placeholder_; }
+    void setPlaceholder(std::string placeholder);
 
     // Echo character for password fields (e.g. U+2022 "•"): paint replaces
     // every typed code point with it; text()/caret()/selection() keep the
     // REAL characters. 0 = no masking.
     void setEchoCharacter(char32_t echoCharacter) { echoCharacter_ = echoCharacter; }
+    // A leading icon (the search field's magnifier, ADR-0033 §4); the text
+    // starts after it.
+    void setLeadingIcon(std::optional<Icon> icon);
     char32_t echoCharacter() const { return echoCharacter_; }
 
     void setOnTextChanged(std::function<void(const std::string&)> onTextChanged);
@@ -73,6 +81,8 @@ public:
     void paintSelf(PaintContext& context) const override;
 
 private:
+    double leadingPadding() const { return leadingIcon_.has_value() ? kHorizontalPadding + 20.0 : kHorizontalPadding; }
+    std::optional<Icon> leadingIcon_;
     // UTF-8 boundary helpers (static):
     // previousBoundary(s, i): largest j < i with s[j] not a continuation byte.
     // nextBoundary(s, i): smallest j > i with s[j] not a continuation byte

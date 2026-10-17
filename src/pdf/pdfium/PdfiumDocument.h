@@ -30,7 +30,8 @@ class PdfiumEngine;
 class PdfiumFileSource;
 namespace internal {
 class ContentState;
-}
+class FormEnvironment;
+} // namespace internal
 
 // PDFium-backed PdfDocument. Constructed only by the PDFium backend
 // (PdfiumEngine::openDocument): it takes ownership of a document handle
@@ -91,6 +92,15 @@ public:
 
     core::Result<std::shared_ptr<const PdfTextPage>> textPage(std::size_t pageIndex) const override;
 
+    // Read once from a private reader document with a form-fill environment
+    // (JavaScript and XFA disabled) and cached (ADR-0024).
+    core::Result<PdfFormInfoPtr> formInfo() const override;
+
+    // Read once from the live handle (signature dictionaries are never
+    // touched by rendering) and cached; byte ranges are checked against the
+    // size of the file source (ADR-0025).
+    core::Result<PdfSignatureListPtr> signatures() const override;
+
     core::Result<PdfPageContentPtr> pageContent(std::size_t pageIndex,
                                                 const PdfPageContentEditsPtr& edits) const override;
 
@@ -109,6 +119,10 @@ public:
     // streams cannot be rewritten without loss. Runs the extraction and the
     // probe on first use (cached). CALLER HOLDS THE GATE; never acquires it.
     core::Status requireContentEditable(std::size_t pageIndex) const;
+
+    // formInfo() for callers that already hold the gate (the assembly).
+    // CALLER HOLDS THE GATE; never acquires it.
+    core::Result<PdfFormInfoPtr> formInfoLocked() const;
 
 protected:
     core::Result<core::Bitmap> renderPageInView(std::size_t pageIndex,
@@ -182,6 +196,19 @@ private:
     // content + probe results and the materialized edited pages. Only touched
     // under the gate; closed by the destructor under the gate.
     mutable std::unique_ptr<internal::ContentState> content_;
+
+    // AcroForm description (ADR-0024), read once under the gate.
+    mutable PdfFormInfoPtr formInfo_;
+    // Digital signatures (ADR-0025), read once under the gate.
+    mutable PdfSignatureListPtr signatures_;
+    // Form-fill environment over the LIVE document, used only to DRAW
+    // widget annotations (FPDF_RenderPageBitmap* never draws them; see
+    // renderPageImpl). Created lazily under the gate for documents with an
+    // AcroForm; JavaScript/XFA disabled; destroyed under the gate before the
+    // document closes.
+    internal::FormEnvironment* liveForm() const;
+    mutable std::unique_ptr<internal::FormEnvironment> liveForm_;
+    mutable bool liveFormChecked_ = false;
 
     mutable FPDF_DOCUMENT annotationReader_ = nullptr;
     mutable std::unordered_map<std::size_t, PdfPageAnnotationsPtr> annotationCache_;

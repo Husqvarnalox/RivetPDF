@@ -8,6 +8,7 @@
 #include "pdf/PdfAssembly.hpp"
 #include "pdf/PdfContent.hpp"
 #include "pdf/PdfEngine.hpp"
+#include "pdf/PdfForms.hpp"
 #include "pdf/PdfNavigation.hpp"
 #include "pdf/PdfPageGeometry.hpp"
 
@@ -22,6 +23,14 @@
 #include <vector>
 
 namespace rivet::editor {
+
+// Areas of a page marked for redaction (ADR-0026), in the user space of the
+// entry's SOURCE page (normalized boxes, application order). Immutable and
+// shared like the other per-page states; marks change nothing in the
+// content until ApplyRedactionsCommand turns them into content edits.
+using RedactionMarks = std::vector<pdf::PdfBox>;
+using RedactionMarksPtr = std::shared_ptr<const RedactionMarks>;
+inline constexpr std::size_t kMaxRedactionMarksPerPage = pdf::kMaxRedactionsPerPage;
 
 // A page of some opened document, as it is inserted into a page model: the
 // source page plus its NATIVE presentation (media box + native view). Built
@@ -69,6 +78,10 @@ struct PageSource {
 // backend and DocumentSession::rebaseOnto clears it once the file contains
 // the edits. A content edit mints a fresh contentRevision AND rasterRevision
 // (text, search, links and tiles of that page are re-derived; nothing else).
+//
+// redactionMarks (ADR-0026): areas marked for redaction (null = none). They
+// only draw an outline; they survive a save (the page's user space is
+// unchanged by it) and duplicates share them.
 struct PageEntry {
     core::PageId id;
     std::shared_ptr<pdf::PdfDocument> source;
@@ -80,6 +93,7 @@ struct PageEntry {
     PageAnnotationStatePtr annotations;
     std::uint64_t rasterRevision = 0;
     pdf::PdfPageContentEditsPtr contentEdits;
+    RedactionMarksPtr redactionMarks;
 };
 
 // A destination (link or outline) resolved against the page model.
@@ -99,7 +113,8 @@ public:
     static constexpr std::size_t kInvalidIndex = static_cast<std::size_t>(-1);
 
     PageModelSnapshot(std::shared_ptr<pdf::PdfDocument> base, std::vector<PageEntry> entries,
-                      std::uint64_t orderRevision, std::uint64_t documentRevision);
+                      std::uint64_t orderRevision, std::uint64_t documentRevision,
+                      pdf::PdfFormValuesPtr formValues = nullptr, bool removeMetadata = false);
 
     const std::vector<PageEntry>& entries() const { return entries_; }
     std::size_t size() const { return entries_.size(); }
@@ -108,6 +123,16 @@ public:
     std::uint64_t orderRevision() const { return orderRevision_; }
     std::uint64_t documentRevision() const { return documentRevision_; }
     const std::shared_ptr<pdf::PdfDocument>& base() const { return base_; }
+
+    // Edited AcroForm values of the BASE document's fields (ADR-0024), keyed
+    // by field name; null = the form is untouched. Document-level (a field
+    // may have widgets on several pages), immutable, swapped by
+    // FormValuesCommand; the save request carries it.
+    const pdf::PdfFormValuesPtr& formValues() const { return formValues_; }
+
+    // The next save drops the document metadata (Info dictionary and XMP;
+    // ADR-0026, set by Apply Redactions). Carried by the save request.
+    bool removeMetadata() const { return removeMetadata_; }
 
     // Position of a page (kInvalidIndex when not in the model). O(1).
     std::size_t indexOf(core::PageId id) const;
@@ -133,7 +158,8 @@ public:
                                                       const pdf::PdfDestination& destination) const;
 
     // Save: PreserveBase over every page, base = the model's base document.
-    // Extract: Fresh over `subset` (in MODEL order, duplicates in `subset`
+    // Both modes carry the form values (Extract: they reach the copies of
+    // base pages). Extract: Fresh over `subset` (in MODEL order, duplicates in `subset`
     // ignored); InvalidArgument for an empty subset or an unknown id. The
     // request holds raw document pointers: keep this snapshot alive until
     // the assembly finished.
@@ -153,6 +179,8 @@ private:
 
     std::shared_ptr<pdf::PdfDocument> base_;
     std::vector<PageEntry> entries_;
+    pdf::PdfFormValuesPtr formValues_;
+    bool removeMetadata_ = false;
     std::uint64_t orderRevision_ = 0;
     std::uint64_t documentRevision_ = 0;
     bool identityOrder_ = false;
@@ -173,6 +201,8 @@ struct PageModelChange {
     std::vector<core::PageId> contentChanged; // in both, view/contentRevision differ
     std::vector<core::PageId> annotationsChanged; // in both, annotation state pointer differs
     std::vector<core::PageId> rasterChanged;      // in both, rasterRevision differs
+    bool formsChanged = false;                    // the form values pointer differs
+    std::vector<core::PageId> marksChanged;       // in both, redaction marks pointer differs
 };
 
 // The editor-level mutable page model of one document. Main-thread owned
@@ -283,12 +313,49 @@ public:
     };
     core::Status updateContent(std::span<const ContentUpdate> updates);
 
+    // Replaces the document's form values (may be null) and the
+    // rasterRevision of the given existing pages (the pages whose hidden
+    // widget set changes; may be empty, no duplicates). Transactional; one
+    // publish, orderChanged = false.
+    struct RasterUpdate {
+        core::PageId id;
+        std::uint64_t rasterRevision = 0;
+    };
+    core::Status updateForms(pdf::PdfFormValuesPtr values, std::span<const RasterUpdate> rasters);
+    const pdf::PdfFormValuesPtr& formValues() const { return formValues_; }
+
+    // Replaces the redaction marks of existing pages (all ids present, no
+    // duplicates; one publish, orderChanged = false). Null = no marks.
+    struct MarksUpdate {
+        core::PageId id;
+        RedactionMarksPtr marks;
+    };
+    core::Status updateRedactionMarks(std::span<const MarksUpdate> updates);
+
+    // Apply Redactions (ADR-0026) as ONE publish: per page the content
+    // edits + contentRevision + rasterRevision, the annotation state and the
+    // marks; document-wide the form values (may be null) and the
+    // remove-metadata flag. Transactional like the other updates.
+    struct RedactionUpdate {
+        core::PageId id;
+        pdf::PdfPageContentEditsPtr edits;
+        std::uint64_t contentRevision = 0;
+        std::uint64_t rasterRevision = 0;
+        PageAnnotationStatePtr annotations;
+        RedactionMarksPtr marks;
+    };
+    core::Status updateRedaction(std::span<const RedactionUpdate> updates, pdf::PdfFormValuesPtr values,
+                                 bool removeMetadata);
+    bool removeMetadata() const { return removeMetadata_; }
+
     // Re-bases the model onto `base` (a document just written from this
     // model and reopened): `entries` replace the current ones one-for-one in
     // the SAME order with the SAME ids (only source/sourcePageIndex/views/
     // boxes/contentRevision may differ). One publish, orderChanged = false.
     // InvalidArgument when the ids/order differ or an entry is incomplete.
-    // Used by DocumentSession::rebaseOnto only.
+    // The form values and the remove-metadata flag are cleared (the saved
+    // file holds the result now). Used by
+    // DocumentSession::rebaseOnto only.
     core::Status rebase(std::shared_ptr<pdf::PdfDocument> base, std::vector<PageEntry> entries);
 
     // Change observer (the owning session). Invoked synchronously after each
@@ -306,6 +373,8 @@ private:
     void publish(std::vector<PageEntry> entries, bool orderChanged);
 
     std::shared_ptr<pdf::PdfDocument> base_;
+    pdf::PdfFormValuesPtr formValues_;
+    bool removeMetadata_ = false;
     core::IdGenerator<core::PageIdTag> ids_;
     core::IdGenerator<core::AnnotationIdTag> annotationIds_;
     core::IdGenerator<core::ObjectIdTag> objectIds_;

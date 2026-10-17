@@ -18,11 +18,18 @@ add_executable(rivet_pdf_tests
     TestPdfPageGeometry.cpp
     # Engine-independent annotation data, validation and appearance builder.
     TestPdfAnnotation.cpp
+    # Visual-signature appearances, glyph outlines, byte-range analysis
+    # (ADR-0025): run in both build modes.
+    TestPdfSignature.cpp
     # Engine-independent content-edit validation, UTF-8 helpers, text layout
     # and bundled-font tables (Phase 5): run in both build modes.
     TestPdfContent.cpp
     TestPdfTextLayout.cpp
     TestBundledFonts.cpp
+    # Engine-independent document-build validation and bundled-font metrics
+    # (ADR-0023): run in both build modes.
+    TestPdfBuild.cpp
+    TestBundledFontMetrics.cpp
     # View-aware reads and document assembly round trips (page editing
     # foundation): PDFium-ON bodies only.
     TestPdfPageEditing.cpp
@@ -38,6 +45,25 @@ add_executable(rivet_pdf_tests
     # Phase 5 content backend (extraction, probe, edits, assembly): PDFium-ON
     # bodies only.
     TestPdfiumContent.cpp
+    # True redaction (ADR-0026): glyph/pixel/object removal, fill boxes,
+    # remove-metadata save, probe refusal. PDFium-ON bodies only (the
+    # validation limits run everywhere).
+    TestPdfiumRedaction.cpp
+    # Save Reduced Copy (ADR-0028): portable planning/downsampling (all
+    # builds) and the PDFium reduction + remove-password round trips.
+    TestImageReduce.cpp
+    TestPdfiumImageReduce.cpp
+    # Document builder round trips (text, links, pixels, metrics consistency,
+    # sink failures): PDFium-ON bodies only.
+    TestPdfiumBuilder.cpp
+    # AcroForm value model (portable) and the PDFium form adapter (read,
+    # fill through the assembly, persistence): PDFium-ON bodies only for
+    # the latter.
+    TestPdfForms.cpp
+    TestPdfiumForms.cpp
+    # Visual signatures through the assembly and digital-signature listing
+    # (ADR-0025): PDFium-ON bodies only.
+    TestPdfiumSignatures.cpp
     # Compiled directly into the test binary rather than linked from
     # rivet_pdfium, so the gate tests run with RIVET_WITH_PDFIUM=OFF too. The
     # gate translation unit has no FPDF_* dependency. In PDFium-ON builds the

@@ -1,0 +1,89 @@
+# Scenario 9: Markdown - README.md and a sample with Mermaid + math;
+# Rendered/Source/Split; WYSIWYG typing, Cmd+B, Enter in a list, undo;
+# Export as PDF; dark theme.
+resize 1280 850
+theme light
+# Workaround for bug #1 (Export as PDF crashes while no PDF was opened in
+# the session; see 11-markdown-export-crash.rivetqa): open and close a PDF
+# first so PDFium is initialized.
+open ${QA_FIX}/sample.pdf
+key cmd+w
+open ${QA_ROOT}/README.md
+log-state
+shot 09-readme-rendered.png
+key cmd+2
+shot 09-readme-source.png
+key cmd+3
+shot 09-readme-split.png
+key cmd+1
+theme dark
+shot 09-readme-dark.png
+theme light
+key cmd+w
+
+open ${QA_FIX}/graphics.md
+log-state
+shot 09-graphics-rendered.png
+theme dark
+shot 09-graphics-dark.png
+theme light
+cmd View/Split
+shot 09-graphics-split.png
+cmd View/Rendered
+answer save ${QA_WORK}/09-graphics.pdf
+cmd File/Export as PDF…
+log-state
+key cmd+w
+open ${QA_WORK}/09-graphics.pdf
+log-state
+shot 09-graphics-exported.png
+key cmd+w
+
+# WYSIWYG editing (edits are discarded at the end).
+open ${QA_FIX}/edit.md
+shot 09-edit-initial.png
+# Click right of "First paragraph to edit." (puts the caret at its end), type.
+click 900 194
+type  more words
+shot 09-edit-typed.png
+assert-md-caret more words
+# Cmd+B with a collapsed caret inserts an empty pair with the caret inside
+# (nothing selected), typing goes in bold, Cmd+B again steps out (bug 5).
+key cmd+b
+assert-md-caret more words**
+shot 09-edit-cmdb.png
+type bold
+assert-md-caret more words**bold
+shot 09-edit-typed-bold.png
+key cmd+b
+assert-md-caret more words**bold**
+type  plain
+assert-md-source more words**bold** plain
+shot 09-edit-cmdb2.png
+# Same for Italic with Cmd+I.
+key cmd+i
+type it
+key cmd+i
+assert-md-source plain*it*
+# Enter at the end of the last list item ("banana") continues the list.
+click 400 253
+type \ncherry
+assert-md-caret cherry
+shot 09-edit-list-enter.png
+# Switching modes keeps the caret (bug 14).
+key cmd+2
+assert-md-caret cherry
+shot 09-edit-source.png
+key cmd+3
+assert-md-caret cherry
+key cmd+1
+assert-md-caret cherry
+key cmd+2
+key cmd+1
+cmd Edit/Undo
+key cmd+2
+shot 09-edit-undo-source.png
+answer savechanges dontsave
+key cmd+w
+assert-tabs 0
+quit

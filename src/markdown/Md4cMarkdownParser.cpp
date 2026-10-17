@@ -4,6 +4,7 @@
 #include "markdown/MarkdownPlainText.hpp"
 #include "markdown/MarkdownSlug.hpp"
 #include "markdown/Utf8.hpp"
+#include "markdown/math/MathDelimiters.hpp"
 
 #include <md4c.h> // the only place MD4C types are visible
 
@@ -345,7 +346,8 @@ public:
         std::vector<Inline>* parent = currentInlineTarget();
         const bool inImage = insideImage();
         const bool supported = type == MD_SPAN_EM || type == MD_SPAN_STRONG || type == MD_SPAN_DEL ||
-                               type == MD_SPAN_CODE || type == MD_SPAN_A || type == MD_SPAN_IMG;
+                               type == MD_SPAN_CODE || type == MD_SPAN_A || type == MD_SPAN_IMG ||
+                               type == MD_SPAN_LATEXMATH || type == MD_SPAN_LATEXMATH_DISPLAY;
         if (!supported || inImage || inline_.size() >= limits_.maxInlineDepth) {
             if (supported && !inImage) {
                 diagOnce(DiagnosticCode::InlineTooDeep, DiagnosticSeverity::Warning,
@@ -363,6 +365,11 @@ public:
         case MD_SPAN_STRONG: in.kind = InlineKind::Strong; break;
         case MD_SPAN_DEL: in.kind = InlineKind::Strike; break;
         case MD_SPAN_CODE: in.kind = InlineKind::Code; break;
+        case MD_SPAN_LATEXMATH:
+        case MD_SPAN_LATEXMATH_DISPLAY:
+            in.kind = InlineKind::Math;
+            in.display = type == MD_SPAN_LATEXMATH_DISPLAY;
+            break;
         case MD_SPAN_A: {
             in.kind = InlineKind::Link;
             const auto* d = static_cast<const MD_SPAN_A_DETAIL*>(detail);
@@ -392,6 +399,7 @@ public:
         if (f.node != nullptr) {
             SourceRange r = spanRange(f, ext);
             f.node->range = r;
+            if (f.node->kind == InlineKind::Math) finishMath(*f.node);
             ext = Extent{};
             ext.add(r.start, r.end);
         }
@@ -414,7 +422,22 @@ public:
             (stack_.back().type == MD_BLOCK_CODE || stack_.back().type == MD_BLOCK_HTML)) {
             Frame& f = stack_.back();
             noteExtent(f.ext, p, size);
+            const std::size_t before = f.block->text.size();
             appendLimited(f.block->text, type, p, size);
+            // Text MD4C synthesizes (line breaks, indentation) is not in the
+            // source: a line break maps to the source's next '\n', anything else
+            // to an empty point after the previous piece.
+            const std::vector<TextSpan>& done = f.block->textSpans;
+            const std::size_t prevEnd = done.empty() ? std::min(cursor_, n_) : done.back().sourceEnd();
+            SourceRange raw{prevEnd, prevEnd};
+            if (inSource(p, size)) {
+                raw.start = static_cast<std::size_t>(p - src_.data());
+                raw.end = raw.start + size;
+            } else if (size == 1 && p[0] == '\n') {
+                const std::size_t nl = src_.find('\n', prevEnd);
+                if (nl != std::string_view::npos) raw = {nl, nl + 1};
+            }
+            recordSpan(f.block->textSpans, before, f.block->text.size() - before, raw);
             return 0;
         }
         if (ensureLeaf() == nullptr) return 0;
@@ -429,8 +452,15 @@ public:
         }
         if (!inline_.empty() && inline_.back().node != nullptr) {
             Inline& node = *inline_.back().node;
-            if (node.kind == InlineKind::Image || node.kind == InlineKind::Code) {
+            if (node.kind == InlineKind::Image || node.kind == InlineKind::Code || node.kind == InlineKind::Math) {
+                const std::size_t before = node.text.size();
                 node.text += decoded;
+                if (node.kind == InlineKind::Math && inSource(p, size)) {
+                    // TeX is verbatim: no escape adjustment (`\{` is two bytes of TeX).
+                    const auto start = static_cast<std::size_t>(p - src_.data());
+                    r = SourceRange{start, start + size};
+                }
+                if (node.kind != InlineKind::Image) recordSpan(node.spans, before, decoded.size(), r);
                 return 0;
             }
         }
@@ -631,6 +661,7 @@ private:
             const auto* d = static_cast<const MD_BLOCK_CODE_DETAIL*>(detail);
             b.info = attrToString(d->info);
             b.fenced = d->fence_char != 0;
+            if (b.fenced) b.special = specialForInfo(b.info);
             f.fenceChar = d->fence_char;
             if (b.fenced) f.fenceStart = nextNonBlankLine(cursor_).first;
         } else if (type == MD_BLOCK_P) {
@@ -680,16 +711,44 @@ private:
         if (target == nullptr) return;
         if (!target->empty() && target->back().kind == InlineKind::Text && lastTextOpen_) {
             Inline& t = target->back();
+            const std::size_t before = t.text.size();
             t.text += decoded;
             if (r.start < t.range.start) t.range.start = r.start;
             if (r.end > t.range.end) t.range.end = r.end;
+            recordSpan(t.spans, before, decoded.size(), r);
             return;
         }
         Inline& t = target->emplace_back();
         t.kind = InlineKind::Text;
         t.text = decoded;
         t.range = r;
+        recordSpan(t.spans, 0, decoded.size(), r);
         lastTextOpen_ = true;
+    }
+    // Appends the provenance of text[textStart, textStart+textLength): exact
+    // when the decoded text has the source's length (plain text), atomic
+    // otherwise (escape, entity, replaced invalid UTF-8, a cut chunk).
+    // Contiguous exact pieces are merged.
+    static void recordSpan(std::vector<TextSpan>& spans, std::size_t textStart, std::size_t textLength,
+                           SourceRange r) {
+        if (textLength == 0) return;
+        constexpr std::size_t kMax = std::numeric_limits<std::uint32_t>::max();
+        if (textStart + textLength > kMax || r.size() > kMax) return;
+        TextSpan span;
+        span.source = r.start;
+        span.text = static_cast<std::uint32_t>(textStart);
+        span.textLength = static_cast<std::uint32_t>(textLength);
+        span.sourceLength = static_cast<std::uint32_t>(r.size());
+        if (!spans.empty()) {
+            TextSpan& last = spans.back();
+            if (last.exact() && span.exact() && last.textEnd() == span.text && last.sourceEnd() == span.source &&
+                static_cast<std::size_t>(last.textLength) + span.textLength <= kMax) {
+                last.textLength += span.textLength;
+                last.sourceLength += span.sourceLength;
+                return;
+            }
+        }
+        spans.push_back(span);
     }
     void addBreak(bool hard) {
         if (insideImage()) {
@@ -737,6 +796,31 @@ private:
             }
         }
         return p;
+    }
+
+    // A math span MD4C matched: kept when it also passes the money rule
+    // (math::isInlineMathSpan; `$$` spans always pass), else turned back into
+    // the literal text it was ("$ 5 and 6 $"), with exact provenance.
+    void finishMath(Inline& in) {
+        const std::size_t d = in.display ? 2 : 1;
+        const SourceRange r = in.range;
+        const bool delimited = r.size() >= 2 * d && r.end <= n_ && src_[r.start] == '$' && src_[r.end - 1] == '$';
+        bool keep = delimited && !in.text.empty();
+        if (keep && !in.display) keep = math::isInlineMathSpan(src_, r.start, r.end - 1);
+        if (keep) return;
+        const std::string delimiter(d, '$');
+        std::vector<TextSpan> spans;
+        if (delimited) recordSpan(spans, 0, d, SourceRange{r.start, r.start + d});
+        for (TextSpan sp : in.spans) {
+            sp.text += static_cast<std::uint32_t>(delimited ? d : 0);
+            spans.push_back(sp);
+        }
+        std::string text = delimited ? delimiter + in.text + delimiter : in.text;
+        if (delimited) recordSpan(spans, text.size() - d, d, SourceRange{r.end - d, r.end});
+        in.kind = InlineKind::Text;
+        in.display = false;
+        in.text = std::move(text);
+        in.spans = std::move(spans);
     }
 
     SourceRange spanRange(const InlineFrame& f, const Extent& ext) {
@@ -787,6 +871,31 @@ private:
                 d = std::min(before, after);
             }
             if (d > 0) { lo = s - d; hi = e + d; }
+            break;
+        }
+        case MD_SPAN_LATEXMATH:
+        case MD_SPAN_LATEXMATH_DISPLAY: {
+            if (!has) return {std::min(cursor, n_), std::min(cursor, n_)};
+            // Content that starts/ends at a line break leaves a container
+            // prefix ("> ") or blanks between it and the delimiter.
+            const auto gap = [](char c) { return c == ' ' || c == '\t' || c == '\r' || c == '\n' || c == '>'; };
+            std::size_t s = lo;
+            std::size_t e = hi;
+            while (s > 0 && gap(src_[s - 1]) && lo - s < 256) --s;
+            while (e < n_ && gap(src_[e]) && e - hi < 256) ++e;
+            const std::size_t d = f.type == MD_SPAN_LATEXMATH_DISPLAY ? 2 : 1;
+            const auto delimited = [&](std::size_t a, std::size_t b) {
+                bool ok = a >= d && b + d <= n_;
+                for (std::size_t k = 1; ok && k <= d; ++k) ok = src_[a - k] == '$' && src_[b + k - 1] == '$';
+                return ok;
+            };
+            if (delimited(lo, hi)) {
+                lo -= d;
+                hi += d;
+            } else if (delimited(s, e)) {
+                lo = s - d;
+                hi = e + d;
+            }
             break;
         }
         case MD_SPAN_A:
@@ -899,7 +1008,63 @@ private:
             doc_.headings.push_back({b.id, b.level, b.slug, plain, b.range});
         } else if (b.kind == BlockKind::Paragraph) {
             promoteImageBlock(b);
+            if (b.kind == BlockKind::Paragraph) promoteDisplayMath(b);
         }
+    }
+    // First word of a fence info string, ASCII-lowercased.
+    static SpecialBlock specialForInfo(std::string_view info) {
+        std::size_t i = 0;
+        while (i < info.size() && (info[i] == ' ' || info[i] == '\t')) ++i;
+        std::string word;
+        while (i < info.size() && info[i] != ' ' && info[i] != '\t' && word.size() < 16) {
+            word.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(info[i]))));
+            ++i;
+        }
+        if (word == "mermaid") return SpecialBlock::Mermaid;
+        if (word == "math") return SpecialBlock::DisplayMath;
+        return SpecialBlock::None;
+    }
+    // "$$ ... $$" paragraph -> a read-only DisplayMath block (ADR-0031). The
+    // TeX is taken from the SOURCE (inline parsing would have eaten `_`/`*`);
+    // each line loses the container prefix its first line had.
+    void promoteDisplayMath(Block& b) {
+        if (b.range.empty() || b.range.end > n_) return;
+        const std::string_view raw = src_.substr(b.range.start, b.range.size());
+        std::size_t prefix = 0;
+        while (prefix < raw.size() && (raw[prefix] == ' ' || raw[prefix] == '\t' || raw[prefix] == '>')) ++prefix;
+        std::size_t end = raw.size();
+        while (end > prefix && (raw[end - 1] == ' ' || raw[end - 1] == '\t' || isEol(raw[end - 1]))) --end;
+        if (end < prefix + 4 || raw.substr(prefix, 2) != "$$" || raw.substr(end - 2, 2) != "$$") return;
+        const std::string_view inner = raw.substr(prefix + 2, end - 2 - (prefix + 2));
+        std::vector<std::string_view> lines;
+        std::size_t pos = 0;
+        while (pos <= inner.size()) {
+            std::size_t nl = inner.find('\n', pos);
+            if (nl == std::string_view::npos) nl = inner.size();
+            std::string_view line = inner.substr(pos, nl - pos);
+            if (!line.empty() && line.back() == '\r') line.remove_suffix(1);
+            if (!lines.empty() || pos > 0) {
+                std::size_t k = 0;
+                while (k < prefix && k < line.size() && (line[k] == ' ' || line[k] == '\t' || line[k] == '>')) ++k;
+                line.remove_prefix(k);
+            }
+            lines.push_back(line);
+            pos = nl + 1;
+        }
+        const auto blank = [](std::string_view l) { return l.find_first_not_of(" \t") == std::string_view::npos; };
+        while (!lines.empty() && blank(lines.front())) lines.erase(lines.begin());
+        while (!lines.empty() && blank(lines.back())) lines.pop_back();
+        std::string text;
+        for (const std::string_view l : lines) {
+            text.append(l);
+            text.push_back('\n');
+        }
+        b.kind = BlockKind::CodeBlock;
+        b.special = SpecialBlock::DisplayMath;
+        b.fenced = true;
+        b.info = "math";
+        b.text = std::move(text);
+        b.inlines.clear();
     }
     static void promoteImageBlock(Block& b) {
         std::size_t images = 0;
@@ -1098,7 +1263,8 @@ MarkdownDocument Md4cMarkdownParser::parse(std::string_view source, const ParseL
         Builder builder(source, limits, doc);
         MD_PARSER parser{};
         parser.abi_version = 0;
-        parser.flags = MD_FLAG_TABLES | MD_FLAG_STRIKETHROUGH | MD_FLAG_TASKLISTS | MD_FLAG_PERMISSIVEAUTOLINKS;
+        parser.flags = MD_FLAG_TABLES | MD_FLAG_STRIKETHROUGH | MD_FLAG_TASKLISTS | MD_FLAG_PERMISSIVEAUTOLINKS |
+                       MD_FLAG_LATEXMATHSPANS;
         parser.enter_block = &onEnterBlock;
         parser.leave_block = &onLeaveBlock;
         parser.enter_span = &onEnterSpan;

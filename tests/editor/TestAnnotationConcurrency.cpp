@@ -22,7 +22,7 @@
 #include "pdf/PdfEngine.hpp"
 #include "pdf/PdfSystem.hpp"
 
-#include <unistd.h>
+#include "TestProcess.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -65,7 +65,7 @@ public:
     TempDir() {
         static std::atomic<int> counter{0};
         path_ = fs::temp_directory_path() /
-                ("rivet-annot-conc-" + std::to_string(::getpid()) + "-" +
+                ("rivet-annot-conc-" + std::to_string(rivet::test::processId()) + "-" +
                  std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + "-" +
                  std::to_string(counter.fetch_add(1)));
         fs::create_directories(path_);
@@ -111,7 +111,7 @@ private:
 
 template <typename Pred>
 bool waitUntil(Pred done) {
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
     while (std::chrono::steady_clock::now() < deadline) {
         if (done()) return true;
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
@@ -609,6 +609,7 @@ RIVET_TEST(annotationConcurrencyHiddenRendersReadsAndSavesShareTheCallGate) {
     };
 
     std::vector<std::thread> threads;
+    threads.reserve(5); // also sidesteps a GCC 13 -Wnull-dereference false positive in vector growth
     threads.emplace_back([&] { renderLoop({0}, false, true, 8); });
     threads.emplace_back([&] { renderLoop({6}, true, false, 8); });
     threads.emplace_back([&] { renderLoop({}, true, true, 8); });

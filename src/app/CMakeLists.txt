@@ -1,12 +1,18 @@
 add_library(rivet_app STATIC
     DocumentWorkspace.cpp
+    ComparisonTabState.cpp
+    ComparisonHostView.cpp
     MarkdownTabState.cpp
     MarkdownHostView.cpp
     MarkdownFind.cpp
+    MarkdownExportController.cpp
     MarkdownImageStore.cpp
+    MarkdownGraphics.cpp
     MarkdownPaintMeasurer.cpp
     MarkdownParseCoordinator.cpp
+    MarkdownPdfExport.cpp
     MarkdownPreviewView.cpp
+    MarkdownPreviewEditing.cpp
     MarkdownSourceSearch.cpp
     MarkdownSourcePane.cpp
     AnnotationBarController.cpp
@@ -21,12 +27,26 @@ add_library(rivet_app STATIC
     ContentLayer.cpp
     CropTool.cpp
     FileController.cpp
+    FormController.cpp
+    RedactionController.cpp
+    RedactionInteraction.cpp
+    RedactionLayer.cpp
+    FormLayer.cpp
+    FormLayout.cpp
+    MenuModel.cpp
     PageEditingController.cpp
+    OcrController.cpp
     PasswordPromptController.cpp
     PrintCoordinator.cpp
     SearchBarController.cpp
+    RecentFiles.cpp
     ShellController.cpp
+    QaScript.cpp
     SidebarController.cpp
+    WelcomeView.cpp
+    SignaturePad.cpp
+    SignatureSheetController.cpp
+    SignatureStore.cpp
     StatusBarController.cpp
     TextInteractionController.cpp
     TextLabel.cpp

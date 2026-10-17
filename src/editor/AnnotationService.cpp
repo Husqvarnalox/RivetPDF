@@ -24,6 +24,8 @@ unsigned annotationCaps(pdf::PdfAnnotationKind kind) {
     case pdf::PdfAnnotationKind::Arrow:
     case pdf::PdfAnnotationKind::Stamp:
         return kCapMove | kCapResize | kCapRestyle | kCapDelete;
+    case pdf::PdfAnnotationKind::Signature:
+        return kCapMove | kCapResize | kCapDelete;
     case pdf::PdfAnnotationKind::Other:
         break;
     }
@@ -210,6 +212,13 @@ std::optional<core::AnnotationId> AnnotationService::hitTest(core::PageId pageId
         if (geometry::hitsAnnotation(*it, display, tolerancePoints)) return it->id;
     }
     return std::nullopt;
+}
+
+pdf::PdfPageAnnotationsPtr AnnotationService::originals(core::PageId pageId) const {
+    const PageSnapshotPtr snapshot = session_.pageSnapshot();
+    const PageEntry* entry = snapshot->find(pageId);
+    if (entry == nullptr) return nullptr;
+    return originalsFor(*entry, true);
 }
 
 std::optional<AnnotationService::Located> AnnotationService::locate(core::AnnotationId id) const {

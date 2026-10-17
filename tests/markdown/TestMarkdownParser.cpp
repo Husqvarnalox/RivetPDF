@@ -575,3 +575,40 @@ RIVET_TEST(plainTextExtractionMapsToSource) {
     // Without spans only text is produced.
     CHECK(extractPlainText(doc, false).spans.empty());
 }
+
+RIVET_TEST(parseInlineMathSpans) {
+    const std::string src = "Let $a_1 *b* \\{c\\}$ and $$\\frac12$$ but $5 and $6. Also $ x $ here, and \\$y.";
+    const MarkdownDocument doc = parse(src);
+    CHECK_EQ(doc.blocks.size(), std::size_t{1});
+    std::vector<const Inline*> math;
+    std::string text;
+    for (const Inline& in : doc.blocks.at(0).inlines) {
+        if (in.kind == InlineKind::Math) math.push_back(&in);
+        if (in.kind == InlineKind::Text) text += in.text;
+    }
+    CHECK_EQ(math.size(), std::size_t{2});
+    if (math.size() != 2) return;
+    // Verbatim TeX (no emphasis, escapes kept), the range includes the delimiters.
+    CHECK_EQ(math[0]->text, std::string("a_1 *b* \\{c\\}"));
+    CHECK(!math[0]->display);
+    CHECK_EQ(src.substr(math[0]->range.start, math[0]->range.size()), std::string("$a_1 *b* \\{c\\}$"));
+    CHECK_EQ(math[1]->text, std::string("\\frac12"));
+    CHECK(math[1]->display);
+    CHECK_EQ(src.substr(math[1]->range.start, math[1]->range.size()), std::string("$$\\frac12$$"));
+    // Exact provenance of the TeX.
+    CHECK_EQ(math[0]->spans.size(), std::size_t{1});
+    CHECK_EQ(math[0]->spans.at(0).source, math[0]->range.start + 1);
+    CHECK(math[0]->spans.at(0).exact());
+    // Money and padded dollars stay text (the money rule), with exact spans.
+    CHECK(text.find("$5 and $6") != std::string::npos);
+    CHECK(text.find("$ x $") != std::string::npos);
+    for (const Inline& in : doc.blocks.at(0).inlines) {
+        if (in.kind != InlineKind::Text || in.text != "$ x $") continue;
+        CHECK_EQ(src.substr(in.range.start, in.range.size()), std::string("$ x $"));
+        for (const TextSpan& sp : in.spans) {
+            if (sp.exact()) CHECK_EQ(src.substr(sp.source, sp.sourceLength), in.text.substr(sp.text, sp.textLength));
+        }
+    }
+    // Plain text keeps the TeX.
+    CHECK(extractPlainText(doc, false).text.find("a_1 *b*") != std::string::npos);
+}

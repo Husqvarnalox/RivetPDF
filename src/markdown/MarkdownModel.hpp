@@ -27,6 +27,29 @@ struct SourceRange {
     constexpr bool operator==(const SourceRange&) const = default;
 };
 
+// One piece of decoded text and the source bytes it came from.
+// text[text, text+textLength) of the owner's decoded string was produced by
+// source[source, source+sourceLength). The piece is EXACT when both lengths
+// are equal (byte i of the text is byte source+i of the source); otherwise
+// it is ATOMIC (an escape "\\*", an entity "&amp;", collapsed whitespace, a
+// soft break): positions inside it have no source counterpart, so a caret
+// can only stand at its edges. sourceLength 0 marks text that does not
+// appear in the source at all (synthesized by the parser).
+struct TextSpan {
+    std::size_t source = 0;
+    std::uint32_t text = 0;
+    std::uint32_t textLength = 0;
+    std::uint32_t sourceLength = 0;
+    // Atomic even when both lengths agree (a soft break " " for "\n", a tab
+    // drawn as one space).
+    bool opaque = false;
+
+    constexpr bool exact() const { return textLength == sourceLength && !opaque; }
+    constexpr std::size_t sourceEnd() const { return source + sourceLength; }
+    constexpr std::uint32_t textEnd() const { return text + textLength; }
+    constexpr bool operator==(const TextSpan&) const = default;
+};
+
 // ---------------------------------------------------------------- inlines
 
 enum class InlineKind : std::uint8_t {
@@ -39,6 +62,12 @@ enum class InlineKind : std::uint8_t {
     Image,
     SoftBreak,
     HardBreak,
+    // TeX math between dollar signs (ADR-0032): `$...$` (inline style) or
+    // `$$...$$` inside a paragraph (display style, still laid out inline).
+    // `text` is the TeX between the delimiters, verbatim; `range` includes the
+    // delimiters. Laid out as one atomic box; the WYSIWYG caret treats it as
+    // a single unit (one atomic span over the whole source).
+    Math,
 };
 
 struct Inline {
@@ -47,7 +76,7 @@ struct Inline {
     // (see MarkdownParser.hpp for accuracy limits).
     SourceRange range;
     // Text: decoded text (entities resolved, escapes removed).
-    // Code: the code span contents.
+    // Code: the code span contents. Math: the TeX source.
     // Image: the alt text flattened to plain text.
     std::string text;
     // Link / Image: destination and optional title.
@@ -55,6 +84,12 @@ struct Inline {
     std::string title;
     // Emphasis / Strong / Strike / Link: nested inlines.
     std::vector<Inline> children;
+    // Math: `$$...$$` (display style) rather than `$...$`.
+    bool display = false;
+    // Text / Code / Math: where each piece of `text` came from, in text order
+    // (non-overlapping, ascending in both text and source). Used by the
+    // WYSIWYG editor to map rendered positions back to source bytes.
+    std::vector<TextSpan> spans;
 };
 
 // ----------------------------------------------------------------- blocks
@@ -72,6 +107,17 @@ enum class BlockKind : std::uint8_t {
     // Raw HTML kept as plain text in `text`. Never rendered as HTML.
     HtmlBlock,
 };
+
+// Blocks with a dedicated renderer. They are laid out as code blocks until
+// that renderer exists, and are READ-ONLY ISLANDS in the WYSIWYG editor (see
+// isReadOnlyIsland): their text is edited in the Source view only.
+//  - Mermaid: a fenced code block whose info string's first word is
+//    "mermaid" (case-insensitive). `text` is the diagram source.
+//  - DisplayMath: a paragraph that starts with "$$" and ends with "$$"
+//    (possibly over several lines), or a fenced block with info "math".
+//    Converted to BlockKind::CodeBlock with info "math"; `text` is the TeX
+//    between the delimiters (container prefixes stripped).
+enum class SpecialBlock : std::uint8_t { None, Mermaid, DisplayMath };
 
 enum class ColumnAlign : std::uint8_t { Default, Left, Center, Right };
 
@@ -112,6 +158,10 @@ struct Block {
     std::string text;
     // CodeBlock fenced with ``` or ~~~ (false: indented).
     bool fenced = false;
+    // CodeBlock / HtmlBlock: source of each piece of `text` (see TextSpan).
+    std::vector<TextSpan> textSpans;
+    // Dedicated renderer / read-only island marker (see SpecialBlock).
+    SpecialBlock special = SpecialBlock::None;
 
     // Quote.
     std::vector<Block> children;
@@ -128,6 +178,16 @@ struct Block {
     TableRow header;
     std::vector<TableRow> body;
 };
+
+// True for blocks the WYSIWYG editor never edits in place (ADR-0031): tables,
+// raw HTML, image blocks and special blocks (Mermaid, display math). The
+// caret skips them; image blocks can be selected and deleted as a whole.
+// Containers (quotes, lists) are never islands themselves.
+constexpr bool isReadOnlyIsland(BlockKind kind, SpecialBlock special) {
+    return special != SpecialBlock::None || kind == BlockKind::Table || kind == BlockKind::HtmlBlock ||
+           kind == BlockKind::ImageBlock;
+}
+inline bool isReadOnlyIsland(const Block& block) { return isReadOnlyIsland(block.kind, block.special); }
 
 // -------------------------------------------------------------- document
 

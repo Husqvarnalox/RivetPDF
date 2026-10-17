@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 #include "app/MarkdownPreviewView.hpp"
+#include "ui/Theme.hpp"
 
 #include "markdown/MarkdownSourceMap.hpp"
 
@@ -49,9 +50,8 @@ private:
 
 // ============================================================ construction
 
-MarkdownPreviewView::MarkdownPreviewView(MarkdownPreviewEnvironment environment, markdown::Typography typography,
-                                         MarkdownPreviewPalette palette)
-    : env_(std::move(environment)), typography_(typography), palette_(palette) {
+MarkdownPreviewView::MarkdownPreviewView(MarkdownPreviewEnvironment environment, markdown::Typography typography)
+    : env_(std::move(environment)), typography_(typography) {
     images_ = MarkdownImageStore::create(
         MarkdownImageStore::Environment{env_.dispatcher, env_.scheduler, env_.imageDecoder});
     images_->setOnChanged([this] {
@@ -63,6 +63,14 @@ MarkdownPreviewView::MarkdownPreviewView(MarkdownPreviewEnvironment environment,
     scrollBar_ = bar.get();
     scrollBar_->setOnScroll([this](double offset) { setScrollY(offset); });
     addChild(std::move(bar));
+}
+
+const MarkdownPreviewPalette& MarkdownPreviewView::palette() const {
+    if (paletteGeneration_ != ui::themeGeneration()) {
+        palette_ = MarkdownPreviewPalette(ui::currentTheme());
+        paletteGeneration_ = ui::themeGeneration();
+    }
+    return palette_;
 }
 
 MarkdownPreviewView::~MarkdownPreviewView() {
@@ -84,6 +92,13 @@ void MarkdownPreviewView::setDocumentSnapshot(std::shared_ptr<const markdown::Ma
     revision_ = revision;
     source_ = std::move(source);
     replaced_ = true;
+    caretMap_.reset();
+    std::erase_if(journal_, [revision](const JournalEntry& e) { return e.revision <= revision; });
+    if (editState_ != nullptr && revision == editState_->revision()) {
+        journal_.clear();
+        journalComplete_ = true;
+        optimisticText_.clear();
+    }
     layoutDirty_ = true;
     blockScrollX_.clear();
     hoverLink_ = 0;
@@ -97,6 +112,10 @@ void MarkdownPreviewView::setDocumentSnapshot(std::shared_ptr<const markdown::Ma
 void MarkdownPreviewView::clearDocument() {
     document_.reset();
     layout_.reset();
+    caretMap_.reset();
+    journal_.clear();
+    optimisticText_.clear();
+    pendingKeys_.clear();
     revision_ = 0;
     source_.clear();
     scrollY_ = 0.0;
@@ -136,6 +155,15 @@ void MarkdownPreviewView::prepare(ui::PaintContext& context) {
     }
     const MeasurerBinding binding(measurer_, context);
     ensureLayout(bounds().size.width, false);
+    if (editable()) {
+        // Keys that waited for this layout run now; each edit re-parses, so
+        // lay out again until they are all through (bounded).
+        for (int round = 0; round < 64 && !pendingKeys_.empty() && layoutFresh(); ++round) {
+            drainPendingKeys();
+            ensureLayout(bounds().size.width, false);
+        }
+        if (revealPending_ && layoutFresh()) revealCaretNow();
+    }
 }
 
 void MarkdownPreviewView::ensureLayout(double width, bool force) {
@@ -180,7 +208,7 @@ void MarkdownPreviewView::doRelayout(double width) {
 
     const auto started = std::chrono::steady_clock::now();
     layout_ = std::make_unique<markdown::MarkdownLayout>(markdown::layoutMarkdown(
-        *document_, width, measurer_, images_.get(), typography_, &measureCache_));
+        *document_, width, measurer_, images_.get(), typography_, &measureCache_, &mathMeasurer_));
     const auto finished = std::chrono::steady_clock::now();
     layoutCostMs_ = std::chrono::duration<double, std::milli>(finished - started).count();
     lastLayoutTime_ = finished;
@@ -188,6 +216,7 @@ void MarkdownPreviewView::doRelayout(double width) {
     ++layoutCount_;
 
     warmed_.assign(layout_->runs.size(), 0);
+    caretMap_.reset();
     selectionRectsDirty_ = true;
     if (hasSelection_ && !(sameShape && layout_->runs.size() == oldRuns)) clearSelection();
     hoverLink_ = 0;
@@ -363,6 +392,7 @@ std::string MarkdownPreviewView::linkUrlAt(const markdown::HitResult& hit) const
 // ============================================================== selection
 
 std::string MarkdownPreviewView::selectedText() const {
+    if (editable()) return selectedEditText();
     if (layout_ == nullptr || !hasSelection()) return {};
     return layout_->selectedText(std::min(selectionAnchor_, selectionFocus_),
                                  std::max(selectionAnchor_, selectionFocus_));
@@ -383,6 +413,10 @@ bool MarkdownPreviewView::copySelection() {
 }
 
 bool MarkdownPreviewView::selectAll() {
+    if (editable()) {
+        setSelectionInternal(0, editState_->source().size(), true);
+        return true;
+    }
     if (layout_ == nullptr || layout_->runs.empty()) return false;
     selectionAnchor_ = markdown::TextPosition{0, 0};
     const auto last = static_cast<std::uint32_t>(layout_->runs.size() - 1);
@@ -459,6 +493,9 @@ bool MarkdownPreviewView::handleScroll(const ui::PointerEvent& event) {
 bool MarkdownPreviewView::onMouse(const ui::PointerEvent& event) {
     if (Widget::onMouse(event)) return true; // the scroll bar
     if (layout_ == nullptr) return false;
+    if (editable() && event.type != ui::PointerEventType::Scroll && event.type != ui::PointerEventType::Exited) {
+        return onEditMouse(event);
+    }
 
     switch (event.type) {
     case ui::PointerEventType::Scroll:
@@ -560,6 +597,7 @@ bool MarkdownPreviewView::onMouse(const ui::PointerEvent& event) {
 }
 
 bool MarkdownPreviewView::onKey(const ui::KeyEvent& event) {
+    if (editable()) return onEditKey(event);
     const double page = std::max(kArrowScrollPoints, bounds().size.height * 0.9);
     if (event.modifiers.command || event.modifiers.control) {
         if (event.key == ui::Key::Character && !event.modifiers.shift && !event.modifiers.option) {
@@ -669,11 +707,11 @@ ui::Color MarkdownPreviewView::colorFor(const markdown::TextStyle& style) const 
     case TextKind::H3:
     case TextKind::H4:
     case TextKind::H5:
-    case TextKind::H6: return palette_.heading;
-    case TextKind::Code: return palette_.codeText;
-    case TextKind::Quote: return palette_.quoteText;
-    case TextKind::Link: return palette_.link;
-    default: return palette_.text;
+    case TextKind::H6: return palette().heading;
+    case TextKind::Code: return palette().codeText;
+    case TextKind::Quote: return palette().quoteText;
+    case TextKind::Link: return palette().link;
+    default: return palette().text;
     }
 }
 
@@ -684,7 +722,7 @@ void MarkdownPreviewView::paintSelf(ui::PaintContext& context) const {
     self->prepare(context);
     const MeasurerBinding binding(measurer_, context);
 
-    context.fillRect(bounds(), palette_.background);
+    context.fillRect(bounds(), palette().background);
     if (layout_ == nullptr) return;
 
     const double y0 = scrollY_;
@@ -694,6 +732,7 @@ void MarkdownPreviewView::paintSelf(ui::PaintContext& context) const {
     for (const std::size_t i : layout_->decorationsInRange(y0, y1)) paintDecoration(context, layout_->decorations[i]);
     paintSelectionAndMatches(context);
     for (std::size_t b = b0; b < b1; ++b) paintBlock(context, b);
+    if (editable()) paintEditing(context);
 
     // Per-block horizontal scroll indicators.
     for (std::size_t b = b0; b < b1; ++b) {
@@ -704,7 +743,7 @@ void MarkdownPreviewView::paintSelf(ui::PaintContext& context) const {
         const double thumb = std::max(24.0, block.rect.size.width * block.rect.size.width / total);
         const double x = block.rect.minX() + (block.rect.size.width - thumb) * (blockScrollX(b) / maxOff);
         context.fillRoundedRect(core::Rect{x, block.rect.maxY() - 6.0 - scrollY_, thumb, 3.0},
-                                palette_.overflowIndicator, 1.5);
+                                palette().overflowIndicator, 1.5);
     }
 }
 
@@ -712,31 +751,38 @@ void MarkdownPreviewView::paintDecoration(ui::PaintContext& context, const markd
     using markdown::DecorationKind;
     const core::Rect view{d.rect.minX(), d.rect.minY() - scrollY_, d.rect.size.width, d.rect.size.height};
     switch (d.kind) {
-    case DecorationKind::CodeBackground: context.fillRoundedRect(view, palette_.codeBackground, 4.0); break;
-    case DecorationKind::QuoteBar: context.fillRect(view, palette_.quoteBar); break;
-    case DecorationKind::Rule: context.fillRect(view, palette_.rule); break;
+    case DecorationKind::CodeBackground: context.fillRoundedRect(view, palette().codeBackground, 4.0); break;
+    case DecorationKind::QuoteBar: context.fillRect(view, palette().quoteBar); break;
+    case DecorationKind::Rule: context.fillRect(view, palette().rule); break;
     case DecorationKind::ListBullet:
-        context.fillRoundedRect(view, palette_.marker, std::min(view.size.width, view.size.height) / 2.0);
+        context.fillRoundedRect(view, palette().marker, std::min(view.size.width, view.size.height) / 2.0);
         break;
     case DecorationKind::ListNumber: {
         const double lh = measurer_.lineHeight(d.style);
         context.drawText(d.text, core::Rect{view.minX(), d.baseline - scrollY_ - kAscentRatio * lh,
                                             view.size.width + 6.0, lh},
-                         fontFor(d.style), palette_.marker, ui::TextAlign::Left);
+                         fontFor(d.style), palette().marker, ui::TextAlign::Left);
         break;
     }
     case DecorationKind::TaskCheckbox: {
         if (d.checked) {
-            context.fillRoundedRect(view, palette_.link, 3.0);
+            context.fillRoundedRect(view, palette().link, 3.0);
             const double w = view.size.width;
             const double h = view.size.height;
             context.drawLine({view.minX() + 0.22 * w, view.minY() + 0.52 * h},
-                             {view.minX() + 0.43 * w, view.minY() + 0.74 * h}, ui::Color::white(), 1.6);
+                             {view.minX() + 0.43 * w, view.minY() + 0.74 * h}, ui::colors().onAccent, 1.6);
             context.drawLine({view.minX() + 0.43 * w, view.minY() + 0.74 * h},
-                             {view.minX() + 0.78 * w, view.minY() + 0.28 * h}, ui::Color::white(), 1.6);
+                             {view.minX() + 0.78 * w, view.minY() + 0.28 * h}, ui::colors().onAccent, 1.6);
         } else {
-            context.strokeRect(view, palette_.marker, 1.2);
+            context.strokeRect(view, palette().marker, 1.2);
         }
+        break;
+    }
+    case DecorationKind::Notice: {
+        const double lh = measurer_.lineHeight(d.style);
+        context.drawText(d.text, core::Rect{view.minX(), d.baseline - scrollY_ - kAscentRatio * lh,
+                                            view.size.width + 8.0, lh},
+                         fontFor(d.style), markdownGraphicColor(palette(), GraphicRole::Notice), ui::TextAlign::Left);
         break;
     }
     case DecorationKind::ImagePlaceholder: {
@@ -765,12 +811,12 @@ void MarkdownPreviewView::paintImagePlaceholder(ui::PaintContext& context, const
     } else {
         label = "Loading image: " + alt;
     }
-    context.fillRoundedRect(viewRect, palette_.placeholderBackground, 6.0);
+    context.fillRoundedRect(viewRect, palette().placeholderBackground, 6.0);
     context.pushClip(viewRect);
     const ui::Font font{13.0, ui::Font::Weight::Regular, true, false};
     const core::Size text = context.measureText(label, font);
     context.drawText(label, core::Rect{8.0, 0.0, std::max(0.0, viewRect.size.width - 16.0), viewRect.size.height},
-                     font, palette_.placeholderText,
+                     font, palette().placeholderText,
                      text.width > viewRect.size.width - 16.0 ? ui::TextAlign::Left : ui::TextAlign::Center);
     context.popClip();
 }
@@ -797,7 +843,8 @@ void MarkdownPreviewView::fillDocRect(ui::PaintContext& context, const core::Rec
 void MarkdownPreviewView::paintSelectionAndMatches(ui::PaintContext& context) const {
     const double y0 = scrollY_;
     const double y1 = scrollY_ + bounds().size.height;
-    if (hasSelection()) {
+    if (editable()) paintEditSelection(context);
+    if (!editable() && hasSelection()) {
         if (selectionRectsDirty_) {
             selectionRects_ = layout_->selectionRects(std::min(selectionAnchor_, selectionFocus_),
                                                       std::max(selectionAnchor_, selectionFocus_), measurer_);
@@ -805,7 +852,7 @@ void MarkdownPreviewView::paintSelectionAndMatches(ui::PaintContext& context) co
         }
         for (const core::Rect& r : selectionRects_) {
             if (r.maxY() < y0 || r.minY() > y1) continue;
-            fillDocRect(context, r, palette_.selection);
+            fillDocRect(context, r, palette().selection);
         }
     }
     if (!matches_.empty()) {
@@ -815,7 +862,7 @@ void MarkdownPreviewView::paintSelectionAndMatches(ui::PaintContext& context) co
         for (; it != matches_.end() && it->block < b1; ++it) {
             const bool current = current_ && static_cast<std::size_t>(it - matches_.begin()) == *current_;
             for (const core::Rect& r : layout_->selectionRects(it->begin, it->end, measurer_)) {
-                fillDocRect(context, r, current ? palette_.currentMatch : palette_.match);
+                fillDocRect(context, r, current ? palette().currentMatch : palette().match);
             }
         }
     }
@@ -841,7 +888,12 @@ void MarkdownPreviewView::paintBlock(ui::PaintContext& context, std::size_t bloc
         clipRight = block.rect.maxX() + off + 32.0;
     }
 
-    if (block.kind == markdown::LayoutBlockKind::Table) {
+    if (block.kind == markdown::LayoutBlockKind::Graphic) {
+        if (block.graphic != 0 && block.graphic <= layout_->graphics.size()) {
+            paintMarkdownGraphic(context, layout_->graphics[block.graphic - 1], core::Point{ox, oy}, palette(),
+                                 palette().text);
+        }
+    } else if (block.kind == markdown::LayoutBlockKind::Table) {
         const auto cellsBegin = layout_->tableCells.begin() + block.cellBegin;
         const auto cellsEnd = layout_->tableCells.begin() + block.cellEnd;
         auto it = std::partition_point(cellsBegin, cellsEnd, [&](const markdown::TableCellLayout& c) {
@@ -850,8 +902,8 @@ void MarkdownPreviewView::paintBlock(ui::PaintContext& context, std::size_t bloc
         for (; it != cellsEnd && it->rect.minY() <= y1; ++it) {
             const core::Rect rect{it->rect.minX() + ox, it->rect.minY() + oy, it->rect.size.width,
                                   it->rect.size.height};
-            if (it->header) context.fillRect(rect, palette_.tableHeaderBackground);
-            context.strokeRect(rect, palette_.tableGrid, 1.0);
+            if (it->header) context.fillRect(rect, palette().tableHeaderBackground);
+            context.strokeRect(rect, palette().tableGrid, 1.0);
         }
         auto cell = std::partition_point(cellsBegin, cellsEnd, [&](const markdown::TableCellLayout& c) {
             return c.rect.maxY() < y0;
@@ -894,6 +946,13 @@ void MarkdownPreviewView::paintRun(ui::PaintContext& context, const markdown::La
                                    const markdown::LayoutBlock& block, std::uint32_t runIndex, double ox,
                                    double oy, double clipLeft, double clipRight) const {
     if (run.text.empty()) return;
+    if (run.graphic != 0) { // an inline formula
+        if (run.graphic > layout_->graphics.size()) return;
+        ui::Color color = colorFor(run.style);
+        if (run.link != 0 && run.link == hoverLink_) color = palette().linkHover;
+        paintMarkdownGraphic(context, layout_->graphics[run.graphic - 1], core::Point{ox, oy}, palette(), color);
+        return;
+    }
     if (runIndex < warmed_.size() && warmed_[runIndex] == 0) {
         measurer_.warm(run.text, run.style);
         warmed_[runIndex] = 1;
@@ -922,12 +981,12 @@ void MarkdownPreviewView::paintRun(ui::PaintContext& context, const markdown::La
     const bool inlineCode = run.style.monospace && block.kind != markdown::LayoutBlockKind::Code &&
                             block.kind != markdown::LayoutBlockKind::Html;
     if (inlineCode) {
-        context.fillRoundedRect(core::Rect{x - 2.0, top, run.width + 4.0, lh}, palette_.inlineCodeBackground, 3.0);
+        context.fillRoundedRect(core::Rect{x - 2.0, top, run.width + 4.0, lh}, palette().inlineCodeBackground, 3.0);
     }
     ui::Color color = colorFor(run.style);
     const bool link = run.link != 0 && !run.isImage;
-    if (run.isImage) color = palette_.placeholderText;
-    if (link && run.link == hoverLink_) color = palette_.linkHover;
+    if (run.isImage) color = palette().placeholderText;
+    if (link && run.link == hoverLink_) color = palette().linkHover;
     context.drawText(text, core::Rect{x, top, run.width + 8.0, lh}, fontFor(run.style), color, ui::TextAlign::Left);
     if (link) {
         context.drawLine({x, run.baseline + oy + 2.0}, {x + run.width, run.baseline + oy + 2.0}, color, 1.0);

@@ -2,6 +2,10 @@
 
 #include "pdf/PdfAnnotation.hpp"
 
+#include "pdf/BundledFontMetrics.hpp"
+#include "pdf/BundledFontOutlines.hpp"
+#include "pdf/PdfTextLayout.hpp"
+
 #include <algorithm>
 #include <array>
 #include <charconv>
@@ -269,7 +273,257 @@ void appendPoint(std::string& out, const PdfPoint& p) {
     appendNumber(out, p.y);
 }
 
+// --- Signatures ----------------------------------------------------------------
+
+constexpr PdfBundledFont kSignatureFont = PdfBundledFont::SerifRegular; // Tinos Regular
+
+struct TextExtent {
+    double advanceEm = 0.0; // sum of advances in ems
+    double ascentEm = 0.0;
+    double descentEm = 0.0; // negative (below the baseline)
+    bool anyGlyph = false;
+};
+
+TextExtent measureSignatureText(std::string_view utf8) {
+    const BundledFontMetrics& metrics = bundledFontMetrics(kSignatureFont);
+    TextExtent extent;
+    if (!metrics.valid()) return extent;
+    const double upm = metrics.unitsPerEm();
+    for (const char32_t cp : decodeUtf8(utf8)) {
+        extent.advanceEm += metrics.advance(cp) / upm;
+        if (metrics.hasGlyph(cp) && cp != U' ') extent.anyGlyph = true;
+    }
+    extent.ascentEm = metrics.ascent() / upm;
+    extent.descentEm = metrics.descent() / upm;
+    return extent;
+}
+
+double clampAspect(double aspect) {
+    if (!std::isfinite(aspect) || !(aspect > 0.0)) return 1.0;
+    return std::clamp(aspect, kMinSignatureAspect, kMaxSignatureAspect);
+}
+
+// Maps content coordinates (x in [0, cw], y in [0, ch], y-up) of a signature
+// fitted into `box` and turned `rotation` clockwise quarter turns to user space.
+class SignatureFrame {
+public:
+    SignatureFrame(const PdfBox& box, int rotation) {
+        const double theta = static_cast<double>(rotation) * kPi / 180.0;
+        cos_ = std::round(std::cos(theta));
+        sin_ = std::round(std::sin(theta)); // exact for quarter turns
+        const bool quarter = rotation == 90 || rotation == 270;
+        width_ = quarter ? box.height() : box.width();
+        height_ = quarter ? box.width() : box.height();
+        cx_ = (box.left + box.right) / 2.0;
+        cy_ = (box.bottom + box.top) / 2.0;
+    }
+    double width() const { return width_; }
+    double height() const { return height_; }
+    // Clockwise by theta in y-up space: x' = x cos + y sin, y' = -x sin + y cos.
+    PdfPoint toUser(double x, double y) const {
+        const double lx = x - width_ / 2.0;
+        const double ly = y - height_ / 2.0;
+        return PdfPoint{cx_ + lx * cos_ + ly * sin_, cy_ - lx * sin_ + ly * cos_};
+    }
+
+private:
+    double cos_ = 1.0;
+    double sin_ = 0.0;
+    double width_ = 0.0;
+    double height_ = 0.0;
+    double cx_ = 0.0;
+    double cy_ = 0.0;
+};
+
+void appendSignature(PdfAppearance& ap, const PdfAnnotationData& data) {
+    if (data.signature == nullptr) return;
+    const PdfSignatureAppearance& sig = *data.signature;
+    const PdfBox box = fitSignatureBox(signatureAspect(sig), data.rect, data.rotation);
+    const SignatureFrame frame(box, data.rotation);
+    switch (sig.source) {
+    case PdfSignatureSource::Ink: {
+        const double aspect = std::max(1e-9, sig.aspect);
+        const double sx = frame.width() / aspect;
+        const double sy = frame.height();
+        const double width = std::max(0.25, static_cast<double>(sig.inkWidth) * frame.height());
+        for (const auto& stroke : sig.strokes) {
+            if (stroke.empty()) continue;
+            std::vector<PdfPathSegment> segs;
+            segs.reserve(stroke.size() + 1);
+            segs.push_back(moveTo(frame.toUser(stroke.front().x * sx, stroke.front().y * sy)));
+            if (stroke.size() == 1) {
+                segs.push_back(lineTo(frame.toUser(stroke.front().x * sx + 0.01, stroke.front().y * sy)));
+            } else {
+                for (std::size_t i = 1; i < stroke.size(); ++i) {
+                    segs.push_back(lineTo(frame.toUser(stroke[i].x * sx, stroke[i].y * sy)));
+                }
+            }
+            ap.paths.push_back(strokePath(std::move(segs), data.color, width, true));
+        }
+        break;
+    }
+    case PdfSignatureSource::Text: {
+        const TextExtent extent = measureSignatureText(sig.text);
+        const double size = signatureFontSize(sig.text, frame.width(), frame.height());
+        if (!(size > 0.0) || !extent.anyGlyph) break;
+        const BundledFontMetrics& metrics = bundledFontMetrics(kSignatureFont);
+        const double upm = metrics.unitsPerEm();
+        const double unit = size / upm;
+        const double lineHeight = (extent.ascentEm - extent.descentEm) * size;
+        double penX = (frame.width() - extent.advanceEm * size) / 2.0;
+        const double baseline = (frame.height() - lineHeight) / 2.0 - extent.descentEm * size;
+        PdfAppearancePath glyphs;
+        glyphs.fill = data.color;
+        for (const char32_t cp : decodeUtf8(sig.text)) {
+            for (PdfPathSegment seg : bundledGlyphOutline(kSignatureFont, cp)) {
+                const auto map = [&](const PdfPoint& p) {
+                    return frame.toUser(penX + p.x * unit, baseline + p.y * unit);
+                };
+                seg.p = map(seg.p);
+                seg.c1 = map(seg.c1);
+                seg.c2 = map(seg.c2);
+                glyphs.segments.push_back(seg);
+            }
+            penX += metrics.advance(cp) * unit;
+        }
+        if (!glyphs.segments.empty()) ap.paths.push_back(std::move(glyphs));
+        break;
+    }
+    case PdfSignatureSource::Image:
+        if (sig.image != nullptr && sig.image->isValid()) {
+            ap.images.push_back(PdfAppearanceImage{sig.image, box, data.rotation});
+        }
+        break;
+    }
+}
+
 } // namespace
+
+std::optional<PdfSignatureAppearance> makeInkSignature(const std::vector<std::vector<PdfPoint>>& padStrokes,
+                                                       double penWidth) {
+    if (padStrokes.size() > kMaxSignatureStrokes) return std::nullopt;
+    const double pen = std::isfinite(penWidth) && penWidth > 0.0 ? penWidth : 2.0;
+    BoxAccumulator acc;
+    std::size_t total = 0;
+    for (const auto& stroke : padStrokes) {
+        total += stroke.size();
+        if (total > kMaxSignaturePoints) return std::nullopt;
+        for (const PdfPoint& p : stroke) {
+            if (!isReasonable(p)) return std::nullopt;
+            acc.add(p);
+        }
+    }
+    if (!acc.any) return std::nullopt;
+    acc.inflate(pen / 2.0);
+    PdfBox b = acc.box; // y-down pad space: bottom < top numerically = visual top < visual bottom
+    double w = b.width();
+    double h = b.height();
+    if (w / h > kMaxSignatureAspect) {
+        const double grow = (w / kMaxSignatureAspect - h) / 2.0;
+        b.bottom -= grow;
+        b.top += grow;
+        h = b.height();
+    } else if (w / h < kMinSignatureAspect) {
+        const double grow = (h * kMinSignatureAspect - w) / 2.0;
+        b.left -= grow;
+        b.right += grow;
+        w = b.width();
+    }
+    PdfSignatureAppearance out;
+    out.source = PdfSignatureSource::Ink;
+    out.aspect = w / h;
+    out.inkWidth = static_cast<float>(std::clamp(pen / h, 0.005, 0.25));
+    const double scale = 1.0 / h;
+    out.strokes.reserve(padStrokes.size());
+    for (const auto& stroke : padStrokes) {
+        if (stroke.empty()) continue;
+        std::vector<PdfPoint> mapped;
+        mapped.reserve(stroke.size());
+        // y-down -> y-up: the visual top (smallest y) becomes 1.
+        for (const PdfPoint& p : stroke) mapped.push_back(PdfPoint{(p.x - b.left) * scale, (b.top - p.y) * scale});
+        out.strokes.push_back(std::move(mapped));
+    }
+    return out;
+}
+
+double signatureAspect(const PdfSignatureAppearance& signature) {
+    switch (signature.source) {
+    case PdfSignatureSource::Ink:
+        return clampAspect(signature.aspect);
+    case PdfSignatureSource::Text: {
+        const TextExtent extent = measureSignatureText(signature.text);
+        const double height = extent.ascentEm - extent.descentEm;
+        if (!(extent.advanceEm > 0.0) || !(height > 0.0)) return 1.0;
+        return clampAspect(extent.advanceEm / height);
+    }
+    case PdfSignatureSource::Image:
+        if (signature.image == nullptr || signature.image->height() == 0) return 1.0;
+        return clampAspect(static_cast<double>(signature.image->width()) /
+                           static_cast<double>(signature.image->height()));
+    }
+    return 1.0;
+}
+
+bool isValidSignature(const PdfSignatureAppearance& signature) {
+    switch (signature.source) {
+    case PdfSignatureSource::Ink: {
+        if (signature.strokes.empty() || signature.strokes.size() > kMaxSignatureStrokes) return false;
+        if (!std::isfinite(signature.aspect) || signature.aspect < kMinSignatureAspect - 1e-9 ||
+            signature.aspect > kMaxSignatureAspect + 1e-9) {
+            return false;
+        }
+        if (!(signature.inkWidth > 0.0F && signature.inkWidth <= 0.5F)) return false;
+        std::size_t total = 0;
+        for (const auto& stroke : signature.strokes) {
+            if (stroke.empty()) return false;
+            total += stroke.size();
+            if (total > kMaxSignaturePoints) return false;
+            for (const PdfPoint& p : stroke) {
+                if (!std::isfinite(p.x) || !std::isfinite(p.y) || std::fabs(p.x) > 100.0 || std::fabs(p.y) > 100.0) {
+                    return false;
+                }
+            }
+        }
+        return true;
+    }
+    case PdfSignatureSource::Text:
+        return !signature.text.empty() && signature.text.size() <= kMaxSignatureTextBytes &&
+               isValidUtf8(signature.text) && signature.text.find('\n') == std::string::npos &&
+               measureSignatureText(signature.text).anyGlyph;
+    case PdfSignatureSource::Image:
+        return signature.image != nullptr && signature.image->isValid() && signature.image->width() > 0 &&
+               signature.image->height() > 0 && signature.image->width() <= kMaxSignatureImageSide &&
+               signature.image->height() <= kMaxSignatureImageSide;
+    }
+    return false;
+}
+
+PdfBox fitSignatureBox(double aspect, const PdfBox& available, int rotation) {
+    const PdfBox a = normalizedBox(available);
+    const double ratio = clampAspect(aspect);
+    const bool quarter = rotation == 90 || rotation == 270;
+    const double availW = quarter ? a.height() : a.width();
+    const double availH = quarter ? a.width() : a.height();
+    double cw = availW;
+    double ch = availH;
+    if (availH > 0.0 && availW / availH > ratio) {
+        cw = availH * ratio;
+    } else {
+        ch = availW / ratio;
+    }
+    const double uw = quarter ? ch : cw;
+    const double uh = quarter ? cw : ch;
+    const double cx = (a.left + a.right) / 2.0;
+    const double cy = (a.bottom + a.top) / 2.0;
+    return PdfBox{cx - uw / 2.0, cy - uh / 2.0, cx + uw / 2.0, cy + uh / 2.0};
+}
+
+double signatureFontSize(std::string_view text, double width, double height) {
+    const TextExtent extent = measureSignatureText(text);
+    const double lineEm = extent.ascentEm - extent.descentEm;
+    if (!(extent.advanceEm > 0.0) || !(lineEm > 0.0) || !(width > 0.0) || !(height > 0.0)) return 0.0;
+    return std::min(width / extent.advanceEm, height / lineEm);
+}
 
 const char* stampNameText(PdfStampName name) {
     switch (name) {
@@ -339,6 +593,7 @@ void normalizeAnnotation(PdfAnnotationData& data) {
     case PdfAnnotationKind::Circle:
     case PdfAnnotationKind::Note:
     case PdfAnnotationKind::Stamp:
+    case PdfAnnotationKind::Signature:
     case PdfAnnotationKind::Other:
         break;
     }
@@ -413,6 +668,9 @@ bool isWritableAnnotation(const PdfAnnotationData& data) {
     case PdfAnnotationKind::Note:
     case PdfAnnotationKind::Stamp:
         return data.rect.width() >= 1.0 && data.rect.height() >= 1.0;
+    case PdfAnnotationKind::Signature:
+        return data.rect.width() >= 1.0 && data.rect.height() >= 1.0 && data.signature != nullptr &&
+               isValidSignature(*data.signature);
     case PdfAnnotationKind::Other:
         return false;
     }
@@ -539,6 +797,9 @@ PdfAppearance buildAppearance(const PdfAnnotationData& data) {
         ap.texts.push_back(std::move(text));
         break;
     }
+    case PdfAnnotationKind::Signature:
+        appendSignature(ap, data);
+        break;
     case PdfAnnotationKind::Other:
         break;
     }

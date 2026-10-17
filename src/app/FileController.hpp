@@ -13,6 +13,7 @@
 #include "editor/DocumentSession.hpp"
 #include "editor/PageCommands.hpp"
 #include "editor/PageRangeParser.hpp"
+#include "pdf/ImageReduce.hpp"
 #include "platform/AppLifecycle.hpp"
 
 #include <algorithm>
@@ -40,7 +41,15 @@ enum class FileCommand : std::uint8_t {
     Merge = 4,        // append all pages of another PDF
     Extract = 5,      // write the selected pages to a new PDF
     Split = 6,        // write page ranges to one new PDF each
+    ExportPdf = 7,    // Markdown tabs: export as PDF (MarkdownExportController)
+    SaveAsRemovePassword = 8, // Save As without the document's password (ADR-0030)
+    SaveReducedHigh = 9,      // Save Reduced Copy, 200 dpi / JPEG q85 (ADR-0028)
+    SaveReducedMedium = 10,   // ... 150 dpi / q75
+    SaveReducedSmall = 11,    // ... 100 dpi / q60
+    Compare = 12,             // Compare With... (ADR-0029; handled by the shell)
 };
+
+class MarkdownExportController;
 
 // The application file lifecycle for one shell, on top of the editor's save
 // pipeline (editor::DocumentSaver) and the platform dialogs/alerts:
@@ -128,6 +137,8 @@ public:
     // Where Extract takes its pages from (wired by the shell to the page
     // editing controller).
     void setSelectionProvider(SelectionProvider provider) { selectionProvider_ = std::move(provider); }
+    // Where ExportPdf goes (wired by the shell; null disables the command).
+    void setMarkdownExporter(MarkdownExportController* exporter) { markdownExporter_ = exporter; }
 
     bool canPerform(FileCommand command) const;
     // Runs the command on the active tab (a status message otherwise).
@@ -139,6 +150,14 @@ public:
     void save(DocumentTab& tab);
     // Save As: shows the save panel first; cancellation changes nothing.
     void saveAs(DocumentTab& tab);
+    // Save As of a document that was opened with a password, written without
+    // its encryption (ADR-0030). The tab then follows the new, unprotected
+    // file like after any Save As.
+    void saveAsRemovingPassword(DocumentTab& tab);
+    // Save Reduced Copy (ADR-0028): writes a copy of the document with its
+    // oversized images downsampled and JPEG re-encoded, chosen in the save
+    // panel. An export: the tab, its path and its dirty state do not change.
+    void saveReducedCopy(DocumentTab& tab, pdf::ReduceQuality quality);
     // Writes `pages` (model order) to a new PDF chosen in the save panel.
     void extract(DocumentTab& tab, std::span<const core::PageId> pages);
     // Split: prompts for page ranges (IAlertService::promptForText), then
@@ -190,13 +209,22 @@ private:
         std::uint64_t generation = 0;
         std::filesystem::path destination;
         bool closeTabWhenDone = false;
+        bool removePassword = false; // ADR-0030
     };
 
     // Interactive = reports "already saving" when busy; queued = chains
     // behind the running save (the quit lifecycle).
     void requestSave(DocumentTab& tab, std::filesystem::path destination, bool closeTabWhenDone,
-                     bool interactive);
+                     bool interactive, bool removePassword = false);
+    // Shared by saveAs / saveAsRemovingPassword.
+    void runSaveAs(DocumentTab& tab, bool removePassword);
     void startNextSave();
+    // False when the user declines to write a document with unapplied redaction marks.
+    bool allowUnappliedRedactions(DocumentTab& tab);
+    // False when the user declines to save edits over digital signatures
+    // (ADR-0025): asked once per tab, only when the loaded base document has
+    // signatures and the session has unsaved edits.
+    bool allowSignedSave(DocumentTab& tab);
     // Markdown saves share activeSave_/queue/saveSettled with PDF saves; only
     // the job and its completion differ.
     void launchMarkdownSave(DocumentTab& tab, SaveRequest request, WorkerToken token);
@@ -239,6 +267,7 @@ private:
     StatusSink setStatus_;
     NotifySink notifyDocumentChanged_;
     SelectionProvider selectionProvider_;
+    MarkdownExportController* markdownExporter_ = nullptr;
     std::function<int(core::io::AtomicWriteFault)> markdownFaultInjector_;
 
     // Guards dispatcher-posted completions against a destroyed controller
@@ -258,6 +287,8 @@ private:
     std::optional<PendingQuit> pendingQuit_;
     // Tabs the user chose to close behind their in-flight save.
     std::vector<TabId> closeAfterSave_;
+    // Tabs already warned about invalidating their digital signatures.
+    std::vector<TabId> signatureWarned_;
 
     // Fences the worker tasks (save, extract, split, import). Declared last:
     // destroyed first, after ~FileController() closed it explicitly.

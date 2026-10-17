@@ -1424,3 +1424,85 @@ RIVET_TEST(contentProbeAcceptsCommonContentAndRejectsLossyPages) {
 }
 
 
+
+// --- Invisible text runs (OCR layer, ADR-0027) -----------------------------------
+
+RIVET_TEST(contentInvisibleRunsAreExtractableButNeverPainted) {
+    auto engine = pdfiumEngine();
+    if (!engine) return;
+    auto document = openText(*engine, simplePdf("/MediaBox [0 0 200 200]", "1 0 0 rg 20 20 60 40 re f\n"));
+    if (!document) return;
+    const PdfPageView view = nativeView(*document, 0);
+
+    Edits edits;
+    rivet::pdf::PdfInvisibleTextRun wide;
+    wide.text = "Hello";
+    wide.placement = core::Matrix::translation(20.0, 100.0);
+    wide.fontSize = 20.0;
+    wide.horizontalScale = 2.0;
+    rivet::pdf::PdfInvisibleTextRun narrow = wide;
+    narrow.text = "World";
+    narrow.placement = core::Matrix::translation(20.0, 150.0);
+    narrow.horizontalScale = 1.0;
+    edits.value->invisibleRuns = {wide, narrow};
+    edits.value->invisibleTag = 77;
+    CHECK(rivet::pdf::validate(*edits.value, 1).has_value());
+
+    const auto checkText = [&](const PdfDocument& doc, const PdfPageContentEditsPtr& applied) {
+        const auto page = doc.textPage(0, view, applied);
+        CHECK(page.has_value());
+        if (!page.has_value()) return;
+        CHECK_EQ((*page)->text().find("Hello") != std::string::npos, true);
+        // Group the letters by line: display y is flipped, so the run at user
+        // y 100 (wide) lies below the one at user y 150 (narrow).
+        double wideLeft = 1e9, wideRight = -1e9, narrowLeft = 1e9, narrowRight = -1e9, wideBottom = 0.0;
+        std::size_t wideCount = 0, narrowCount = 0;
+        for (const auto& ch : (*page)->chars()) {
+            if (ch.unicode <= 0x20) continue;
+            const double centerY = ch.bounds.origin.y + ch.bounds.size.height / 2.0;
+            const double left = ch.bounds.origin.x;
+            const double right = left + ch.bounds.size.width;
+            if (centerY > 70.0) {
+                wideLeft = std::min(wideLeft, left);
+                wideRight = std::max(wideRight, right);
+                wideBottom = std::max(wideBottom, ch.bounds.origin.y + ch.bounds.size.height);
+                ++wideCount;
+            } else {
+                narrowLeft = std::min(narrowLeft, left);
+                narrowRight = std::max(narrowRight, right);
+                ++narrowCount;
+            }
+        }
+        CHECK_EQ(wideCount, std::size_t{5});
+        CHECK_EQ(narrowCount, std::size_t{5});
+        // The glyph box starts at the run origin plus the (scaled) left bearing.
+        CHECK_GT(wideLeft, 20.0);
+        CHECK_LT(wideLeft, 27.0);
+        CHECK_NEAR(wideBottom, 100.0, 6.0); // baseline at user y 100 (display y 100) plus descent
+        // horizontalScale 2 stretches the word (glyph boxes keep PDFium's own side bearings, so not exactly 2x).
+        CHECK_GT((wideRight - wideLeft) / (narrowRight - narrowLeft), 1.5);
+        CHECK_LT((wideRight - wideLeft) / (narrowRight - narrowLeft), 2.2);
+    };
+
+    // Display materialization and the saved file agree.
+    checkText(*document, edits.ptr());
+    const RoundTrip saved = roundTrip(*engine, *document, edits.ptr());
+    CHECK(saved.reopened != nullptr);
+    if (saved.reopened) checkText(*saved.reopened, nullptr);
+
+    // Render mode 3: not a single painted pixel changes.
+    const core::Bitmap before = renderFull(*document, 0, nullptr);
+    const core::Bitmap after = renderFull(*document, 0, edits.ptr());
+    CHECK_EQ(differingFraction(before, after, 0), 0.0);
+    if (saved.reopened) CHECK_EQ(differingFraction(before, renderFull(*saved.reopened, 0, nullptr), 8), 0.0);
+
+    // The runs are created text objects with render mode 3.
+    const auto content = contentOf(*document, 0, edits.ptr());
+    if (content) {
+        std::size_t invisible = 0;
+        for (const PdfContentObject& object : content->objects) {
+            if (object.type == PdfContentObjectType::Text && object.renderMode == 3) ++invisible;
+        }
+        CHECK_EQ(invisible, std::size_t{2});
+    }
+}

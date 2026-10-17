@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 #include "ui/SourceEditor.hpp"
+#include "ui/Theme.hpp"
 
 #include "ui/Utf8.hpp"
 
@@ -11,14 +12,6 @@ namespace rivet::ui {
 
 namespace {
 
-constexpr Color kBackground = Color::white();
-constexpr Color kGutterBackground = Color::rgba(0.96, 0.96, 0.96, 1.0);
-constexpr Color kGutterText = Color::rgba(0.55, 0.55, 0.55, 1.0);
-constexpr Color kGutterSeparator = Color::rgba(0.0, 0.0, 0.0, 0.10);
-constexpr Color kTextColor = Color::rgba(0.10, 0.10, 0.10, 1.0);
-constexpr Color kSelectionFocused = Color::rgba(0.0, 0.47, 1.0, 0.25);
-constexpr Color kSelectionUnfocused = Color::rgba(0.5, 0.5, 0.5, 0.25);
-constexpr Color kCaretColor = Color::black();
 constexpr double kCaretWidth = 1.5;
 constexpr auto kMultiClickWindow = std::chrono::milliseconds(500);
 constexpr double kMultiClickSlop = 4.0;
@@ -577,6 +570,14 @@ void SourceEditor::paste() {
 // --- keyboard ------------------------------------------------------------------------
 
 bool SourceEditor::onKey(const KeyEvent& event) {
+    const std::size_t anchor = anchor_;
+    const std::size_t caret = caret_;
+    const bool handled = handleKey(event);
+    if ((anchor != anchor_ || caret != caret_) && onSelectionChanged_) onSelectionChanged_();
+    return handled;
+}
+
+bool SourceEditor::handleKey(const KeyEvent& event) {
     if (!isFocused()) return false;
     const ModifierFlags& mods = event.modifiers;
     const bool primary = mods.command || mods.control;
@@ -711,6 +712,14 @@ bool SourceEditor::onKey(const KeyEvent& event) {
 // --- mouse ----------------------------------------------------------------------------
 
 bool SourceEditor::onMouse(const PointerEvent& event) {
+    const std::size_t anchor = anchor_;
+    const std::size_t caret = caret_;
+    const bool handled = handleMouse(event);
+    if ((anchor != anchor_ || caret != caret_) && onSelectionChanged_) onSelectionChanged_();
+    return handled;
+}
+
+bool SourceEditor::handleMouse(const PointerEvent& event) {
     if (drag_ == DragMode::None && Widget::onMouse(event)) return true; // scrollbars
 
     switch (event.type) {
@@ -804,7 +813,7 @@ void SourceEditor::paintSelf(PaintContext& context) const {
     font.monospace = true;
 
     const core::Rect all = bounds();
-    context.fillRect(all, kBackground);
+    context.fillRect(all, colors().windowBackground);
 
     const core::Rect area = textRect();
     const double gutter = gutterWidth();
@@ -816,14 +825,14 @@ void SourceEditor::paintSelf(PaintContext& context) const {
 
     if (gutter > 0.0) {
         context.pushClip(core::Rect{0.0, 0.0, gutter, area.size.height});
-        context.fillRect(core::Rect{0.0, 0.0, gutter, area.size.height}, kGutterBackground);
+        context.fillRect(core::Rect{0.0, 0.0, gutter, area.size.height}, colors().chromeBackground);
         for (std::size_t line = first; line <= last; ++line) {
             const double y = static_cast<double>(line) * lineHeight_ - scrollY_;
             context.drawText(std::to_string(line + 1), core::Rect{0.0, y, gutter - 8.0, lineHeight_}, font,
-                             kGutterText, TextAlign::Right);
+                             colors().textSecondary, TextAlign::Right);
         }
         context.drawLine(core::Point{gutter - 0.5, 0.0}, core::Point{gutter - 0.5, area.size.height},
-                         kGutterSeparator, 1.0);
+                         colors().chromeSeparator, 1.0);
         context.popClip();
     }
 
@@ -842,7 +851,7 @@ void SourceEditor::paintSelf(PaintContext& context) const {
             if (to > from) {
                 context.fillRect(core::Rect{kPadding + static_cast<double>(from) * cellWidth_ - scrollX_, y,
                                             static_cast<double>(to - from) * cellWidth_, lineHeight_},
-                                 focused ? kSelectionFocused : kSelectionUnfocused);
+                                 focused ? colors().selectionHighlight : colors().selectionInactive);
             }
         }
 
@@ -856,7 +865,7 @@ void SourceEditor::paintSelf(PaintContext& context) const {
                 const bool isCurrent = currentHighlight_ && static_cast<std::size_t>(it - highlights_.begin()) == *currentHighlight_;
                 context.fillRect(core::Rect{kPadding + static_cast<double>(from) * cellWidth_ - scrollX_, y,
                                             static_cast<double>(to - from) * cellWidth_, lineHeight_},
-                                 isCurrent ? Color::rgba(1.0, 0.55, 0.0, 0.6) : Color::rgba(1.0, 0.85, 0.0, 0.45));
+                                 isCurrent ? colors().searchHighlightCurrent : colors().searchHighlight);
             }
         }
 
@@ -866,12 +875,12 @@ void SourceEditor::paintSelf(PaintContext& context) const {
             const double x = kPadding + static_cast<double>(startCol) * cellWidth_ - scrollX_;
             context.drawText(slice, core::Rect{x, y, (static_cast<double>(lastCol - startCol) + 2.0) * cellWidth_,
                                                lineHeight_},
-                             font, kTextColor, TextAlign::Left);
+                             font, colors().textPrimary, TextAlign::Left);
         }
 
         if (focused && line == caretLineIndex) {
             const double x = kPadding + static_cast<double>(columnBetween(ls, caret_)) * cellWidth_ - scrollX_;
-            context.fillRect(core::Rect{x, y, kCaretWidth, lineHeight_}, kCaretColor);
+            context.fillRect(core::Rect{x, y, kCaretWidth, lineHeight_}, colors().textPrimary);
         }
     }
     context.popClip();

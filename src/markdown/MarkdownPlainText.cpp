@@ -31,6 +31,7 @@ void walkInlines(const std::vector<Inline>& inlines, Sink& sink) {
         case InlineKind::Text:
         case InlineKind::Code:
         case InlineKind::Image:
+        case InlineKind::Math:
             sink.add(in.text, in.range);
             break;
         case InlineKind::SoftBreak:

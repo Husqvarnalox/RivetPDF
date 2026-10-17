@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 #include "ui/OutlinePanel.hpp"
+#include "ui/Theme.hpp"
 
 #include "core/geometry/Insets.hpp"
 
@@ -10,11 +11,6 @@
 namespace rivet::ui {
 namespace {
 
-constexpr Color kBackgroundColor = Color::gray(0.949);
-constexpr Color kRowTextColor = Color::rgba(0.10, 0.10, 0.10, 1.0);
-constexpr Color kRowHoverText = Color::rgba(0.0, 0.0, 0.0, 1.0);
-constexpr Color kSelectionFill = Color::rgba(0.0, 0.0, 0.0, 0.12);
-constexpr Color kMarkerGlyphColor = Color::gray(0.35);
 constexpr Font kRowFont{13.0, Font::Weight::Regular};
 constexpr Font kMarkerFont{11.0, Font::Weight::Regular};
 constexpr const char* kEmptyStateText = "No outline";
@@ -165,11 +161,11 @@ bool OutlinePanel::onMouse(const PointerEvent& event) {
 }
 
 void OutlinePanel::paintSelf(PaintContext& context) const {
-    context.fillRect(bounds(), kBackgroundColor);
+    context.fillRect(bounds(), colors().chromeBackground);
     context.pushClip(bounds());
 
     if (rows_.empty()) {
-        context.drawText(kEmptyStateText, bounds(), kEmptyStateFont, Color::gray(0.45),
+        context.drawText(kEmptyStateText, bounds(), kEmptyStateFont, colors().textSecondary,
                          TextAlign::Left);
         context.popClip();
         return;
@@ -181,14 +177,14 @@ void OutlinePanel::paintSelf(PaintContext& context) const {
         const OutlineRow& rowData = rows_[i];
         const core::Rect row = rowRect(i).translated(scrollShift);
         if (selectedIndex_ && *selectedIndex_ == i) {
-            context.fillRoundedRect(row.inset(core::Insets::horizontal(3.0)), kSelectionFill, 5.0);
+            context.fillRoundedRect(row.inset(core::Insets::horizontal(3.0)), colors().listSelection, 5.0);
         }
 
         // Disclosure marker (children only).
         if (rowData.hasChildren) {
             context.drawText(rowData.expanded ? kExpandedGlyph : kCollapsedGlyph,
                              markerRect(i).translated(scrollShift), kMarkerFont,
-                             kMarkerGlyphColor, TextAlign::Center);
+                             colors().textSecondary, TextAlign::Center);
         }
 
         // Title, indented past the marker.
@@ -197,8 +193,8 @@ void OutlinePanel::paintSelf(PaintContext& context) const {
         context.drawText(rowData.title,
                          core::Rect{textX, row.minY(),
                                     std::max(0.0, bounds().size.width - textX), kRowHeight},
-                         kRowFont, (selectedIndex_ && *selectedIndex_ == i) ? kRowHoverText
-                                                                            : kRowTextColor,
+                         kRowFont, (selectedIndex_ && *selectedIndex_ == i) ? colors().textPrimary
+                                                                            : colors().textPrimary,
                          TextAlign::Left);
     }
     context.popClip();

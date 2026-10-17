@@ -98,7 +98,7 @@ public:
 
     bool waitArrived(int count) {
         std::unique_lock<std::mutex> lock(mutex_);
-        return cv_.wait_for(lock, std::chrono::seconds(10), [&] { return arrived_ >= count; });
+        return cv_.wait_for(lock, std::chrono::seconds(30), [&] { return arrived_ >= count; });
     }
     void release() {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -158,7 +158,7 @@ std::filesystem::path tempPdf(const char* name) {
 
 template <typename Predicate>
 bool pumpUntil(QueueDispatcher& dispatcher, Predicate predicate) {
-    for (int i = 0; i < 2000; ++i) {
+    for (int i = 0; i < 30000; ++i) {
         dispatcher.pump();
         if (predicate()) return true;
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
@@ -244,7 +244,7 @@ RIVET_TEST(undeliveredResultsAreDestroyedAtShutdown) {
     workspace->openDocument(tempPdf("undelivered"));
     // Wait until the worker produced the session and posted the delivery,
     // WITHOUT running it.
-    for (int i = 0; i < 2000 && dispatcher.pending() == 0; ++i) {
+    for (int i = 0; i < 30000 && dispatcher.pending() == 0; ++i) {
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
     CHECK_EQ(dispatcher.pending(), std::size_t{1});

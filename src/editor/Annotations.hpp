@@ -7,6 +7,7 @@
 // everything named *View / Display* here is in the DISPLAY space of the
 // page's current view (points, origin top-left, y-down, rotation applied).
 
+#include "core/Bitmap.hpp"
 #include "core/StrongId.hpp"
 #include "core/geometry/Point.hpp"
 #include "core/geometry/Rect.hpp"
@@ -89,7 +90,15 @@ struct DisplayText {
     bool bold = true;
 };
 
+struct DisplayImage {
+    // Already turned for display (upright as it appears on screen), so the
+    // painter draws it into `box` unrotated. Straight-alpha BGRA.
+    std::shared_ptr<const core::Bitmap> bitmap;
+    core::Rect box; // display space
+};
+
 struct DisplayAppearance {
+    std::vector<DisplayImage> images; // painted first
     std::vector<DisplayPath> paths; // painted in order, below texts
     std::vector<DisplayText> texts;
     float opacity = 1.0F;

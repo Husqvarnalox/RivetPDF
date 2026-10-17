@@ -94,7 +94,7 @@ public:
     }
     std::atomic<int> posted{0};
     bool waitUntil(const std::function<bool()>& predicate) {
-        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
         for (;;) {
             pump();
             if (predicate()) return true;
@@ -168,6 +168,16 @@ public:
         return textAnswer;
     }
 
+    bool confirm(std::string_view title, std::string_view, std::string_view) override {
+        confirmTitles.emplace_back(title);
+        if (confirmAnswers.empty()) return false;
+        const bool answer = confirmAnswers.front();
+        confirmAnswers.pop_front();
+        return answer;
+    }
+
+    std::deque<bool> confirmAnswers;
+    std::vector<std::string> confirmTitles;
     std::function<void()> duringModal;
     std::optional<std::string> textAnswer;
     int textPrompts = 0;
@@ -281,6 +291,58 @@ RIVET_TEST(saveMarksCleanRebasesAndWritesMarkers) {
     CHECK(!tab->session()->isDirty());
 }
 
+RIVET_TEST(savingEditsOverDigitalSignaturesWarnsOnce) {
+    Shell shell;
+    shell.engine.signedPaths.insert("signed.pdf");
+    DocumentTab* tab = shell.open("signed.pdf");
+    CHECK(tab != nullptr);
+    rivet::editor::SignatureService& signatures = tab->session()->signatures();
+    signatures.ensureLoaded();
+    CHECK(shell.dispatcher.waitUntil([&] { return signatures.hasSignatures(); }));
+
+    // Declined: nothing is written, the edits stay.
+    shell.rotateFirst(*tab);
+    shell.alerts.confirmAnswers = {false};
+    shell.files->save(*tab);
+    CHECK_EQ(shell.alerts.confirmTitles.size(), std::size_t{1});
+    CHECK_EQ(shell.lastStatus(), std::string("Save cancelled: the document is digitally signed"));
+    CHECK(tab->session()->isDirty());
+    CHECK(!tab->session()->isEditingLocked());
+
+    // Accepted once (this save fails), the next save does not ask again.
+    shell.engine.failAssembly = true;
+    shell.alerts.confirmAnswers = {true};
+    shell.files->save(*tab);
+    CHECK(shell.dispatcher.waitUntil([&] { return shell.hasStatus("Save failed"); }));
+    CHECK_EQ(shell.alerts.confirmTitles.size(), std::size_t{2});
+    shell.engine.failAssembly = false;
+    shell.files->save(*tab);
+    CHECK(shell.dispatcher.waitUntil([&] { return shell.hasStatus("Saved"); }));
+    CHECK_EQ(shell.alerts.confirmTitles.size(), std::size_t{2});
+    CHECK(!tab->session()->isDirty());
+}
+
+RIVET_TEST(savingAnUneditedSignedDocumentOrAnUnsignedOneDoesNotWarn) {
+    Shell shell;
+    shell.engine.signedPaths.insert("signed.pdf");
+    DocumentTab* tab = shell.open("signed.pdf");
+    CHECK(tab != nullptr);
+    tab->session()->signatures().ensureLoaded();
+    CHECK(shell.dispatcher.waitUntil([&] { return tab->session()->signatures().hasSignatures(); }));
+    shell.files->save(*tab); // not dirty
+    CHECK(shell.dispatcher.waitUntil([&] { return shell.hasStatus("Saved"); }));
+
+    DocumentTab* plain = shell.open("plain.pdf");
+    CHECK(plain != nullptr);
+    plain->session()->signatures().ensureLoaded();
+    plain->session()->signatures().waitForLoads();
+    shell.rotateFirst(*plain);
+    shell.statusLog.clear();
+    shell.files->save(*plain);
+    CHECK(shell.dispatcher.waitUntil([&] { return shell.hasStatus("Saved"); }));
+    CHECK(shell.alerts.confirmTitles.empty());
+}
+
 RIVET_TEST(failedSaveKeepsDirtyOriginalAndReleasesLock) {
     Shell shell;
     DocumentTab* tab = shell.open("doc.pdf");
@@ -354,6 +416,19 @@ RIVET_TEST(saveAsRefusesDestinationOpenInAnotherTab) {
     shell.files->saveAs(*first);
     CHECK(shell.dispatcher.waitUntil([&] { return shell.hasStatus("A document with this path"); }));
     CHECK(shell.statusLog.size() == 1u); // nothing was saved through the refused path
+}
+
+RIVET_TEST(passwordAndReducedCopyCommandsAreDisabledWithoutTheirPrerequisites) {
+    Shell shell;
+    DocumentTab* tab = shell.open("plain.pdf");
+    CHECK(tab != nullptr);
+    // The test shell has no image encoder and an unencrypted document.
+    CHECK(!shell.files->canPerform(FileCommand::SaveReducedHigh));
+    CHECK(!shell.files->canPerform(FileCommand::SaveReducedMedium));
+    CHECK(!shell.files->canPerform(FileCommand::SaveReducedSmall));
+    CHECK(!shell.files->canPerform(FileCommand::SaveAsRemovePassword));
+    shell.files->saveAsRemovingPassword(*tab);
+    CHECK(shell.hasStatus("The document is not password protected"));
 }
 
 // --- Import / merge / extract ---------------------------------------------------

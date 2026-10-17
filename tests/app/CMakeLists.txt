@@ -1,8 +1,21 @@
 add_executable(rivet_app_tests
     TestDocumentWorkspace.cpp
     TestShellWiring.cpp
+    # ADR-0033 shell chrome (welcome, tool modes, sidebar, overflow menu).
+    TestShellChrome.cpp
     TestWorkspaceLifecycle.cpp
     TestUrlPolicy.cpp
+    # Saved signatures (ADR-0025).
+    TestSignatureStore.cpp
+    TestSignatureSheet.cpp
+    TestMenuModel.cpp
+    # Scripted QA harness: parser, key combos, typing.
+    TestQaScript.cpp
+    TestFormController.cpp
+    # Redaction tool, marks and Apply Redactions (ADR-0026), fake backend.
+    TestRedactionController.cpp
+    # Recognize Text (ADR-0027) with a fake ITextRecognizer.
+    TestOcrController.cpp
     TestAnnotationController.cpp
     TestAnnotationStress.cpp
     TestAnnotationInteraction.cpp
@@ -14,11 +27,20 @@ add_executable(rivet_app_tests
     TestPageEditingController.cpp
     TestFileController.cpp
     TestMarkdownShell.cpp
+    # Document comparison tab (ADR-0029).
+    TestComparisonTab.cpp
     TestMarkdownPreview.cpp
     TestMarkdownSourcePane.cpp
     TestMarkdownLive.cpp
+    TestMarkdownWysiwyg.cpp
     TestSearchRestart.cpp
     TestPrintCoordinator.cpp
+    # Phase 6A Markdown -> PDF export: the portable exporter and the
+    # Export as PDF / Markdown print controller (fake engine).
+    TestMarkdownExport.cpp
+    TestMarkdownExportController.cpp
+    # Mermaid diagrams and math in the preview and the export (ADR-0032).
+    TestMarkdownGraphics.cpp
     # Phase 5 end-to-end content editing over the real engine (PDFium-ON
     # bodies; early return without a backend).
     TestContentIntegration.cpp
@@ -31,6 +53,9 @@ add_executable(rivet_app_tests
     # PDFium-ON round trips through the file lifecycle (early return
     # without a backend).
     TestFileRoundTripPdfium.cpp
+    # PDFium-ON Markdown export reopened through the real engine (early
+    # return without a backend).
+    TestMarkdownExportPdfium.cpp
 )
 
 add_test(NAME app COMMAND rivet_app_tests)

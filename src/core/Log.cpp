@@ -63,7 +63,11 @@ void write(Level level, std::string_view message) {
     const int millis = static_cast<int>(wallMs % 1000);
 
     std::tm local{};
+#if defined(_WIN32)
+    localtime_s(&local, &seconds);
+#else
     localtime_r(&seconds, &local);
+#endif
 
     char timeBuffer[32];
     std::snprintf(timeBuffer, sizeof(timeBuffer), "%02d:%02d:%02d.%03d",

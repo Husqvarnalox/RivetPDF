@@ -53,7 +53,8 @@ public:
     // Hiding cancels the active tab's running search (matches are kept) and
     // drops focus from the field. Relayouts the shell.
     void setVisible(bool visible);
-    // Cmd+F: toggles the bar; showing it focuses the query field.
+    // Cmd+F: toggles the bar; showing it focuses the query field and selects
+    // its text (typing replaces the previous query).
     void toggle();
     // Escape priority: closes a visible bar. Returns true when consumed.
     bool handleEscape();
@@ -67,13 +68,18 @@ public:
     ui::TextField& field() { return *field_; }
     const std::string& countText() const;
 
-private:
-    // Enter / arrow buttons: steps the active match and reveals it.
+    // Enter / arrow buttons / Find Next (+1) and Previous (-1): steps the
+    // active match and reveals it.
     void step(int delta);
+
+private:
 
     // The Markdown search target while a Ready Markdown tab is active (hooks
     // the results callback on first use), else null.
     ISearchTarget* markdownTarget();
+    // Results arrived: applies a step requested while the search had no
+    // match yet (Return right after typing the query).
+    void applyPendingStep();
 
     ShellContext& context_;
     std::function<ISearchTarget*()> markdownProvider_;
@@ -83,6 +89,9 @@ private:
     ui::TextField* field_ = nullptr;
     TextLabel* countLabel_ = nullptr;
     bool visible_ = false;
+    // Return pressed while the search was still running with no match: the
+    // step happens as soon as the first match arrives (0 = none pending).
+    int pendingStep_ = 0;
 };
 
 } // namespace rivet::app

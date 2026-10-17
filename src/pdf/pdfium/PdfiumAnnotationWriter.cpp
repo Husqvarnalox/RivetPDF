@@ -132,6 +132,7 @@ std::optional<FPDF_ANNOTATION_SUBTYPE> subtypeOf(PdfAnnotationKind kind) {
     case PdfAnnotationKind::Circle:
         return FPDF_ANNOT_CIRCLE;
     case PdfAnnotationKind::Stamp:
+    case PdfAnnotationKind::Signature: // a stamp with /Name RivetSignature (ADR-0025)
         return FPDF_ANNOT_STAMP;
     case PdfAnnotationKind::Other:
         break;
@@ -227,6 +228,63 @@ bool appendPath(FPDF_ANNOTATION annot, const PdfAppearancePath& path, float opac
     }
     if (FPDFAnnot_AppendObject(annot, obj) == 0) {
         return false; // still owned by `object`
+    }
+    object.release();
+    return true;
+}
+
+// A signature image (ADR-0025): the BGRA pixels become an image XObject of
+// the appearance (alpha -> soft mask, as in PdfiumBuilder), placed by the
+// matrix that maps the unit square onto image.box turned image.rotation
+// clockwise quarter turns. The appearance is opaque (signatures are).
+bool appendImage(FPDF_DOCUMENT doc, FPDF_PAGE page, FPDF_ANNOTATION annot, const PdfAppearanceImage& image) {
+    if (image.bitmap == nullptr || !image.bitmap->isValid()) {
+        return false;
+    }
+    const core::Bitmap& pixels = *image.bitmap;
+    ScopedPageObject object(FPDFPageObj_NewImageObj(doc));
+    if (object.get() == nullptr) {
+        return false;
+    }
+    // PDFium only reads the buffer; the const_cast is not written through.
+    FPDF_BITMAP bitmap = FPDFBitmap_CreateEx(static_cast<int>(pixels.width()), static_cast<int>(pixels.height()),
+                                             FPDFBitmap_BGRA,
+                                             const_cast<std::byte*>(pixels.data()), // NOLINT
+                                             static_cast<int>(pixels.stride()));
+    if (bitmap == nullptr) {
+        return false;
+    }
+    FPDF_PAGE pages[1] = {page};
+    const bool set = FPDFImageObj_SetBitmap(pages, 1, object.get(), bitmap) != 0;
+    FPDFBitmap_Destroy(bitmap);
+    if (!set) {
+        return false;
+    }
+    // Content frame: cw x ch (the box with the quarter turn undone).
+    const bool quarter = image.rotation == 90 || image.rotation == 270;
+    const double cw = quarter ? image.box.height() : image.box.width();
+    const double ch = quarter ? image.box.width() : image.box.height();
+    const double theta = static_cast<double>(image.rotation) * 3.14159265358979323846 / 180.0;
+    const double cosT = std::round(std::cos(theta));
+    const double sinT = std::round(std::sin(theta));
+    // Clockwise in y-up space: x' = x cos + y sin, y' = -x sin + y cos.
+    const double a = cosT * cw;
+    const double b = -sinT * cw;
+    const double c = sinT * ch;
+    const double d = cosT * ch;
+    const double cx = (image.box.left + image.box.right) / 2.0;
+    const double cy = (image.box.bottom + image.box.top) / 2.0;
+    const FS_MATRIX m{static_cast<float>(a),
+                      static_cast<float>(b),
+                      static_cast<float>(c),
+                      static_cast<float>(d),
+                      static_cast<float>(cx - (a + c) / 2.0),
+                      static_cast<float>(cy - (b + d) / 2.0)};
+    if (FPDFPageObj_SetMatrix(object.get(), &m) == 0) {
+        return false;
+    }
+    if (FPDFAnnot_AppendObject(annot, object.get()) == 0) {
+        return false;
     }
     object.release();
     return true;
@@ -387,6 +445,13 @@ core::Status createAnnotation(FPDF_DOCUMENT doc, FPDF_PAGE page, PdfAnnotationDa
     if (data.kind == PdfAnnotationKind::Stamp) {
         step(setString(a, "Subj", stampNameText(data.stampName)), "subject");
         step(setString(a, "RivetRotation", std::to_string(data.rotation)), "rotation");
+    } else if (data.kind == PdfAnnotationKind::Signature) {
+        // The public API writes strings only: /Name is the string
+        // (RivetSignature), which FPDFAnnot_GetStringValue reads back like a
+        // name (ADR-0025, Consequences).
+        step(setString(a, "Name", kRivetSignatureName), "signature name");
+        step(setString(a, "Subj", "Signature"), "subject");
+        step(setString(a, "RivetRotation", std::to_string(data.rotation)), "rotation");
     } else if (data.kind == PdfAnnotationKind::Line || data.kind == PdfAnnotationKind::Arrow) {
         const char* shape = data.kind == PdfAnnotationKind::Line ? "Line" : "Arrow";
         step(setString(a, "Subj", shape), "subject");
@@ -404,6 +469,14 @@ core::Status createAnnotation(FPDF_DOCUMENT doc, FPDF_PAGE page, PdfAnnotationDa
         for (const PdfAppearanceText& text : appearance.texts) {
             step(appendText(doc, a, text, appearance.opacity), "stamp text");
         }
+    } else if (data.kind == PdfAnnotationKind::Signature) {
+        for (const PdfAppearanceImage& image : appearance.images) {
+            step(appendImage(doc, page, a, image), "signature image");
+        }
+        for (const PdfAppearancePath& path : appearance.paths) {
+            step(appendPath(a, path, appearance.opacity), "signature path");
+        }
+        if (appearance.images.empty() && appearance.paths.empty()) step(false, "signature appearance");
     } else {
         const std::string content = appearanceContentStream(appearance);
         const std::vector<FPDF_WCHAR> units = wide(content);

@@ -13,13 +13,16 @@
 #include "PdfiumAnnotations.h"
 #include "PdfiumContent.h"
 #include "PdfiumFileSource.h"
+#include "PdfiumForms.h"
 #include "PdfiumStrings.h"
 #include "PdfiumTextPage.h"
+#include "PdfiumWriting.h"
 #include "core/geometry/Matrix.hpp"
 #include "fpdf_doc.h"  // FPDF_GetMetaText
 #include "PdfiumDisplayTransform.h"
 #include "fpdf_doc.h"    // bookmarks, dests, actions, links, page labels
 #include "fpdf_edit.h" // FPDFPage_GetRotation
+#include "fpdf_signature.h"
 
 namespace rivet::pdf {
 namespace {
@@ -158,19 +161,22 @@ PdfiumDocument::~PdfiumDocument() {
         secret[i] = '\0';
     }
 
-    if (document_ == nullptr && annotationReader_ == nullptr && content_ == nullptr) {
+    if (document_ == nullptr && annotationReader_ == nullptr && content_ == nullptr && liveForm_ == nullptr) {
         return;
     }
     const FPDF_DOCUMENT handle = document_;
     const FPDF_DOCUMENT reader = annotationReader_;
     internal::ContentState* const content = content_.get();
+    internal::FormEnvironment* const form = liveForm_.release();
     document_ = nullptr;
     annotationReader_ = nullptr;
     // Public entry operation: one gate acquisition for the close. The gate is
     // a leaked singleton, so this remains valid during static teardown. The
     // file source (a member) is released only after this body, i.e. after
     // PDFium is done with it (both documents read through it).
-    globalPdfiumCallGate().invoke([handle, reader, content] {
+    globalPdfiumCallGate().invoke([handle, reader, content, form] {
+        // The live form environment holds pages of `handle`: first.
+        delete form;
         if (content != nullptr) {
             content->closeAll(); // materialized pages and the content reader
         }
@@ -485,6 +491,39 @@ core::Result<core::Bitmap> PdfiumDocument::renderPageImpl(std::size_t pageIndex,
                                             FPDF_ANNOT | FPDF_LCD_TEXT);
         }
 
+        // Form widgets (ADR-0024). FPDF_RenderPageBitmap* never draws widget
+        // annotations ("all annotations except widget and popup"); the form
+        // filler draws them with FPDF_FFLDraw, on the LIVE page (widgets are
+        // /Annots, which content edits never change, so this also serves
+        // materialized pages). FFLDraw takes a device rect + quarter turns
+        // instead of a matrix: the page's native crop box shown in the view
+        // (`box`, view display points), relative to the tile, at the device
+        // scale, with the view's rotation relative to the native one. The
+        // rect is rounded to whole pixels (sub-pixel offset at most).
+        if (internal::FormEnvironment* form = liveForm(); form != nullptr) {
+            FPDF_PAGE formPage = form->page(static_cast<int>(pageIndex));
+            if (formPage != nullptr) {
+                const PdfPageView& shown = geometry->display.view;
+                const core::Rect box = userBoxToDisplayRect(shown, geometry->nativeView.cropBox);
+                const double x = (box.minX() - pageRectPoints.minX()) * devicePixelsPerPoint;
+                const double y = (box.minY() - pageRectPoints.minY()) * devicePixelsPerPoint;
+                const double w = box.size.width * devicePixelsPerPoint;
+                const double h = box.size.height * devicePixelsPerPoint;
+                const bool drawable = std::isfinite(x) && std::isfinite(y) && std::isfinite(w) &&
+                                      std::isfinite(h) && std::fabs(x) < 1e9 && std::fabs(y) < 1e9 &&
+                                      w >= 1.0 && h >= 1.0 && w < 1e9 && h < 1e9;
+                if (drawable) {
+                    const int rotate = (static_cast<int>(shown.rotation) -
+                                        static_cast<int>(geometry->nativeView.rotation) + 4) % 4;
+                    HiddenAnnotationsGuard hidden(formPage, hiddenAnnotations);
+                    FPDF_FFLDraw(form->get(), fpdfBitmap.get(), formPage, static_cast<int>(std::lround(x)),
+                                 static_cast<int>(std::lround(y)), static_cast<int>(std::lround(w)),
+                                 static_cast<int>(std::lround(h)), rotate, FPDF_LCD_TEXT);
+                }
+            }
+            form->closePages();
+        }
+
         return bitmap;
     });
 }
@@ -535,6 +574,138 @@ core::Result<PdfPageAnnotationsPtr> PdfiumDocument::annotations(std::size_t page
         annotationCache_.emplace(pageIndex, result);
         annotationCacheOrder_.push_back(pageIndex);
         return result;
+    });
+}
+
+internal::FormEnvironment* PdfiumDocument::liveForm() const {
+    // Caller holds the gate.
+    if (!liveFormChecked_) {
+        liveFormChecked_ = true;
+        if (FPDF_GetFormType(document_) != FORMTYPE_NONE) {
+            auto form = std::make_unique<internal::FormEnvironment>(document_);
+            if (form->get() != nullptr) liveForm_ = std::move(form);
+        }
+    }
+    return liveForm_.get();
+}
+
+core::Result<PdfFormInfoPtr> PdfiumDocument::formInfo() const {
+    // Public entry operation: one gate acquisition for the whole read.
+    return globalPdfiumCallGate().invoke([&]() -> core::Result<PdfFormInfoPtr> { return formInfoLocked(); });
+}
+
+core::Result<PdfFormInfoPtr> PdfiumDocument::formInfoLocked() const {
+    if (formInfo_ != nullptr) return formInfo_;
+    // A private reader over the same bytes and password: the form
+    // environment may generate appearance streams, which must never reach
+    // the live (rendered) document. Closed before returning; `access` must
+    // outlive it (declared first, destroyed last).
+    FPDF_FILEACCESS access = source_->fileAccess();
+    internal::ScopedDocument reader(FPDF_LoadCustomDocument(&access, password_.c_str()));
+    if (reader.get() == nullptr) {
+        const int lastError = static_cast<int>(FPDF_GetLastError());
+        return std::unexpected(core::makeError(core::ErrorCode::InvalidDocument,
+                                               "could not reopen the document to read its form"
+                                               " (FPDF error " + std::to_string(lastError) + ")",
+                                               "pdf"));
+    }
+    auto read = internal::readFormInfo(reader.get(), info_.pageCount);
+    if (!read.has_value()) return std::unexpected(read.error());
+    formInfo_ = std::make_shared<const PdfFormInfo>(std::move(*read));
+    return formInfo_;
+}
+
+core::Result<PdfSignatureListPtr> PdfiumDocument::signatures() const {
+    return globalPdfiumCallGate().invoke([&]() -> core::Result<PdfSignatureListPtr> {
+        if (signatures_ != nullptr) return signatures_;
+        try {
+            auto list = std::make_shared<PdfSignatureList>();
+            const int count = FPDF_GetSignatureCount(document_);
+            if (count <= 0) {
+                signatures_ = std::move(list);
+                return signatures_;
+            }
+            const std::uint64_t fileSize = source_ != nullptr ? source_->size() : 0;
+
+            // Locating the widgets: PDFium lists the TOP-LEVEL /Sig fields of
+            // /AcroForm /Fields in order and exposes no field name, so the
+            // i-th signature is matched with the i-th top-level signature field
+            // of the form description - only when the counts agree.
+            std::vector<const PdfFormField*> sigFields;
+            if (const auto form = formInfoLocked(); form.has_value() && *form != nullptr) {
+                for (const PdfFormField& field : (*form)->fields) {
+                    if (field.type == PdfFormFieldType::Signature && field.name.find('.') == std::string::npos) {
+                        sigFields.push_back(&field);
+                    }
+                }
+            }
+            const bool locate = sigFields.size() == static_cast<std::size_t>(count);
+
+            for (int i = 0; i < count; ++i) {
+                if (list->signatures.size() >= kMaxSignatures) {
+                    list->truncated = true;
+                    break;
+                }
+                FPDF_SIGNATURE signature = FPDF_GetSignatureObject(document_, i);
+                if (signature == nullptr) continue;
+                PdfSignatureInfo info;
+                const unsigned long ints = FPDFSignatureObj_GetByteRange(signature, nullptr, 0);
+                std::vector<std::int64_t> raw;
+                if (ints > 0 && ints <= kMaxSignatureByteRangeInts) {
+                    std::vector<int> buffer(ints);
+                    if (FPDFSignatureObj_GetByteRange(signature, buffer.data(), ints) == ints) {
+                        raw.assign(buffer.begin(), buffer.end());
+                    }
+                }
+                const unsigned long filterBytes = FPDFSignatureObj_GetSubFilter(signature, nullptr, 0);
+                if (filterBytes > 1 && filterBytes <= kMaxSignatureStringBytes) {
+                    std::string buffer(filterBytes, '\0');
+                    if (FPDFSignatureObj_GetSubFilter(signature, buffer.data(), filterBytes) == filterBytes) {
+                        buffer.resize(filterBytes - 1); // trailing NUL
+                        info.subFilter = std::move(buffer);
+                    }
+                }
+                // A field without a value (no byte range, no sub-filter) is an
+                // empty signature field, not a signature.
+                if (raw.empty() && info.subFilter.empty()) continue;
+
+                for (std::size_t k = 0; k + 1 < raw.size(); k += 2) {
+                    info.byteRange.emplace_back(static_cast<std::uint64_t>(std::max<std::int64_t>(0, raw[k])),
+                                                static_cast<std::uint64_t>(std::max<std::int64_t>(0, raw[k + 1])));
+                }
+                info.coverage = analyzeByteRange(raw, fileSize);
+
+                const unsigned long reasonBytes = FPDFSignatureObj_GetReason(signature, nullptr, 0);
+                if (reasonBytes > 2 && reasonBytes <= 2 * kMaxSignatureStringBytes) {
+                    std::vector<std::uint8_t> buffer(reasonBytes);
+                    if (FPDFSignatureObj_GetReason(signature, buffer.data(), reasonBytes) == reasonBytes) {
+                        info.reason = internal::utf16leToUtf8(buffer.data(), (reasonBytes - 2) & ~1UL);
+                    }
+                }
+                const unsigned long timeBytes = FPDFSignatureObj_GetTime(signature, nullptr, 0);
+                if (timeBytes > 1 && timeBytes <= 64) {
+                    std::string buffer(timeBytes, '\0');
+                    if (FPDFSignatureObj_GetTime(signature, buffer.data(), timeBytes) == timeBytes) {
+                        buffer.resize(timeBytes - 1);
+                        info.signingTime = std::move(buffer);
+                    }
+                }
+                info.docMdpPermission = FPDFSignatureObj_GetDocMDPPermission(signature);
+                if (locate) {
+                    const PdfFormField& field = *sigFields[static_cast<std::size_t>(i)];
+                    if (!field.widgets.empty()) {
+                        info.pageIndex = field.widgets.front().pageIndex;
+                        info.widgetRect = field.widgets.front().rect;
+                    }
+                }
+                list->signatures.push_back(std::move(info));
+            }
+            signatures_ = std::move(list);
+            return signatures_;
+        } catch (const std::bad_alloc&) {
+            return std::unexpected(core::makeError(core::ErrorCode::OutOfMemory,
+                                                   "out of memory while reading the signatures", "pdf"));
+        }
     });
 }
 

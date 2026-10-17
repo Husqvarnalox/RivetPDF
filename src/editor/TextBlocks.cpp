@@ -183,7 +183,7 @@ ReconstructedBlock buildBlock(const pdf::PdfPageContent& content, const std::vec
                               const std::vector<ReconstructedLine>& lines, const LineInfo& first, std::uint64_t tag,
                               double measuredStep) {
     ReconstructedBlock block;
-    block.lines = lines;
+    block.lines.assign(lines.begin(), lines.end());
     block.tag = tag;
     block.angleRadians = first.angle;
     block.fontSize = first.size;
@@ -246,6 +246,9 @@ std::optional<std::string> pageReadOnlyReason(const pdf::PdfPageContent& content
 
 ObjectCapabilityInfo classifyObject(const PdfContentObject& o) {
     if (!finiteGeometry(o)) return {ContentCapability::ReadOnly, "the object has invalid geometry"};
+    if (o.origin.kind == pdf::PdfContentOrigin::Kind::Redaction) {
+        return {ContentCapability::ReadOnly, "produced by a redaction; save the document to edit it"};
+    }
     switch (o.type) {
     case PdfContentObjectType::Text: {
         if (o.renderMode == 3) return {ContentCapability::ReadOnly, "invisible text (for example an OCR layer)"};

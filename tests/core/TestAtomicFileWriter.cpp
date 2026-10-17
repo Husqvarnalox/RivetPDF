@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 #include "RivetTest.h"
+#include "TestProcess.hpp"
 
 #include "core/io/AtomicFileWriter.hpp"
 
@@ -21,19 +22,13 @@ using rivet::core::io::writeFileAtomically;
 namespace fs = std::filesystem;
 
 #if defined(_WIN32)
-
-RIVET_TEST(atomicWriterUnsupportedOnWindows) {
-    auto writer = AtomicFileWriter::begin(fs::temp_directory_path() / "rivet-atomic.pdf");
-    CHECK(!writer.has_value());
-    CHECK_EQ(writer.error().code, ErrorCode::Unsupported);
-}
-
+#include <random>
 #else
-
 #include <sys/stat.h>
 #include <unistd.h>
 #if defined(__APPLE__)
 #include <sys/xattr.h>
+#endif
 #endif
 
 namespace {
@@ -41,11 +36,21 @@ namespace {
 struct TempDir {
     fs::path path;
     TempDir() {
+#if defined(_WIN32)
+        std::random_device device;
+        for (int attempt = 0; attempt < 16 && path.empty(); ++attempt) {
+            const fs::path candidate =
+                fs::temp_directory_path() / ("rivet-atomic-" + std::to_string(device()) + std::to_string(device()));
+            std::error_code ec;
+            if (fs::create_directory(candidate, ec)) path = candidate;
+        }
+#else
         std::string pattern = (fs::temp_directory_path() / "rivet-atomic-XXXXXX").string();
         std::vector<char> buffer(pattern.begin(), pattern.end());
         buffer.push_back('\0');
         const char* made = ::mkdtemp(buffer.data());
         if (made != nullptr) path = made;
+#endif
     }
     ~TempDir() {
         if (path.empty()) return;
@@ -84,6 +89,7 @@ std::size_t entryCount(const fs::path& dir) {
     return count;
 }
 
+#if !defined(_WIN32)
 unsigned modeOf(const fs::path& path) {
     struct stat st{};
     if (::stat(path.c_str(), &st) != 0) return 0xFFFFU;
@@ -96,6 +102,7 @@ unsigned currentUmask() {
     ::umask(mask);
     return static_cast<unsigned>(mask);
 }
+#endif
 
 Status writeString(IByteSink& sink, const std::string& text) {
     return sink.write(text.data(), text.size());
@@ -112,7 +119,9 @@ RIVET_TEST(atomicWriterCreatesNewFileWithDefaultMode) {
     CHECK(writer.has_value());
     // The temp sits next to the destination, private while being written.
     CHECK_EQ((*writer)->tempPath().parent_path(), dir.path);
+#if !defined(_WIN32)
     CHECK_EQ(modeOf((*writer)->tempPath()), 0600U);
+#endif
     CHECK(!fs::exists(dest));
     CHECK(writeString(**writer, "%PDF-1.7 hello").has_value());
     CHECK(writeString(**writer, " world").has_value());
@@ -120,10 +129,13 @@ RIVET_TEST(atomicWriterCreatesNewFileWithDefaultMode) {
     CHECK((*writer)->commit().has_value());
 
     CHECK_EQ(readFile(dest), std::string("%PDF-1.7 hello world"));
+#if !defined(_WIN32)
     CHECK_EQ(modeOf(dest), 0644U & ~currentUmask());
+#endif
     CHECK_EQ(entryCount(dir.path), std::size_t{1}); // no temp left behind
 }
 
+#if !defined(_WIN32) // POSIX permission bits
 RIVET_TEST(atomicWriterOverwritesAndKeepsMode) {
     TempDir dir;
     const fs::path dest = dir.path / "doc.pdf";
@@ -136,6 +148,8 @@ RIVET_TEST(atomicWriterOverwritesAndKeepsMode) {
     CHECK_EQ(modeOf(dest), 0640U);
     CHECK_EQ(entryCount(dir.path), std::size_t{1});
 }
+
+#endif
 
 RIVET_TEST(atomicWriterRefusesExistingWithoutOverwrite) {
     TempDir dir;
@@ -200,7 +214,9 @@ RIVET_TEST(atomicWriterInjectedDiskFullAndSyncFailuresRollBack) {
     };
     const Case cases[] = {
         {AtomicWriteFault::Write, ENOSPC, ErrorCode::DiskFull},
+#if defined(EDQUOT)
         {AtomicWriteFault::Write, EDQUOT, ErrorCode::DiskFull},
+#endif
         {AtomicWriteFault::Sync, EIO, ErrorCode::Io},
         {AtomicWriteFault::Sync, ENOSPC, ErrorCode::DiskFull},
         {AtomicWriteFault::Rename, EACCES, ErrorCode::PermissionDenied},
@@ -263,8 +279,23 @@ RIVET_TEST(atomicWriterDestructorWithoutCommitRollsBack) {
     CHECK_EQ(entryCount(dir.path), std::size_t{1});
 }
 
+#if defined(_WIN32)
+RIVET_TEST(atomicWriterReadOnlyDestinationIsRefused) {
+    TempDir dir;
+    const fs::path dest = dir.path / "doc.pdf";
+    writeFile(dest, "locked");
+    // std::filesystem maps the write bits to FILE_ATTRIBUTE_READONLY.
+    fs::permissions(dest, fs::perms::owner_write | fs::perms::group_write | fs::perms::others_write,
+                    fs::perm_options::remove);
+    auto writer = AtomicFileWriter::begin(dest);
+    CHECK(!writer.has_value());
+    CHECK_EQ(writer.error().code, ErrorCode::PermissionDenied);
+    CHECK_EQ(readFile(dest), std::string("locked"));
+    fs::permissions(dest, fs::perms::owner_write, fs::perm_options::add);
+}
+#else
 RIVET_TEST(atomicWriterPermissionDeniedDirectory) {
-    if (::geteuid() == 0) return; // root bypasses permission bits
+    if (rivet::test::runningAsRoot()) return; // root bypasses permission bits
     TempDir dir;
     const fs::path locked = dir.path / "locked";
     fs::create_directory(locked);
@@ -277,7 +308,7 @@ RIVET_TEST(atomicWriterPermissionDeniedDirectory) {
 }
 
 RIVET_TEST(atomicWriterReadOnlyDestinationIsRefused) {
-    if (::geteuid() == 0) return;
+    if (rivet::test::runningAsRoot()) return;
     TempDir dir;
     const fs::path dest = dir.path / "readonly.pdf";
     writeFile(dest, "original");
@@ -289,6 +320,8 @@ RIVET_TEST(atomicWriterReadOnlyDestinationIsRefused) {
     CHECK_EQ(modeOf(dest), 0444U);
     CHECK_EQ(entryCount(dir.path), std::size_t{1});
 }
+
+#endif
 
 RIVET_TEST(atomicWriterNonexistentDirectory) {
     TempDir dir;
@@ -388,6 +421,9 @@ RIVET_TEST(atomicWriterLargeStreamedWrite) {
     CHECK_EQ(entryCount(dir.path), std::size_t{1});
 }
 
+#if !defined(_WIN32)
+// Windows: creating symlinks needs a privilege, and an open ifstream lacks
+// FILE_SHARE_DELETE (the documented ReplaceFileW limitation, ADR-0010).
 RIVET_TEST(atomicWriterWritesThroughSymlink) {
     TempDir dir;
     const fs::path target = dir.path / "real.pdf";
@@ -419,6 +455,8 @@ RIVET_TEST(atomicWriterSourceReadThroughOpenFdSurvivesReplace) {
     CHECK_EQ(readFile(dest), std::string("source bytes + edits"));
 }
 
+#endif
+
 #if defined(__APPLE__)
 RIVET_TEST(atomicWriterPreservesExtendedAttributesOnApple) {
     TempDir dir;
@@ -446,5 +484,3 @@ RIVET_TEST(atomicWriterUseAfterCommitIsRejected) {
     (*writer)->abort(); // no-op after commit
     CHECK(fs::exists(dir.path / "doc.pdf"));
 }
-
-#endif // _WIN32

@@ -4,11 +4,15 @@
 #include "core/Error.hpp"
 #include "core/async/IMainThreadDispatcher.hpp"
 #include "platform/Alerts.hpp"
+#include "platform/AppDataLocation.hpp"
+#include "platform/Appearance.hpp"
 #include "platform/AppLifecycle.hpp"
 #include "platform/Clipboard.hpp"
 #include "platform/ExternalUrlOpener.hpp"
 #include "platform/ImageDecoder.hpp"
+#include "platform/ImageEncoder.hpp"
 #include "platform/Print.hpp"
+#include "platform/TextRecognizer.hpp"
 
 #include <filesystem>
 #include <functional>
@@ -136,6 +140,34 @@ struct ShellServices {
     // Image decoder for Replace Image. May be null (the command then reports
     // that images cannot be read on this backend). Thread-safe.
     IImageDecoder* imageDecoder = nullptr;
+
+    // JPEG encoder for Save Reduced Copy (ADR-0028). May be null (the
+    // command is then unavailable on this backend). Thread-safe.
+    IImageEncoder* imageEncoder = nullptr;
+
+    // Text recognition for Recognize Text (ADR-0027). May be null (the
+    // commands are then disabled with a reason: Linux and Windows today).
+    // Thread-safe.
+    ITextRecognizer* textRecognizer = nullptr;
+
+    // The per-user application-data directory (saved signatures, ADR-0025).
+    // May be null (signatures are then not remembered between sessions).
+    IAppDataLocation* appData = nullptr;
+
+    // System appearance (light/dark, accent; ADR-0033). May be null: the
+    // shell then uses the light theme with the default accent.
+    IAppearance* appearance = nullptr;
+
+    // --- Scripted QA harness hooks (app/QaScript.hpp) ---------------------
+    // Both may be null; they are only used while RIVET_QA_SCRIPT is set.
+    // Main thread only.
+    //
+    // Renders the window's current content (the widget tree, freshly
+    // painted) into a PNG file. False when it could not be written.
+    std::function<bool(const std::filesystem::path&)> captureWindowPng;
+    // Resizes the window so its content area (the root widget) becomes
+    // width x height logical points, honoring the window's minimum size.
+    std::function<void(double width, double height)> resizeWindow;
 };
 
 } // namespace rivet::platform

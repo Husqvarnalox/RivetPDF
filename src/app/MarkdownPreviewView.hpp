@@ -3,12 +3,17 @@
 
 #include "app/MarkdownFind.hpp"
 #include "app/MarkdownImageStore.hpp"
+#include "app/MarkdownGraphics.hpp"
 #include "app/MarkdownLinks.hpp"
 #include "app/MarkdownPaintMeasurer.hpp"
+#include "app/MarkdownPalette.hpp"
+#include "app/MarkdownTabState.hpp"
 #include "app/SearchTarget.hpp"
 #include "core/async/AsyncScope.hpp"
 #include "core/async/IMainThreadDispatcher.hpp"
 #include "core/async/TaskScheduler.hpp"
+#include "markdown/MarkdownCaret.hpp"
+#include "markdown/MarkdownEditing.hpp"
 #include "markdown/MarkdownLayout.hpp"
 #include "markdown/MarkdownModel.hpp"
 #include "platform/Clipboard.hpp"
@@ -18,6 +23,7 @@
 
 #include <chrono>
 #include <cstdint>
+#include <deque>
 #include <filesystem>
 #include <functional>
 #include <memory>
@@ -39,29 +45,6 @@ struct MarkdownPreviewEnvironment {
     // Opens an already policy-checked http/https/mailto URL (user click only).
     std::function<core::Status(const std::string&)> openUrl;
     std::function<void(std::string)> setStatus;
-};
-
-struct MarkdownPreviewPalette {
-    ui::Color background = ui::Color::white();
-    ui::Color text = ui::Color::gray(0.13);
-    ui::Color heading = ui::Color::gray(0.08);
-    ui::Color quoteText = ui::Color::gray(0.38);
-    ui::Color quoteBar = ui::Color::gray(0.78);
-    ui::Color link = ui::Color::rgba(0.05, 0.36, 0.78, 1.0);
-    ui::Color linkHover = ui::Color::rgba(0.0, 0.22, 0.55, 1.0);
-    ui::Color codeText = ui::Color::gray(0.18);
-    ui::Color codeBackground = ui::Color::gray(0.955);
-    ui::Color inlineCodeBackground = ui::Color::gray(0.93);
-    ui::Color rule = ui::Color::gray(0.8);
-    ui::Color tableGrid = ui::Color::gray(0.8);
-    ui::Color tableHeaderBackground = ui::Color::gray(0.94);
-    ui::Color marker = ui::Color::gray(0.35);
-    ui::Color placeholderBackground = ui::Color::gray(0.94);
-    ui::Color placeholderText = ui::Color::gray(0.4);
-    ui::Color selection = ui::Color::rgba(0.25, 0.5, 0.95, 0.3);
-    ui::Color match = ui::Color::rgba(1.0, 0.85, 0.0, 0.45);
-    ui::Color currentMatch = ui::Color::rgba(1.0, 0.55, 0.0, 0.6);
-    ui::Color overflowIndicator = ui::Color::rgba(0.0, 0.0, 0.0, 0.25);
 };
 
 // The rendered Markdown view: paints a MarkdownLayout through the PaintContext
@@ -93,6 +76,24 @@ struct MarkdownPreviewPalette {
 //    extend, Cmd/Ctrl+A all, Cmd/Ctrl+C copies the plain text. Cross-block.
 //    A relayout that changes line breaks drops the selection.
 //  - Search: ISearchTarget over the displayed text (ASCII case-insensitive).
+//  - WYSIWYG editing (ADR-0031), once an edit target (the tab state) is set:
+//    a blinking caret and the selection live in SOURCE offsets of the
+//    state's text and are drawn through markdown::CaretMap. Click places the
+//    caret (Cmd/Ctrl+click follows a link), shift-click/drag select, double
+//    click selects a word, triple click a block; arrows / Home / End /
+//    Page Up/Down move by rendered character (grapheme) and visual line
+//    (Opt = word, Cmd = line / document edges); Cmd/Ctrl+A/C/X/V. Typing,
+//    Backspace/Delete, Enter / Shift+Enter, paste and the Format commands
+//    become ONE source edit each (markdown::editing), run as a
+//    TextEditCommand on the tab's command stack (typing / deleting bursts
+//    coalesce into one undo step like the Source view). Read-only islands
+//    (tables, raw HTML, images, Mermaid / math) are skipped; an image block
+//    can be selected and deleted. Editing is refused while a save is in
+//    flight (the state's lock). Keys that need the rendered layout wait
+//    (queued, in order) until the layout of the current source exists;
+//    typing never waits: while a background parse is outstanding it edits
+//    the source at once and the old layout shows the caret at the mapped
+//    position with the typed text drawn optimistically.
 //
 // The document arrives as an immutable snapshot (setDocumentSnapshot): the
 // view never parses. Main thread only.
@@ -101,10 +102,12 @@ public:
     struct Tuning {
         double slowLayoutMs = 12.0; // a relayout slower than this makes resizes debounced
         std::chrono::milliseconds relayoutDebounce{120};
+        // Caret blink half-period while focused and editable (0 = steady caret).
+        std::chrono::milliseconds caretBlink{530};
     };
 
-    explicit MarkdownPreviewView(MarkdownPreviewEnvironment environment, markdown::Typography typography = {},
-                                 MarkdownPreviewPalette palette = {});
+    // The colours follow the current ui theme (re-derived after a switch).
+    explicit MarkdownPreviewView(MarkdownPreviewEnvironment environment, markdown::Typography typography = {});
     ~MarkdownPreviewView() override;
 
     // --- content ----------------------------------------------------------
@@ -169,6 +172,38 @@ public:
     bool selectAll();
     void clearSelection();
 
+    // --- WYSIWYG editing (ADR-0031) ---------------------------------------
+    struct EditHooks {
+        // The caret/selection was moved by user input here (Split-mode sync).
+        std::function<void(std::size_t anchor, std::size_t caret)> onCaretChanged;
+        // Link target for the Link command (e.g. a URL on the clipboard).
+        std::function<std::string()> linkTarget;
+    };
+    // The tab state edits go to (null = read-only preview). The view's
+    // document must be parsed from this state's source (the host keeps them
+    // in step); caret and selection are reset.
+    void setEditTarget(MarkdownTabState* state);
+    MarkdownTabState* editTarget() const { return editState_; }
+    bool editable() const { return editState_ != nullptr; }
+    void setEditHooks(EditHooks hooks) { editHooks_ = std::move(hooks); }
+    // The host forwards every state change (undo/redo, the Source pane...).
+    void editTargetChanged();
+    // Selection in source offsets of the edit target's text (caret = moving end).
+    std::size_t caretOffset() const { return caret_; }
+    std::size_t anchorOffset() const { return anchor_; }
+    // Places the caret/selection from outside (Split sync); clamped to code
+    // point boundaries. Does not call onCaretChanged.
+    void setCaretFromSource(std::size_t anchor, std::size_t caret, bool reveal);
+    // Format menu command on the selection; false when nothing changed.
+    bool applyFormat(MarkdownFormatCommand command);
+    bool cutSelection();
+    bool pasteFromClipboard();
+    // Keys waiting for the layout of the current source (tests/diagnostics).
+    std::size_t pendingInputCount() const { return pendingKeys_.size(); }
+    // The caret box in view coordinates; nullopt when there is none to draw.
+    std::optional<core::Rect> caretRect() const;
+    bool caretBlinkOn() const { return caretVisible_; }
+
     // --- ISearchTarget ----------------------------------------------------
     void startSearch(std::string query) override;
     void cancelSearch() override {}
@@ -228,6 +263,38 @@ private:
     void paintSelectionAndMatches(ui::PaintContext& context) const;
     void warmVisibleRuns(std::size_t b0, std::size_t b1) const;
 
+    // WYSIWYG editing (MarkdownPreviewEditing.cpp).
+    enum class EditKind : std::uint8_t { Typing, Backspace, Delete, NewLine, Paste, Cut, Format, Other };
+    struct JournalEntry {
+        std::size_t offset = 0;
+        std::size_t removed = 0;
+        std::size_t inserted = 0;
+        std::uint64_t revision = 0; // state revision this change produced
+    };
+    bool docFresh() const;
+    bool layoutFresh() const;
+    const markdown::CaretMap* caretMap() const;
+    bool onEditKey(const ui::KeyEvent& event);
+    bool processEditKey(const ui::KeyEvent& event);
+    void drainPendingKeys();
+    bool onEditMouse(const ui::PointerEvent& event);
+    bool commitEdit(const markdown::editing::Edit& edit, EditKind kind);
+    void typeText(const std::string& text, EditKind kind);
+    bool typeOptimistically(const std::string& text);
+    void setSelectionInternal(std::size_t anchor, std::size_t caret, bool notify);
+    void moveCaret(std::size_t offset, bool extend);
+    std::optional<markdown::TextPosition> caretPosition() const;
+    std::optional<std::size_t> toSnapshot(std::size_t offset) const;
+    std::optional<core::Rect> caretDocRect() const;
+    std::pair<std::size_t, std::size_t> contentSelection() const;
+    std::string selectedEditText() const;
+    void revealCaretNow();
+    void restartBlink();
+    void scheduleBlink();
+    void paintEditing(ui::PaintContext& context) const;
+    void paintEditSelection(ui::PaintContext& context) const;
+    void clearEditState();
+
     // Input.
     markdown::HitResult hitAt(core::Point local) const;
     bool handleScroll(const ui::PointerEvent& event);
@@ -241,7 +308,10 @@ private:
 
     MarkdownPreviewEnvironment env_;
     markdown::Typography typography_;
-    MarkdownPreviewPalette palette_;
+    // The theme-derived palette, refreshed lazily when the theme changes.
+    const MarkdownPreviewPalette& palette() const;
+    mutable MarkdownPreviewPalette palette_;
+    mutable std::uint64_t paletteGeneration_ = 0;
     Tuning tuning_;
 
     std::shared_ptr<const markdown::MarkdownDocument> document_;
@@ -250,6 +320,8 @@ private:
 
     std::shared_ptr<MarkdownImageStore> images_;
     mutable MarkdownPaintMeasurer measurer_;
+    // Formula glyph metrics: bundled math faces, text roles through measurer_.
+    BundledMathMeasurer mathMeasurer_{measurer_};
     markdown::MeasureCache measureCache_;
     std::unique_ptr<markdown::MarkdownLayout> layout_;
     double layoutWidth_ = -1.0;
@@ -290,6 +362,34 @@ private:
     std::optional<std::size_t> current_;
     std::function<void()> onSearchChanged_;
     bool searchNotifyPending_ = false;
+
+    // WYSIWYG editing.
+    MarkdownTabState* editState_ = nullptr;
+    EditHooks editHooks_;
+    std::size_t anchor_ = 0;
+    std::size_t caret_ = 0;
+    std::optional<double> preferredX_;      // sticky document x for Up/Down
+    std::uint64_t knownRevision_ = 0;       // state revision the caret describes
+    bool inOwnEdit_ = false;
+    TextEditCommand* lastCommand_ = nullptr; // coalescing memory (see commitEdit)
+    std::uint64_t lastStateId_ = 0;
+    std::uint64_t lastRevision_ = 0;
+    EditKind lastKind_ = EditKind::Other;
+    std::size_t lastCaretAfter_ = 0;
+    bool trackValid_ = false;
+    std::deque<ui::KeyEvent> pendingKeys_;
+    std::vector<JournalEntry> journal_;     // changes newer than the shown snapshot
+    bool journalComplete_ = true;
+    std::string optimisticText_;            // typed since the snapshot (drawn at the caret)
+    mutable std::unique_ptr<markdown::CaretMap> caretMap_;
+    bool revealPending_ = false;
+    bool caretVisible_ = true;
+    bool blinkPending_ = false;
+    std::chrono::steady_clock::time_point caretMoved_{};
+    bool editDragging_ = false;
+    int editClickCount_ = 0;
+    std::size_t dragWordBegin_ = 0;
+    std::size_t dragWordEnd_ = 0;
 
     std::shared_ptr<int> alive_ = std::make_shared<int>(0);
     core::AsyncScope scope_;

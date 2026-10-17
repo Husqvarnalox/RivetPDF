@@ -181,4 +181,69 @@ inline const std::vector<std::uint8_t>& blueJpeg() {
     return bytes;
 }
 
+// A two-page AcroForm document (ADR-0024 tests). Both pages are 300x400
+// points. Fields (fully qualified names, in first-widget order):
+//   name    text, /V (Alice), no appearance stream (the raster draws nothing
+//           until a fill generates one), page 1 user (20,340)-(200,360)
+//   notes   multiline text, /V (Line one), page 1 (20,260)-(200,330)
+//   agree   check box (on state /Yes), off, page 1 (20,230)-(34,244)
+//   color   radio group (NoToggleToOff), off; widgets /Red (20,200)-(34,214)
+//           and /Blue (60,200)-(74,214) on page 1
+//   size    combo box Small/Medium/Large, /V (Small), page 1 (20,160)-(120,180)
+//   fruits  list box Apple/Banana/Cherry, /V (Banana), page 1 (140,130)-(260,180)
+//   id      read-only text /V (X-1), page 1 (20,100)-(120,120)
+//   city    text /V (Paris) with two widgets: page 1 (140,100)-(260,120) and
+//           page 2 (20,340)-(200,360)
+inline std::string formPdf() {
+    const std::string on = streamObject("/Type /XObject /Subtype /Form /BBox [0 0 14 14]", "0 0 0 rg 2 2 10 10 re f");
+    const std::string off = streamObject("/Type /XObject /Subtype /Form /BBox [0 0 14 14]", "");
+    return buildPdf({
+        // 1 catalog, 2 pages, 3 AcroForm
+        "<< /Type /Catalog /Pages 2 0 R /AcroForm 3 0 R >>",
+        "<< /Type /Pages /Kids [4 0 R 5 0 R] /Count 2 >>",
+        "<< /Fields [8 0 R 9 0 R 10 0 R 11 0 R 14 0 R 15 0 R 16 0 R 17 0 R] /DA (/Helv 0 Tf 0 g) "
+        "/DR << /Font << /Helv 6 0 R >> >> >>",
+        // 4, 5 pages
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 400] /Contents 7 0 R "
+        "/Resources << /Font << /Helv 6 0 R >> >> "
+        "/Annots [8 0 R 9 0 R 10 0 R 12 0 R 13 0 R 14 0 R 15 0 R 16 0 R 18 0 R] >>",
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 400] /Contents 7 0 R "
+        "/Resources << /Font << /Helv 6 0 R >> >> /Annots [19 0 R] >>",
+        // 6 font, 7 content
+        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>",
+        streamObject("", "BT /Helv 10 Tf 20 385 Td (Form) Tj ET\n"),
+        // 8 name
+        "<< /Type /Annot /Subtype /Widget /FT /Tx /T (name) /V (Alice) /DV (Your name) /DA (/Helv 12 Tf 0 g) "
+        "/Rect [20 340 200 360] /F 4 /P 4 0 R >>",
+        // 9 notes
+        "<< /Type /Annot /Subtype /Widget /FT /Tx /Ff 4096 /T (notes) /V (Line one) /DA (/Helv 10 Tf 0 g) "
+        "/Rect [20 260 200 330] /F 4 /P 4 0 R >>",
+        // 10 agree
+        "<< /Type /Annot /Subtype /Widget /FT /Btn /T (agree) /V /Off /AS /Off /Rect [20 230 34 244] /F 4 "
+        "/AP << /N << /Yes 20 0 R /Off 21 0 R >> >> /MK << /CA (4) >> /DA (/ZaDb 0 Tf 0 g) /P 4 0 R >>",
+        // 11 color (radio parent), 12/13 its widgets
+        "<< /FT /Btn /Ff 49152 /T (color) /V /Off /Kids [12 0 R 13 0 R] >>",
+        "<< /Type /Annot /Subtype /Widget /Parent 11 0 R /AS /Off /Rect [20 200 34 214] /F 4 "
+        "/AP << /N << /Red 20 0 R /Off 21 0 R >> >> /MK << /CA (l) >> /DA (/ZaDb 0 Tf 0 g) /P 4 0 R >>",
+        "<< /Type /Annot /Subtype /Widget /Parent 11 0 R /AS /Off /Rect [60 200 74 214] /F 4 "
+        "/AP << /N << /Blue 20 0 R /Off 21 0 R >> >> /MK << /CA (l) >> /DA (/ZaDb 0 Tf 0 g) /P 4 0 R >>",
+        // 14 size (combo)
+        "<< /Type /Annot /Subtype /Widget /FT /Ch /Ff 131072 /T (size) /Opt [(Small) (Medium) (Large)] "
+        "/V (Small) /DA (/Helv 10 Tf 0 g) /Rect [20 160 120 180] /F 4 /P 4 0 R >>",
+        // 15 fruits (list)
+        "<< /Type /Annot /Subtype /Widget /FT /Ch /T (fruits) /Opt [(Apple) (Banana) (Cherry)] "
+        "/V (Banana) /DA (/Helv 10 Tf 0 g) /Rect [140 130 260 180] /F 4 /P 4 0 R >>",
+        // 16 id (read-only)
+        "<< /Type /Annot /Subtype /Widget /FT /Tx /Ff 1 /T (id) /V (X-1) /DA (/Helv 10 Tf 0 g) "
+        "/Rect [20 100 120 120] /F 4 /P 4 0 R >>",
+        // 17 city (parent), 18/19 its widgets on pages 1 and 2
+        "<< /FT /Tx /T (city) /V (Paris) /DA (/Helv 10 Tf 0 g) /Kids [18 0 R 19 0 R] >>",
+        "<< /Type /Annot /Subtype /Widget /Parent 17 0 R /Rect [140 100 260 120] /F 4 /P 4 0 R >>",
+        "<< /Type /Annot /Subtype /Widget /Parent 17 0 R /Rect [20 340 200 360] /F 4 /P 5 0 R >>",
+        // 20, 21 check/radio appearance streams
+        on,
+        off,
+    });
+}
+
 } // namespace rivet::test::pdffix

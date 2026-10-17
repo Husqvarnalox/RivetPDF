@@ -1,0 +1,58 @@
+# Scenario 4: content editing - select an object, move it, retype text, add
+# text; save; reopen.
+# rich.pdf page 1 (300x400): image (40,120)-(120,200), red rect
+# (160,120)-(260,200), "Hello World" Helvetica 18 at (40,340), a paragraph
+# at y = 280/264/248.
+resize 1280 850
+theme light
+open ${QA_FIX}/rich.pdf
+cmd Content/Edit Objects
+log-state
+
+# Select the red rectangle and move it down-left by dragging.
+clickpage 1 210 160
+shot 04-rect-selected.png
+dragpage 1 210 160 210 60
+log-state
+shot 04-rect-moved.png
+
+# Retype "Hello World": double-click opens the inline editor.
+dblclickpage 1 60 345
+shot 04-text-editor.png
+key end
+type  QA
+shot 04-text-typed.png
+# Escape would cancel the inline editor: commit by clicking outside it.
+clickpage 1 280 20
+log-state
+# QA #13: a one-line block stays one line when it grows (ADR-0015: single
+# lines have no wrap width); nothing extends below the original block.
+assert-not-state extends below the original block
+shot 04-text-committed.png
+
+# Add Text at an empty spot.
+cmd Content/Add Text
+clickpage 1 160 320
+type Added by QA
+shot 04-add-text.png
+clickpage 1 280 20
+cmd Content/Edit Objects
+log-state
+# Nothing selected: no stale Edit-tool hint (bug 11).
+refute-status Edit: double-click
+shot 04-after-add.png
+
+# Save As, reopen, find the new text.
+answer save ${QA_WORK}/04-content.pdf
+cmd File/Save As…
+log-state
+key cmd+w
+open ${QA_WORK}/04-content.pdf
+shot 04-reopened.png
+key cmd+f
+type Added\n
+wait 300
+log-state
+assert-find 1
+key escape
+quit

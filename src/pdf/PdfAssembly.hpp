@@ -2,13 +2,17 @@
 #pragma once
 
 #include "core/Error.hpp"
+#include "pdf/ImageReduce.hpp"
 #include "pdf/PdfAnnotation.hpp"
 #include "pdf/PdfContent.hpp"
+#include "pdf/PdfForms.hpp"
 #include "pdf/PdfPageGeometry.hpp"
 
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <optional>
+#include <string>
 #include <vector>
 
 namespace rivet::pdf {
@@ -64,6 +68,35 @@ struct PdfAssemblyRequest {
     Mode mode = Mode::PreserveBase;
     const PdfDocument* base = nullptr;
     std::vector<PdfAssemblyPage> pages;
+    // Edited AcroForm values of `base`'s fields (ADR-0024; null or empty =
+    // the form is copied unchanged). The backend applies them with its form
+    // filler (JavaScript and XFA disabled) to the base pages reused in place
+    // (PreserveBase) and to every copy of a base page it imports (duplicates;
+    // Extract), so /V and the regenerated /AP are written. A field none of
+    // whose widgets is part of the output is skipped. A field that cannot be
+    // applied fails the assembly (never a silent partial save).
+    PdfFormValuesPtr formValues;
+    // Optional out-parameter: receives the names of fields that could not be
+    // applied (the assembly then fails). Names are untrusted: never log them.
+    std::vector<std::string>* formFailures = nullptr;
+    // ADR-0026: write the document without its metadata (the /Info
+    // dictionary and the catalog's XMP /Metadata). PDFium has no API to edit
+    // either, so the backend rebuilds the output as a fresh document holding
+    // the assembled pages: like Extract, document-level structure (outline,
+    // AcroForm, page labels, structure tree, named destinations, ...) is not
+    // carried over. Refused (InvalidArgument) for an encrypted base, whose
+    // encryption a rebuild would drop.
+    bool removeMetadata = false;
+    // ADR-0028 (Save Reduced Copy): downsample and JPEG-re-encode the
+    // top-level images of the PreserveBase output that exceed the target
+    // resolution (see ImageReduce.hpp and the backend for the exact rules).
+    // Ignored for Fresh assemblies.
+    std::optional<PdfImageReduction> reduceImages;
+    // ADR-0030 (Remove Password): write the document without its encryption
+    // (PDFium FPDF_REMOVE_SECURITY). Only meaningful for PreserveBase of a
+    // document opened with its password; refused (InvalidArgument) together
+    // with removeMetadata.
+    bool removeSecurity = false;
 };
 
 } // namespace rivet::pdf

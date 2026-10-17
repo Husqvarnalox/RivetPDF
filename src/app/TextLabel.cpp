@@ -2,7 +2,7 @@
 
 namespace rivet::app {
 
-TextLabel::TextLabel(std::string text, ui::Font font, ui::Color color, ui::TextAlign align)
+TextLabel::TextLabel(std::string text, ui::Font font, ui::ColorToken color, ui::TextAlign align)
     : text_(std::move(text)), font_(font), color_(color), align_(align) {}
 
 void TextLabel::setText(std::string text) {
@@ -11,9 +11,15 @@ void TextLabel::setText(std::string text) {
     invalidate();
 }
 
-void TextLabel::setColor(ui::Color color) {
+void TextLabel::setColor(ui::ColorToken color) {
     if (color_ == color) return;
     color_ = color;
+    invalidate();
+}
+
+void TextLabel::setFont(const ui::Font& font) {
+    if (font_ == font) return;
+    font_ = font;
     invalidate();
 }
 
@@ -27,7 +33,7 @@ core::Insets TextLabel::textInset() const {
 }
 
 void TextLabel::paintSelf(ui::PaintContext& context) const {
-    context.drawText(text_, bounds().inset(textInset()), font_, color_, align_);
+    context.drawText(text_, bounds().inset(textInset()), font_, ui::colors().*color_, align_);
 }
 
 } // namespace rivet::app

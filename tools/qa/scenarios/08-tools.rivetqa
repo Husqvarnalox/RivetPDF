@@ -1,0 +1,101 @@
+# Scenario 8: Remove Password, Save Reduced Copy, Compare With, OCR on an
+# image-only PDF (macOS only: no text recognizer on Linux/Windows).
+resize 1280 850
+theme light
+
+# --- Password (tests/pdf/fixtures/password.pdf: user password "rivet").
+open ${QA_FIX}/password.pdf
+# QA #12: the whole sentence, no "1 / 0" page indicator while locked.
+assert-state password='“password.pdf” is protected. Enter its password to open it.'
+assert-state passworderror=''
+assert-state pagecount=''
+shot 08-password-prompt.png
+type wrong\n
+log-state
+assert-state passworderror='Incorrect password. Try again.'
+shot 08-password-wrong.png
+type rivet\n
+log-state
+assert-pages 4
+answer save ${QA_WORK}/08-nopass.pdf
+cmd File/Remove Password and Save As…
+log-state
+key cmd+w
+open ${QA_WORK}/08-nopass.pdf
+log-state
+assert-pages 4
+shot 08-nopass-reopened.png
+key cmd+w
+
+# --- Save Reduced Copy (rich.pdf has an image).
+open ${QA_FIX}/rich.pdf
+answer save ${QA_WORK}/08-reduced.pdf
+cmd File/Save Reduced Copy (Medium)…
+log-state
+shot 08-reduced.png
+open ${QA_WORK}/08-reduced.pdf
+assert-pages 2
+shot 08-reduced-reopened.png
+key cmd+w
+key cmd+w
+
+# --- Compare With.
+open ${QA_FIX}/compare-a.pdf
+answer open ${QA_FIX}/compare-b.pdf
+cmd File/Compare With…
+log-state
+shot 08-compare.png
+theme dark
+shot 08-compare-dark.png
+theme light
+key cmd+w
+key cmd+w
+
+# --- OCR: export scan.md (just the scan image) to an image-only PDF with
+# Rivet's own Markdown export, open it, recognize, search.
+open ${QA_FIX}/scan.md
+shot 08-scan-md.png
+answer save ${QA_WORK}/08-scan.pdf
+cmd File/Export as PDF…
+log-state
+key cmd+w
+open ${QA_WORK}/08-scan.pdf
+log-state
+key cmd+f
+type invoice\n
+log-state
+assert-find No
+key escape
+cmd Content/Recognize Text (All Pages)
+wait 500
+log-state
+shot 08-ocr-done.png
+# Same query as before the recognition (a stale result would show here).
+# The reopened find bar keeps the old query unselected: select it first.
+key cmd+f
+type invoice\n
+log-state
+assert-find 1 /
+key escape
+# A query never searched before in this tab (the old one is selected on
+# reopen, bug 10).
+key cmd+f
+assert-find-query amount
+type amount\n
+log-state
+assert-find 1 /
+shot 08-ocr-search.png
+key escape
+# Save, reopen, search again.
+answer save ${QA_WORK}/08-scan-ocr.pdf
+cmd File/Save As…
+key cmd+w
+open ${QA_WORK}/08-scan-ocr.pdf
+key cmd+f
+key cmd+a
+type invoice\n
+key return
+log-state
+assert-find 1
+shot 08-ocr-reopened-search.png
+quit

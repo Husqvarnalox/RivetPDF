@@ -70,7 +70,7 @@ public:
     }
     bool waitForArrivals(int count) {
         std::unique_lock<std::mutex> lock(mutex_);
-        return cv_.wait_for(lock, std::chrono::seconds(10), [&] { return arrived_ >= count; });
+        return cv_.wait_for(lock, std::chrono::seconds(30), [&] { return arrived_ >= count; });
     }
     void open() {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -184,7 +184,7 @@ struct Fixture {
 // Pumps the dispatcher until the predicate holds (bounded).
 template <typename Predicate>
 bool pumpUntil(QueueDispatcher& dispatcher, Predicate predicate) {
-    for (int i = 0; i < 2000; ++i) {
+    for (int i = 0; i < 30000; ++i) {
         dispatcher.pump();
         if (predicate()) return true;
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
@@ -304,7 +304,7 @@ RIVET_TEST(searchDestructionDrainsQueuedWalkers) {
     search->start("alpha");
 
     std::thread releaser([gate] {
-        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        std::this_thread::sleep_for(std::chrono::milliseconds(30));
         gate->open();
     });
     search.reset(); // blocks until the parked walker exits

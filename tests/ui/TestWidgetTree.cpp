@@ -485,3 +485,28 @@ RIVET_TEST(pointerCaptureReleasesOnAMoveWithoutAHeldButtonAndOnTheNextDown) {
     CHECK_EQ(secondPtr->count(PointerEventType::Up), 1);
     CHECK_EQ(firstPtr->count(PointerEventType::Up), 0);
 }
+
+// QA bug 19: floating cards (sheets, prompts, find bar) separate from the
+// page behind them: a drop shadow outside their frame (painted by the
+// parent, outside the card's clip), the panel fill and a 1 px border.
+RIVET_TEST(cardPaintsShadowOutsideItsFrameAndABorder) {
+    Container root;
+    root.setFrame(Rect{0.0, 0.0, 400.0, 400.0});
+    auto card = std::make_unique<rivet::ui::Card>();
+    card->setFrame(Rect{100.0, 100.0, 200.0, 80.0});
+    root.addChild(std::move(card));
+    rivet::ui::testing::FakePaintContext context;
+    root.paint(context);
+    const rivet::ui::Palette& palette = rivet::ui::colors();
+    bool shadowOutside = false;
+    bool fill = false;
+    for (const auto& record : context.roundedFills) {
+        if (record.rect.minX() < 100.0 && record.rect.maxY() > 180.0 && record.color.a > 0.0) shadowOutside = true;
+        if (record.rect == Rect{0.0, 0.0, 200.0, 80.0} && record.color == palette.panelBackground) fill = true;
+    }
+    CHECK(shadowOutside);
+    CHECK(fill);
+    bool border = false;
+    for (const auto& record : context.paths) border = border || (record.stroke && record.color == palette.cardBorder);
+    CHECK(border);
+}

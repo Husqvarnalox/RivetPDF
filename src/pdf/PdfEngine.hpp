@@ -5,8 +5,11 @@
 #include "core/geometry/Rect.hpp"
 #include "pdf/PdfAnnotation.hpp"
 #include "pdf/PdfAssembly.hpp"
+#include "pdf/PdfBuild.hpp"
 #include "pdf/PdfContent.hpp"
+#include "pdf/PdfForms.hpp"
 #include "pdf/PdfPageGeometry.hpp"
+#include "pdf/PdfSignatures.hpp"
 #include "pdf/PdfText.hpp"
 #include "pdf/PdfNavigation.hpp"
 #include "pdf/PdfTypes.hpp"
@@ -142,6 +145,24 @@ public:
         (void)pageIndex;
         return std::unexpected(core::makeError(core::ErrorCode::NotAvailable,
                                                "this backend has no annotation support", "pdf"));
+    }
+
+    // The document's AcroForm fields (ADR-0024), read from the document AS
+    // STORED IN ITS FILE through a private reader with JavaScript and XFA
+    // disabled; cached for the document's lifetime. A document without a
+    // form yields an empty PdfFormInfo. Default: NotAvailable (no forms).
+    virtual core::Result<PdfFormInfoPtr> formInfo() const {
+        return std::unexpected(core::makeError(core::ErrorCode::NotAvailable,
+                                               "this backend has no form support", "pdf"));
+    }
+
+    // The document's digital signatures (ADR-0025): what each signature
+    // dictionary says plus how its /ByteRange relates to the file this
+    // document was opened from. Display only - nothing is verified. Signature
+    // fields without a value are not listed. Default: NotAvailable.
+    virtual core::Result<PdfSignatureListPtr> signatures() const {
+        return std::unexpected(core::makeError(core::ErrorCode::NotAvailable,
+                                               "this backend has no signature support", "pdf"));
     }
 
     // All links of a page. Default: NotAvailable.
@@ -281,6 +302,19 @@ public:
         (void)contentReport;
         return std::unexpected(core::makeError(core::ErrorCode::NotAvailable,
                                                "this backend cannot write documents", "pdf"));
+    }
+
+    // Materializes a NEW document described by `build` (PdfBuild.hpp,
+    // ADR-0023) and streams it to `sink`. `build` is validated first
+    // (validatePdfBuild; InvalidArgument and nothing written when it fails).
+    // Same sink contract as assembleDocument: on error the bytes already
+    // handed to the sink are unspecified and must be discarded; the sink
+    // must not call back into the engine. Default: NotAvailable.
+    virtual core::Status buildDocument(const PdfBuildDocument& build, IPdfByteSink& sink) {
+        (void)build;
+        (void)sink;
+        return std::unexpected(core::makeError(core::ErrorCode::NotAvailable,
+                                               "this backend cannot build documents", "pdf"));
     }
 };
 

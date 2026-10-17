@@ -1,5 +1,6 @@
 add_executable(rivet_ui_tests
     TestButton.cpp
+    TestControls.cpp
     TestOutlinePanel.cpp
     TestPageThumbnailList.cpp
     TestPath.cpp
@@ -9,9 +10,15 @@ add_executable(rivet_ui_tests
     TestTabStrip.cpp
     TestTextArea.cpp
     TestTextBuffer.cpp
+    TestTextElision.cpp
     TestTextField.cpp
+    TestTheme.cpp
+    TestNoHardcodedColors.cpp
     TestWidgetTree.cpp
 )
+
+# The color-literal scan reads the sources (ADR-0033).
+target_compile_definitions(rivet_ui_tests PRIVATE RIVET_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
 
 add_test(NAME ui COMMAND rivet_ui_tests)
 

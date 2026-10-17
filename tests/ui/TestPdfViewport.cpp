@@ -14,6 +14,7 @@
 #include "render/ViewerState.hpp"
 #include "render/ZoomState.hpp"
 #include "ui/PdfViewport.hpp"
+#include "ui/Theme.hpp"
 #include "ui/ViewerTextBridge.hpp"
 #include "ui/ViewportTool.hpp"
 #include "ui/UiTypes.hpp"
@@ -136,10 +137,11 @@ RIVET_TEST(cachedTileIsDrawnAtPageOrigin) {
     FakePaintContext context;
     f.viewport.paint(context);
 
-    // Page 0's frame is {24, 24, 612, 792} in content space; at zoom 1 with
-    // zero scroll the cached tile (0, 0) covers {24, 24, 512, 512} logical px.
+    // Page 0's frame is {24, 24, 612, 792} in content space; at zoom 1 the
+    // 660-pt content is centred in the 800-pt viewport (scroll x = -70), so
+    // the cached tile (0, 0) covers {94, 24, 512, 512} logical px.
     CHECK_EQ(context.bitmaps.size(), std::size_t{1});
-    CHECK(Rect::nearlyEqual(context.bitmaps[0].dest, Rect{24.0, 24.0, 512.0, 512.0}, 1e-9));
+    CHECK(Rect::nearlyEqual(context.bitmaps[0].dest, Rect{94.0, 24.0, 512.0, 512.0}, 1e-9));
     CHECK_EQ(f.source.lastCacheRevision, kRevision);
 }
 
@@ -196,7 +198,7 @@ RIVET_TEST(missingTilesAreRequestedAtVisiblePriority) {
     // A gray placeholder is painted per missing tile.
     int placeholders = 0;
     for (const auto& fill : context.fills) {
-        if (sameColor(fill.color, rivet::ui::Color::gray(0.92))) ++placeholders;
+        if (sameColor(fill.color, rivet::ui::colors().pagePlaceholder)) ++placeholders;
     }
     CHECK_EQ(placeholders, 4);
 }
@@ -329,18 +331,26 @@ RIVET_TEST(tileBoundaryAtVisibleEdgeDoesNotSpawnTheNextTile) {
 RIVET_TEST(scrollIsClampedToContentBounds) {
     Fixture f;
 
+    // x: the 660-pt content is narrower than the 800-pt viewport, so it is
+    // centred (QA #17): x = (660 - 800) / 2 = -70 whatever is asked.
     f.viewport.setScrollOffsetPoints(Point{-50.0, -50.0});
-    CHECK(Point::nearlyEqual(f.viewport.scrollOffsetPoints(), Point{0.0, 0.0}, 1e-9));
+    CHECK(Point::nearlyEqual(f.viewport.scrollOffsetPoints(), Point{-70.0, 0.0}, 1e-9));
 
-    // max offset = max(0, content - viewport/zoom) = {max(0, 660-800), 1256-600}.
+    // max offset y = content - viewport/zoom = 1256 - 600.
     f.viewport.setScrollOffsetPoints(Point{10000.0, 10000.0});
-    CHECK(Point::nearlyEqual(f.viewport.scrollOffsetPoints(), Point{0.0, 656.0}, 1e-9));
+    CHECK(Point::nearlyEqual(f.viewport.scrollOffsetPoints(), Point{-70.0, 656.0}, 1e-9));
 
     // In-range values pass through; scrolling accumulates within bounds.
     f.viewport.setScrollOffsetPoints(Point{0.0, 200.0});
-    CHECK(Point::nearlyEqual(f.viewport.scrollOffsetPoints(), Point{0.0, 200.0}, 1e-9));
+    CHECK(Point::nearlyEqual(f.viewport.scrollOffsetPoints(), Point{-70.0, 200.0}, 1e-9));
     f.viewport.scrollByContentPoints(Point{0.0, 600.0});
-    CHECK(Point::nearlyEqual(f.viewport.scrollOffsetPoints(), Point{0.0, 656.0}, 1e-9));
+    CHECK(Point::nearlyEqual(f.viewport.scrollOffsetPoints(), Point{-70.0, 656.0}, 1e-9));
+
+    // Wider than the viewport (zoom 2: 1320 pt > 400 pt visible): normal
+    // clamping, left edge at 0.
+    CHECK(f.viewport.zoom().setZoom(2.0));
+    f.viewport.setScrollOffsetPoints(Point{-50.0, 0.0});
+    CHECK(Point::nearlyEqual(f.viewport.scrollOffsetPoints(), Point{0.0, 0.0}, 1e-9));
 }
 
 RIVET_TEST(wheelScrollsWithoutModifiers) {
@@ -349,8 +359,8 @@ RIVET_TEST(wheelScrollsWithoutModifiers) {
     PointerEvent scroll = scrollEvent(Point{0.0, 120.0}, false, false);
     CHECK_EQ(f.viewport.onMouse(scroll), true);
     CHECK(scroll.accepted);
-    // Content delta = scrollDelta / zoom = 120 / 1.0.
-    CHECK(Point::nearlyEqual(f.viewport.scrollOffsetPoints(), Point{0.0, 120.0}, 1e-9));
+    // Content delta = scrollDelta / zoom = 120 / 1.0 (x: centred, -70).
+    CHECK(Point::nearlyEqual(f.viewport.scrollOffsetPoints(), Point{-70.0, 120.0}, 1e-9));
 }
 
 RIVET_TEST(commandWheelZoomsAnchoredAtPointer) {
@@ -371,9 +381,10 @@ RIVET_TEST(commandWheelZoomsAnchoredAtPointer) {
     CHECK_EQ(zoomCallbacks, 1);
     CHECK_NEAR(reportedZoom, 1.25, 1e-12);
 
-    // Anchor: the content point under the pointer {400, 300} stays put
-    // -> {400, 300} - {400, 300}/1.25 = {80, 60}; x clamps to 660 - 640 = 20.
-    CHECK(Point::nearlyEqual(f.viewport.scrollOffsetPoints(), Point{20.0, 60.0}, 1e-9));
+    // Anchor: the content point under the pointer stays put. At zoom 1 the
+    // content was centred (x = -70), so that point is {330, 300}
+    // -> {330, 300} - {400, 300}/1.25 = {10, 60} (within [0, 660 - 640]).
+    CHECK(Point::nearlyEqual(f.viewport.scrollOffsetPoints(), Point{10.0, 60.0}, 1e-9));
 
     // deltaY >= 0 with command: zoom back out, re-anchored.
     PointerEvent pinchOut = scrollEvent(Point{0.0, 1.0}, true, false);
@@ -557,13 +568,16 @@ RIVET_TEST(resizeReclampsScrollAndKeepsFitWidthSticky) {
     CHECK(f.viewport.zoom().setZoom(1.25)); // manual zoom first
     f.viewport.setFitMode(ZoomState::FitMode::Width);
     CHECK(f.viewport.zoom().fitMode() == ZoomState::FitMode::Width);
-    f.viewport.setFrame(Rect{0.0, 0.0, 612.0, 700.0});
-    CHECK_NEAR(f.viewport.zoom().zoom(), 1.0, 1e-9); // 612 / 612
+    // The fit accounts for the 24pt page margin on both sides, so the page
+    // never overflows horizontally: (612 + 48) / 660 = 1.0.
+    f.viewport.setFrame(Rect{0.0, 0.0, 660.0, 700.0});
+    CHECK_NEAR(f.viewport.zoom().zoom(), 1.0, 1e-9);
+    CHECK(f.layout.contentSizePoints().width * f.viewport.zoom().zoom() <= 660.0 + 1e-9);
     CHECK(f.viewport.zoom().fitMode() == ZoomState::FitMode::Width);
 
     // Still active on the next resize: narrower window -> smaller zoom
     // (306 / 612 = 0.5), recomputed live.
-    f.viewport.setFrame(Rect{0.0, 0.0, 306.0, 700.0});
+    f.viewport.setFrame(Rect{0.0, 0.0, 330.0, 700.0});
     CHECK_NEAR(f.viewport.zoom().zoom(), 0.5, 1e-9);
     CHECK(f.viewport.zoom().fitMode() == ZoomState::FitMode::Width);
 
@@ -576,17 +590,20 @@ RIVET_TEST(resizeReclampsScrollAndKeepsFitWidthSticky) {
 RIVET_TEST(fitPageFollowsTheCurrentPageAndStaysSticky) {
     Fixture f;
     // Viewport 800x600; the tracked page is 0 (612x792) -> fit page zoom =
-    // min(800/612, 600/792) = 600/792 = 0.757575...
+    // with the 24pt margin on every side: min(800/660, 600/840) = 600/840.
     f.viewport.setFitMode(ZoomState::FitMode::Page);
-    CHECK_NEAR(f.viewport.zoom().zoom(), 600.0 / 792.0, 1e-9);
+    CHECK_NEAR(f.viewport.zoom().zoom(), 600.0 / 840.0, 1e-9);
     CHECK(f.viewport.zoom().fitMode() == ZoomState::FitMode::Page);
 
-    // Scroll to page 1 (top at y=832): the tracked page changes and the next
-    // layout pass refits page 1 (400x400) -> min(800/400, 600/400) = 1.5.
+    // Track page 1 (manual 100% zoom, scrolled to the bottom), then refit:
+    // page 1 is 400x400 -> 448x448 with margins -> min(800/448, 600/448).
+    CHECK(f.viewport.setManualZoom(1.0));
     f.viewport.goToPage(1);
     CHECK_EQ(f.viewport.currentPageIndex(), std::size_t{1});
+    f.viewport.setFitMode(ZoomState::FitMode::Page);
+    CHECK_NEAR(f.viewport.zoom().zoom(), 600.0 / 448.0, 1e-9);
     f.viewport.layout();
-    CHECK_NEAR(f.viewport.zoom().zoom(), 1.5, 1e-9);
+    CHECK_NEAR(f.viewport.zoom().zoom(), 600.0 / 448.0, 1e-9);
     CHECK(f.viewport.zoom().fitMode() == ZoomState::FitMode::Page);
 }
 
@@ -956,7 +973,7 @@ RIVET_TEST(layerNeverSeesWheelScrollOrPinch) {
 
     PointerEvent scroll = scrollEvent(Point{0.0, 120.0}, false, false);
     CHECK_EQ(f.viewport.onMouse(scroll), true);
-    CHECK(Point::nearlyEqual(f.viewport.scrollOffsetPoints(), Point{0.0, 120.0}, 1e-9));
+    CHECK(Point::nearlyEqual(f.viewport.scrollOffsetPoints(), Point{-70.0, 120.0}, 1e-9));
     PointerEvent pinch = scrollEvent(Point{0.0, -1.0}, true, false);
     pinch.position = Point{400.0, 300.0};
     CHECK_EQ(f.viewport.onMouse(pinch), true);
@@ -1122,6 +1139,53 @@ RIVET_TEST(addedLayersFollowTheAnnotationLayerAndAllPaint) {
     CHECK_EQ(f.viewport.layerCount(), std::size_t{0});
 }
 
+RIVET_TEST(belowAnnotationLayersPrecedeTheAnnotationLayer) {
+    Fixture f;
+    EventLog log;
+    LoggingLayer annotation(log);
+    LoggingLayer content(log);
+    LoggingLayer form(log);
+    annotation.tag = "ann";
+    content.tag = "content";
+    form.tag = "form";
+    LoggingBridge bridge(log);
+    f.viewport.setTextBridge(&bridge);
+    f.viewport.setAnnotationLayer(&annotation);
+    f.viewport.addLayer(&content);
+    f.viewport.addLayer(&form, PdfViewport::LayerPlacement::BelowAnnotations);
+    CHECK_EQ(f.viewport.layerCount(), std::size_t{3});
+
+    form.consumeMouse = true;
+    CHECK_EQ(f.viewport.onMouse(mouseAt(PointerEventType::Down, Point{100.0, 100.0})), true);
+    CHECK(log == (EventLog{"form.mouse"}));
+    log.clear();
+
+    FakePaintContext context;
+    f.viewport.paint(context);
+    CHECK(log == (EventLog{"form.page", "ann.page", "content.page", "form.above", "ann.above", "content.above"}));
+    log.clear();
+
+    // Re-installing the annotation layer keeps the below-layer first.
+    f.viewport.setAnnotationLayer(nullptr);
+    f.viewport.setAnnotationLayer(&annotation);
+    form.consumeMouse = false;
+    f.viewport.onMouse(mouseAt(PointerEventType::Move, Point{700.0, 590.0}));
+    CHECK(log == (EventLog{"form.mouse", "ann.mouse", "content.mouse", "form.after", "ann.after", "content.after"}));
+    log.clear();
+
+    f.viewport.removeLayer(&form);
+    f.viewport.removeLayer(&content);
+    f.viewport.setAnnotationLayer(nullptr);
+    CHECK_EQ(f.viewport.layerCount(), std::size_t{0});
+    // A later below-layer is still placed first.
+    f.viewport.setAnnotationLayer(&annotation);
+    f.viewport.addLayer(&form, PdfViewport::LayerPlacement::BelowAnnotations);
+    f.viewport.onMouse(mouseAt(PointerEventType::Move, Point{700.0, 590.0}));
+    CHECK(log == (EventLog{"form.mouse", "ann.mouse", "form.after", "ann.after"}));
+    f.viewport.removeLayer(&form);
+    f.viewport.setAnnotationLayer(nullptr);
+}
+
 RIVET_TEST(hostPageCountAndPageAtMapViewportPointsToPageDisplayPoints) {
     PdfViewport empty;
     empty.setFrame(Rect{0.0, 0.0, 800.0, 600.0});
@@ -1130,11 +1194,12 @@ RIVET_TEST(hostPageCountAndPageAtMapViewportPointsToPageDisplayPoints) {
 
     Fixture f;
     CHECK_EQ(f.viewport.pageCount(), std::size_t{2});
-    // Zoom 1, no scroll: viewport (100, 100) is page-0 point (76, 76).
+    // Zoom 1, content centred (scroll x = -70): viewport (100, 100) is
+    // page-0 point (6, 76).
     auto hit = f.viewport.pageAt(Point{100.0, 100.0});
     CHECK(hit.has_value());
     CHECK_EQ(hit->first, std::size_t{0});
-    CHECK(Point::nearlyEqual(hit->second, Point{76.0, 76.0}, 1e-9));
+    CHECK(Point::nearlyEqual(hit->second, Point{6.0, 76.0}, 1e-9));
     // The margin outside the page maps to nothing.
     CHECK(!f.viewport.pageAt(Point{10.0, 10.0}).has_value());
 
@@ -1156,4 +1221,43 @@ RIVET_TEST(hostPageCountAndPageAtMapViewportPointsToPageDisplayPoints) {
     CHECK(!f.viewport.pageAt(Point{200.0, 248.0}).has_value());
     // Consistent with pageRectInViewport.
     CHECK(Rect::nearlyEqual(*f.viewport.pageRectInViewport(1), Rect{60.0, 264.0, 800.0, 800.0}, 1e-9));
+}
+
+// QA #18: tile destinations are snapped to the device-pixel grid, so
+// neighbouring tiles meet on one whole device pixel at any zoom and scroll
+// (fractional edges blended with the background and drew thin seams).
+RIVET_TEST(tileDestinationsMeetOnWholeDevicePixels) {
+    Fixture f;
+    CHECK(f.viewport.zoom().setZoom(1.37));
+    f.viewport.setScrollOffsetPoints(Point{13.3, 7.7});
+    FakePaintContext context;
+    context.backingScaleValue = 2.0;
+    f.viewport.paint(context); // nothing cached: every tile paints a placeholder
+
+    std::vector<Rect> tiles;
+    for (const auto& fill : context.fills) {
+        if (fill.color == rivet::ui::colors().pagePlaceholder) tiles.push_back(fill.rect);
+    }
+    CHECK(tiles.size() >= 4);
+    const auto onGrid = [](double v) { return std::abs(v * 2.0 - std::round(v * 2.0)) < 1e-6; };
+    std::size_t sharedEdges = 0;
+    for (const Rect& a : tiles) {
+        CHECK(onGrid(a.minX()) && onGrid(a.minY()) && onGrid(a.maxX()) && onGrid(a.maxY()));
+        for (const Rect& b : tiles) {
+            const bool sameRow = std::abs(a.minY() - b.minY()) < 1e-9;
+            const bool sameColumn = std::abs(a.minX() - b.minX()) < 1e-9;
+            if (sameRow && b.minX() > a.minX() && b.minX() < a.maxX() + 1.0) {
+                CHECK_NEAR(b.minX(), a.maxX(), 1e-9); // no gap, no overlap
+                ++sharedEdges;
+            }
+            if (sameColumn && b.minY() > a.minY() && b.minY() < a.maxY() + 1.0) {
+                CHECK_NEAR(b.minY(), a.maxY(), 1e-9);
+                ++sharedEdges;
+            }
+        }
+    }
+    CHECK(sharedEdges >= 2);
+
+    const Rect snapped = PdfViewport::snapToDevicePixels(Rect{10.3, 20.26, 100.1, 50.0}, 2.0);
+    CHECK(Rect::nearlyEqual(snapped, Rect{10.5, 20.5, 100.0, 50.0}, 1e-9));
 }

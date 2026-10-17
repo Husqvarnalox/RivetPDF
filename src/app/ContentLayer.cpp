@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 #include "app/ContentLayer.hpp"
+#include "ui/Theme.hpp"
 
 #include "app/AnnotationPainter.hpp"
 
@@ -33,7 +34,7 @@ core::Point toViewport(const core::Rect& pageRect, double zoom, core::Point p) {
 void paintHandle(ui::PaintContext& context, core::Point center) {
     const double size = AnnotationInteraction::kHandleSize;
     const core::Rect box{center.x - size / 2.0, center.y - size / 2.0, size, size};
-    context.fillRect(box, ui::Color::white());
+    context.fillRect(box, ui::colors().editorPaper);
     context.strokeRect(box, AnnotationPainter::accentColor(), kChromeWidth);
 }
 
@@ -219,11 +220,11 @@ void ContentLayer::paintAbove(const ui::ViewportToolHost& host, ui::PaintContext
         hover.has_value() && !machine.gestureActive() &&
         !(selected.has_value() && selected->page == hover->page && selected->info.id == hover->info.id)) {
         if (const std::optional<core::Rect> pageRect = host.pageRectInViewport(hover->page); pageRect.has_value()) {
-            const ui::Color wash = ui::Color::rgba(accent.r, accent.g, accent.b, 0.12);
+            const ui::Color wash = ui::withAlpha(accent, 0.12);
             if (hover->info.kind != ContentInteraction::Kind::Text) {
                 context.fillRect(AnnotationPainter::toViewport(*pageRect, zoom, hover->info.bounds), wash);
             }
-            paintOutline(context, *pageRect, zoom, hover->info, ui::Color::rgba(accent.r, accent.g, accent.b, 0.7));
+            paintOutline(context, *pageRect, zoom, hover->info, ui::withAlpha(accent, 0.7));
         }
     }
 
@@ -234,7 +235,7 @@ void ContentLayer::paintAbove(const ui::ViewportToolHost& host, ui::PaintContext
     if (selected.has_value() && !previewing) {
         if (const std::optional<core::Rect> pageRect = host.pageRectInViewport(selected->page); pageRect.has_value()) {
             const ContentInteraction::HitInfo& info = selected->info;
-            const ui::Color color = info.capability == editor::ContentCapability::ReadOnly ? ui::Color::gray(0.5) : accent;
+            const ui::Color color = info.capability == editor::ContentCapability::ReadOnly ? ui::colors().objectReadOnly : accent;
             paintOutline(context, *pageRect, zoom, info, color);
             if (info.canWrap) {
                 paintHandle(context, toViewport(*pageRect, zoom, ContentInteraction::wrapHandlePoint(info)));

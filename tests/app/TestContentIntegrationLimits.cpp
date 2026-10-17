@@ -349,7 +349,7 @@ RIVET_TEST(integQuitWhileAnEditedDocumentIsBeingSavedLeavesNothingDangling) {
 
     const int posted = rig.dispatcher.posted.load();
     std::thread releaser([&rig] {
-        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        std::this_thread::sleep_for(std::chrono::milliseconds(30));
         rig.engine.release();
     });
     rig.quit();

@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: MPL-2.0
 #include "ui/TabStrip.hpp"
+#include "ui/Theme.hpp"
 
 #include "core/geometry/Insets.hpp"
+#include "ui/Drawing.hpp"
+#include "ui/Icons.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -11,23 +14,11 @@ namespace rivet::ui {
 namespace {
 
 constexpr Font kTabFont{13.0, Font::Weight::Regular};
-constexpr Font kCloseFont{11.0, Font::Weight::Regular};
 
-constexpr Color kStripBackground = Color::gray(0.949); // like Sidebar
-constexpr Color kActiveTabFill = Color::white();
-constexpr Color kInactiveTabFill = Color::gray(0.9);
-constexpr Color kActiveTabBorder = Color::rgba(0.0, 0.0, 0.0, 0.25);
-constexpr Color kInactiveTabBorder = Color::rgba(0.0, 0.0, 0.0, 0.12);
-constexpr Color kTitleColor = Color::rgba(0.10, 0.10, 0.10, 1.0);
-constexpr Color kCloseGlyphColor = Color::gray(0.45);
 
-constexpr Color kDirtyDotColor = Color::gray(0.35);
 constexpr double kDirtyDotSize = 6.0;
-constexpr double kTabCornerRadius = 5.0;
-constexpr double kStrokeWidth = 1.0;
+constexpr double kTabCornerRadius = 7.0;
 
-// "×" multiplication sign (U+00D7), UTF-8.
-constexpr const char* kCloseGlyph = "\xC3\x97";
 // "…" horizontal ellipsis (U+2026), UTF-8.
 constexpr const char* kEllipsis = "\xE2\x80\xA6";
 
@@ -104,10 +95,10 @@ void TabStrip::layoutTabs(const PaintContext& context) const {
     tabRects_.clear();
     visibleCount_ = 0;
     const double limitX = bounds().maxX();
-    double x = 0.0;
+    double x = kLeadingInset;
     for (const Tab& tab : tabs_) {
         const double width = tabWidthForTitle(tab.title, context);
-        tabRects_.push_back(core::Rect{core::Point{x, 0.0}, core::Size{width, kTabHeight}});
+        tabRects_.push_back(core::Rect{core::Point{x, kTabTopInset}, core::Size{width, kTabHeight - kTabTopInset}});
         // Tabs are laid out left to right with strictly increasing x, so once
         // one tab overflows, every later tab does too: the visible count only
         // grows.
@@ -135,7 +126,7 @@ core::Rect TabStrip::closeButtonRect(std::size_t index) const {
     const core::Rect tab = tabRects_[index];
     return core::Rect{
         core::Point{tab.maxX() - kTabLeftPadding - kCloseButtonSize,
-                    tab.minY() + (kTabHeight - kCloseButtonSize) / 2.0},
+                    tab.minY() + (tab.size.height - kCloseButtonSize) / 2.0},
         core::Size{kCloseButtonSize, kCloseButtonSize}};
 }
 
@@ -170,43 +161,67 @@ bool TabStrip::onMouse(const PointerEvent& event) {
 
     case PointerEventType::Move:
     case PointerEventType::Entered:
-    case PointerEventType::Exited:
+    case PointerEventType::Exited: {
+        // Hover shows the close button; moves are never consumed.
+        const std::optional<std::size_t> hovered =
+            event.type == PointerEventType::Exited ? std::nullopt : tabIndexAt(event.position);
+        const bool overClose = hovered.has_value() && closeButtonRect(*hovered).contains(event.position);
+        if (hovered != hoveredTab_ || overClose != hoveredClose_) {
+            hoveredTab_ = hovered;
+            hoveredClose_ = overClose;
+            invalidate();
+        }
+        return false;
+    }
     case PointerEventType::Scroll:
-        // No hover visuals in Phase 2: moves are never consumed.
         return false;
     }
     return false;
 }
 
 void TabStrip::paintSelf(PaintContext& context) const {
+    const Palette& palette = colors();
     const core::Rect area = bounds();
-    context.fillRect(area, kStripBackground);
+    context.fillRect(area, palette.tabStripBackground);
     layoutTabs(context);
+    // Bottom hairline, interrupted under the active tab (it joins the toolbar).
+    drawBottomHairline(context, area, palette.chromeSeparator);
 
     context.pushClip(area);
     for (std::size_t index = 0; index < visibleCount_; ++index) {
         const bool active = activeIndex_ && *activeIndex_ == index;
+        const bool hovered = hoveredTab_ && *hoveredTab_ == index;
         const core::Rect tab = tabRects_[index];
-        context.fillRoundedRect(tab, active ? kActiveTabFill : kInactiveTabFill, kTabCornerRadius);
-        context.strokeRect(tab.inset(core::Insets::uniform(0.5)),
-                           active ? kActiveTabBorder : kInactiveTabBorder, kStrokeWidth);
-        context.drawText(kCloseGlyph, closeButtonRect(index), kCloseFont, kCloseGlyphColor,
-                         TextAlign::Center);
-        const bool dirty = tabs_[index].dirty;
-        const double dotReserve = dirty ? kDirtyDotSize + 4.0 : 0.0;
-        if (dirty) {
-            const core::Rect close = closeButtonRect(index);
-            context.fillRoundedRect(
-                core::Rect{close.minX() - kDirtyDotSize - 3.0, tab.minY() + (kTabHeight - kDirtyDotSize) / 2.0,
-                           kDirtyDotSize, kDirtyDotSize},
-                kDirtyDotColor, kDirtyDotSize / 2.0);
+        if (active) {
+            // Rounded top corners; the bottom runs into the toolbar.
+            const core::Rect body{tab.minX(), tab.minY(), tab.size.width, tab.size.height + kTabCornerRadius + 2.0};
+            strokeRoundedRect(context, body.inset(core::Insets::uniform(-0.5)), palette.chromeSeparator, 1.0,
+                              kTabCornerRadius + 0.5);
+            context.fillRoundedRect(body, palette.chromeActiveTab, kTabCornerRadius);
+        } else if (hovered) {
+            context.fillRoundedRect(tab.inset(core::Insets{2.0, 0.0, 2.0, 4.0}), palette.controlFillHover,
+                                    kTabCornerRadius);
         }
-        const double titleWidth = tab.size.width - 2.0 * kTabLeftPadding - kCloseButtonSize - dotReserve;
-        const core::Rect titleRect{
-            core::Point{tab.minX() + kTabLeftPadding, tab.minY()},
-            core::Size{std::max(0.0, titleWidth), kTabHeight}};
-        context.drawText(displayTitle(tabs_[index].title, tab.size.width - dotReserve, context), titleRect,
-                         kTabFont, kTitleColor, TextAlign::Left);
+        const core::Rect close = closeButtonRect(index);
+        const bool dirty = tabs_[index].dirty;
+        const bool showClose = hovered || (active && !dirty);
+        if (showClose) {
+            if (hovered && hoveredClose_) {
+                context.fillRoundedRect(close, palette.controlFillPressed, kCloseButtonSize / 2.0);
+            }
+            drawIcon(context, Icon::Close, close.inset(core::Insets::uniform(3.0)), palette.textSecondary);
+        } else if (dirty) {
+            // The dirty dot sits where the close button appears on hover.
+            context.fillRoundedRect(
+                core::Rect{close.center().x - kDirtyDotSize / 2.0, close.center().y - kDirtyDotSize / 2.0, kDirtyDotSize,
+                           kDirtyDotSize},
+                palette.textSecondary, kDirtyDotSize / 2.0);
+        }
+        const double titleWidth = tab.size.width - 2.0 * kTabLeftPadding - kCloseButtonSize;
+        const core::Rect titleRect{core::Point{tab.minX() + kTabLeftPadding, tab.minY()},
+                                   core::Size{std::max(0.0, titleWidth), tab.size.height}};
+        context.drawText(displayTitle(tabs_[index].title, tab.size.width, context), titleRect, kTabFont,
+                         active ? palette.textPrimary : palette.textSecondary, TextAlign::Left);
     }
     context.popClip();
 }

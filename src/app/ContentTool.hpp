@@ -13,6 +13,7 @@ enum class ContentTool : std::uint8_t {
     None,
     SelectObject, // select / move / resize / delete / retype existing content
     AddText,      // click or drag places a new text block
+    Redact,       // drag marks an area for redaction (RedactionController, ADR-0026)
 };
 
 // Content commands the shell exposes to platform menus (integers on the
@@ -24,6 +25,8 @@ enum class ContentCommand : std::uint8_t {
     ReplaceImage = 3, // file dialog, decode on a worker, replaceImage
     BringToFront = 4,
     DeleteObject = 5,
+    RecognizeTextMissing = 6, // OCR the pages without text (OcrController, ADR-0027)
+    RecognizeTextAll = 7,     // OCR every page
 };
 
 } // namespace rivet::app

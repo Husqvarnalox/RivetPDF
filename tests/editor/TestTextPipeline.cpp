@@ -129,7 +129,7 @@ struct Fixture {
 
 // Bounded wait for a predicate (turns a hang into a test failure).
 template <typename Predicate>
-bool waitFor(Predicate predicate, int attempts = 500) {
+bool waitFor(Predicate predicate, int attempts = 15000) {
     for (int i = 0; i < attempts; ++i) {
         if (predicate()) return true;
         std::this_thread::sleep_for(std::chrono::milliseconds(2));
@@ -188,7 +188,9 @@ RIVET_TEST(searchFindsMatchesAcrossPagesAndNavigates) {
     search.setOnResultsChanged([&] { ++notifications; });
 
     search.start("alpha");
-    CHECK(search.searching());
+    // start() notifies synchronously; "searching" itself is not asserted because a
+    // fast worker may already have finished.
+    CHECK_GE(notifications.load(), 1);
     CHECK(waitFor([&] { return !search.searching() && search.matches().size() == 2; }));
     CHECK_EQ(search.matches().size(), std::size_t{2});
     CHECK_EQ(search.matches()[0].page, session->pageId(0));

@@ -62,6 +62,11 @@ std::size_t TaskScheduler::pendingCount() const {
     return queue_.size();
 }
 
+std::size_t TaskScheduler::busyCount() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return queue_.size() + running_;
+}
+
 void TaskScheduler::workerLoop(std::stop_token stopToken) {
     for (;;) {
         std::function<void()> task;
@@ -75,6 +80,7 @@ void TaskScheduler::workerLoop(std::stop_token stopToken) {
             }
             task = std::move(queue_.front());
             queue_.pop_front();
+            ++running_;
         }
         try {
             task();
@@ -82,6 +88,12 @@ void TaskScheduler::workerLoop(std::stop_token stopToken) {
             // A task escaping with an exception must not take down its
             // worker; tasks are expected to report failures themselves.
             log::error("TaskScheduler: task exited with an uncaught exception");
+        }
+        // Destroy the task (and what it captured) before it stops counting.
+        task = nullptr;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            --running_;
         }
     }
 }

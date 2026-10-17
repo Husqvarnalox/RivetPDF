@@ -90,6 +90,10 @@ public:
 
     // Layout introspection (tests/hosts); reflects the current frame width.
     std::size_t lineCount() const;
+    // Width (points, padding included) the text needs without soft wrapping:
+    // the widest hard line. Glyphs not measured yet (they are measured at
+    // paint time) count as 0.6 em, so the estimate errs on the wide side.
+    double naturalWidth() const;
     // Byte range of visual line `index` (excludes the '\n' of a hard break);
     // an empty range when out of range.
     Selection lineRange(std::size_t index) const;
@@ -167,7 +171,7 @@ private:
     double fontSize_ = 13.0;
     double lineHeight_ = kLineHeight;
     double padding_ = kPadding;
-    Color textColor_ = Color::black();
+    std::optional<Color> textColor_; // nullopt = the theme's textPrimary
     std::optional<Color> background_;
 };
 

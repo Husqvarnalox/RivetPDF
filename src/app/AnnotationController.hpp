@@ -44,6 +44,9 @@ enum class AnnotationCommand : std::uint8_t {
     ToolStamp = 10,
     DeleteAnnotation = 11,
     EditNote = 12,
+    // Visual signatures (ADR-0025): handled by the shell's signature sheet.
+    Sign = 13,
+    ManageSignatures = 14,
 };
 
 // Annotation editing over the ACTIVE Ready tab (ADR-0013):
@@ -104,6 +107,17 @@ public:
     void setBorderWidth(float width);
     void setFillEnabled(bool enabled);
     void setStampName(pdf::PdfStampName name);
+
+    // --- Visual signatures (ADR-0025) ---------------------------------------
+    // Arms `signature` for placement and switches to the Sign tool: the next
+    // click places it (kSignatureHeight tall at its aspect), a drag sets its
+    // box; afterwards the tool returns to Select with the new signature
+    // selected. Null disarms.
+    void armSignature(pdf::PdfSignatureAppearancePtr signature);
+    const pdf::PdfSignatureAppearancePtr& armedSignature() const { return armedSignature_; }
+    // Fired when the Sign tool is chosen with no armed signature (the shell
+    // opens the signature sheet instead).
+    void setOnSignatureRequested(std::function<void()> callback) { onSignatureRequested_ = std::move(callback); }
 
     // One tool state with the content tools (ContentController): while
     // suspended the annotation layer paints but ignores input.
@@ -187,6 +201,8 @@ private:
     mutable std::unordered_map<TabId, core::AnnotationId> selected_;
     std::function<void()> onStateChanged_;
     std::function<void()> onToolActivated_;
+    std::function<void()> onSignatureRequested_;
+    pdf::PdfSignatureAppearancePtr armedSignature_;
 
     // Raw pointers into widgets owned by the parent's tree.
     ui::Container* notePanel_ = nullptr;

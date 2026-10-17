@@ -22,6 +22,9 @@
 #include "PdfiumDocument.h"
 #include "PdfiumEngine.h"
 #include "PdfiumFileSource.h"
+#include "PdfiumForms.h"
+#include "PdfiumImageReduce.h"
+#include "PdfiumWriting.h"
 #include "fpdf_edit.h"          // FPDF_CreateNewDocument, FPDF_MovePages, FPDFPage_Delete, FPDFPage_SetRotation
 #include "fpdf_ppo.h"           // FPDF_ImportPagesByIndex
 #include "fpdf_save.h"          // FPDF_SaveAsCopy
@@ -149,23 +152,7 @@
 namespace rivet::pdf {
 namespace {
 
-// RAII wrapper for FPDF_DOCUMENT handles (load/create / FPDF_CloseDocument).
-class ScopedDocument {
-public:
-    explicit ScopedDocument(FPDF_DOCUMENT document) : document_(document) {}
-    ~ScopedDocument() {
-        if (document_ != nullptr) {
-            FPDF_CloseDocument(document_);
-        }
-    }
-    ScopedDocument(const ScopedDocument&) = delete;
-    ScopedDocument& operator=(const ScopedDocument&) = delete;
-
-    FPDF_DOCUMENT get() const { return document_; }
-
-private:
-    FPDF_DOCUMENT document_;
-};
+using internal::ScopedDocument;
 
 // A private FPDF_DOCUMENT opened from the exact bytes a live document was
 // opened from (same shared file source, same password). PDFium keeps the
@@ -375,8 +362,21 @@ core::Result<std::unique_ptr<PrivateCopy>> openPrivateCopy(const PdfiumDocument&
 // streams, adjusted popup/Note /Rect, toggled /F flags); importing from them
 // would leak those render artifacts into saved or extracted output. Copies
 // are closed with the object, after the assembly. Caller holds the gate.
+//
+// Form values (ADR-0024): when the request fills the base's form, the base's
+// copy gets the values applied (through the form filler, like the working
+// document) right after it is opened, so every imported copy of a base page
+// (duplicates, Extract) carries the filled values and appearances too.
 class ImportSources {
 public:
+    void setFormFill(const PdfiumDocument* base, PdfFormInfoPtr info, PdfFormValuesPtr values,
+                     std::vector<std::string>* failures) {
+        formBase_ = base;
+        formInfo_ = std::move(info);
+        formValues_ = std::move(values);
+        formFailures_ = failures;
+    }
+
     core::Result<FPDF_DOCUMENT> documentFor(const PdfiumDocument& live) {
         const auto it = copies_.find(&live);
         if (it != copies_.end()) {
@@ -387,12 +387,24 @@ public:
             return std::unexpected(copy.error());
         }
         const FPDF_DOCUMENT handle = (*copy)->get();
+        if (&live == formBase_ && formInfo_ != nullptr && formValues_ != nullptr && !formValues_->empty()) {
+            // Identity page map: the copy holds every base page in place.
+            const auto identity = [](std::size_t page) -> std::optional<int> { return static_cast<int>(page); };
+            if (auto filled = internal::applyFormValues(handle, *formInfo_, *formValues_, identity, formFailures_);
+                !filled.has_value()) {
+                return std::unexpected(filled.error());
+            }
+        }
         copies_.emplace(&live, std::move(*copy));
         return handle;
     }
 
 private:
     std::map<const PdfiumDocument*, std::unique_ptr<PrivateCopy>> copies_;
+    const PdfiumDocument* formBase_ = nullptr;
+    PdfFormInfoPtr formInfo_;
+    PdfFormValuesPtr formValues_;
+    std::vector<std::string>* formFailures_ = nullptr;
 };
 
 // Imports `indices` of `source` (its private copy) into `working` at
@@ -542,59 +554,73 @@ core::Status applyContent(FPDF_DOCUMENT working,
     return core::ok();
 }
 
-// FPDF_FILEWRITE adapter forwarding to an IPdfByteSink. The first failure
-// is recorded and every later block is refused, so nothing after a failed
-// block ever reaches the sink.
-struct SinkWriter final : FPDF_FILEWRITE {
-    IPdfByteSink* sink = nullptr;
-    std::optional<core::Error> error;
-    bool threw = false;
-    std::uint64_t bytesWritten = 0;
-};
-
-// Called from inside PDFium: never lets an exception escape.
-int writeToSink(FPDF_FILEWRITE* self, const void* data, unsigned long size) noexcept {
-    auto* writer = static_cast<SinkWriter*>(self);
-    if (writer->error.has_value() || writer->threw) {
-        return 0;
-    }
-    if (size == 0) {
-        return 1;
-    }
-    try {
-        core::Status status = writer->sink->write(data, static_cast<std::size_t>(size));
-        if (!status.has_value()) {
-            writer->error.emplace(std::move(status).error());
-            return 0;
-        }
-    } catch (...) {
-        writer->threw = true;
-        return 0;
-    }
-    writer->bytesWritten += size;
-    return 1;
+// Serializes `working` into `sink` (see PdfiumWriting.h). Caller holds the
+// gate.
+core::Status saveTo(FPDF_DOCUMENT working, IPdfByteSink& sink, bool removeSecurity = false) {
+    return internal::saveDocumentToSink(working, sink, removeSecurity);
 }
 
-// Serializes `working` (non-incremental: a complete, self-contained file)
-// into `sink`. Caller holds the gate.
-core::Status saveTo(FPDF_DOCUMENT working, IPdfByteSink& sink) {
-    SinkWriter writer;
-    writer.version = 1;
-    writer.WriteBlock = &writeToSink;
-    writer.sink = &sink;
-
-    const bool saved = FPDF_SaveAsCopy(working, &writer, FPDF_NO_INCREMENTAL) != 0;
-    // Checked BEFORE `saved`: the final flush's result is dropped by PDFium.
-    if (writer.error.has_value()) {
-        return std::unexpected(std::move(*writer.error));
+// ADR-0028: downsamples and JPEG-re-encodes the oversized top-level images
+// of every final page (pages already in final order, content edits applied).
+// A page whose content streams would not survive regeneration (the ADR-0017
+// probe, run against the page's source document at most once per page and
+// only when an image would actually be replaced) is left as it is. Pages
+// that already went through content editing are regenerated anyway and need
+// no probe. Caller holds the gate.
+core::Status applyImageReduction(FPDF_DOCUMENT working,
+                                 const std::vector<ResolvedPage>& pages,
+                                 ImportSources& sources,
+                                 const PdfImageReduction& reduction) {
+    std::map<const PdfiumDocument*, std::unique_ptr<PrivateCopy>> references;
+    std::size_t total = 0;
+    for (std::size_t i = 0; i < pages.size(); ++i) {
+        internal::ScopedPage page(FPDF_LoadPage(working, static_cast<int>(i)));
+        if (page.get() == nullptr) {
+            return std::unexpected(core::makeError(core::ErrorCode::InvalidDocument,
+                                                   "PDFium failed to load assembled page " +
+                                                       std::to_string(i),
+                                                   "pdf"));
+        }
+        const bool edited = pages[i].contentEdits != nullptr && !pages[i].contentEdits->empty();
+        const auto safe = [&]() -> bool {
+            if (edited) return true;
+            const auto source = sources.documentFor(*pages[i].source);
+            if (!source.has_value()) return false;
+            auto it = references.find(pages[i].source);
+            if (it == references.end()) {
+                auto copy = openPrivateCopy(*pages[i].source, "probe reference");
+                if (!copy.has_value()) return false;
+                it = references.emplace(pages[i].source, std::move(*copy)).first;
+            }
+            return internal::probeRegeneration(*source, it->second->get(), pages[i].sourceIndex).safe;
+        };
+        auto reduced = internal::reduceImagesOnPage(working, page.get(), reduction, safe);
+        if (!reduced.has_value()) return std::unexpected(reduced.error());
+        total += *reduced;
     }
-    if (writer.threw) {
-        return std::unexpected(internalError("the output sink threw an exception"));
-    }
-    if (!saved || writer.bytesWritten == 0) {
-        return std::unexpected(internalError("PDFium failed to serialize the document"));
-    }
+    if (reduction.imagesReduced != nullptr) *reduction.imagesReduced = total;
     return core::ok();
+}
+
+// Remove-metadata save (ADR-0026): PDFium has no API to edit /Info or the
+// catalog's /Metadata, so the finished working document's pages are imported
+// (all at once, so links between them survive) into a fresh document, which
+// has neither, and that is written instead. Document-level structure is lost
+// exactly as for Extract (see the top of this file). Caller holds the gate.
+core::Status saveWithoutMetadata(FPDF_DOCUMENT working, std::size_t pageCount, IPdfByteSink& sink) {
+    ScopedDocument fresh(FPDF_CreateNewDocument());
+    if (fresh.get() == nullptr) {
+        return std::unexpected(core::makeError(core::ErrorCode::OutOfMemory,
+                                               "PDFium could not create a new document", "pdf"));
+    }
+    if (FPDF_ImportPagesByIndex(fresh.get(), working, nullptr, 0, 0) == 0) {
+        return std::unexpected(internalError("PDFium could not rebuild the document without its metadata"));
+    }
+    if (auto counted = verifyPageCount(fresh.get(), pageCount, "removing the metadata"); !counted.has_value()) {
+        return counted;
+    }
+    FPDF_CopyViewerPreferences(fresh.get(), working);
+    return saveTo(fresh.get(), sink);
 }
 
 core::Status verifyPageCount(FPDF_DOCUMENT working, std::size_t expected, const char* step) {
@@ -607,8 +633,27 @@ core::Status verifyPageCount(FPDF_DOCUMENT working, std::size_t expected, const 
     return core::ok();
 }
 
+// Applies the request's form values to the base pages reused in place in
+// the working document (pages already in final order, content applied,
+// /Annots still the source's). `reusedFinal[p]` is the final index of base
+// page p when it was reused in place, -1 otherwise. Caller holds the gate.
+core::Status applyForms(FPDF_DOCUMENT working,
+                        const PdfiumDocument& base,
+                        const std::vector<int>& reusedFinal,
+                        const PdfAssemblyRequest& request) {
+    if (request.formValues == nullptr || request.formValues->empty()) return core::ok();
+    const auto info = base.formInfoLocked();
+    if (!info.has_value()) return std::unexpected(info.error());
+    const auto pageFor = [&reusedFinal](std::size_t sourcePage) -> std::optional<int> {
+        if (sourcePage >= reusedFinal.size() || reusedFinal[sourcePage] < 0) return std::nullopt;
+        return reusedFinal[sourcePage];
+    };
+    return internal::applyFormValues(working, **info, *request.formValues, pageFor, request.formFailures);
+}
+
 core::Status assemblePreserveBase(const PdfiumDocument& base,
                                   const std::vector<ResolvedPage>& pages,
+                                  const PdfAssemblyRequest& request,
                                   ImportSources& sources,
                                   IPdfByteSink& sink,
                                   std::vector<PdfAssembledPageAnnotations>* report,
@@ -713,10 +758,30 @@ core::Status assemblePreserveBase(const PdfiumDocument& base,
     if (auto edited = applyContent(working.get(), pages, contentReport); !edited.has_value()) {
         return edited;
     }
+    if (request.reduceImages.has_value()) {
+        if (auto reduced = applyImageReduction(working.get(), pages, sources, *request.reduceImages);
+            !reduced.has_value()) {
+            return reduced;
+        }
+    }
+    // Forms before annotation edits: widget /Annots indices are still the
+    // source page's (content edits never touch /Annots).
+    std::vector<int> reusedFinal(baseCount, -1);
+    for (std::size_t i = 0; i < finalCount; ++i) {
+        if (pages[i].source == &base && workingIndex[i] == pages[i].sourceIndex) {
+            reusedFinal[static_cast<std::size_t>(pages[i].sourceIndex)] = static_cast<int>(i);
+        }
+    }
+    if (auto filled = applyForms(working.get(), base, reusedFinal, request); !filled.has_value()) {
+        return filled;
+    }
     if (auto annotated = applyAnnotations(working.get(), pages, report); !annotated.has_value()) {
         return annotated;
     }
-    return saveTo(working.get(), sink);
+    if (request.removeMetadata) {
+        return saveWithoutMetadata(working.get(), finalCount, sink);
+    }
+    return saveTo(working.get(), sink, request.removeSecurity);
 }
 
 core::Status assembleFresh(const std::vector<ResolvedPage>& pages, ImportSources& sources,
@@ -782,13 +847,48 @@ core::Status assembleWithPdfium(const PdfiumEngine& engine,
                 return std::unexpected(pages.error());
             }
             ImportSources sources; // closed after the assembly, whatever happens
+            if (request.formValues != nullptr && !request.formValues->empty()) {
+                // Form values belong to the base's fields (also for Extract,
+                // where they reach the imported copies of base pages).
+                const auto base = ownedDocument(engine, request.base, "form base");
+                if (!base.has_value()) {
+                    return std::unexpected(base.error());
+                }
+                auto info = (*base)->formInfoLocked();
+                if (!info.has_value()) {
+                    return std::unexpected(info.error());
+                }
+                if (!(*info)->fillable()) {
+                    return std::unexpected(invalidArgument("the document's form cannot be filled"));
+                }
+                for (const auto& [name, value] : *request.formValues) {
+                    const std::size_t index = (*info)->find(name);
+                    if (index == PdfFormInfo::npos) {
+                        return std::unexpected(invalidArgument("a filled form field does not exist"));
+                    }
+                    if (auto valid = validateFormValue((*info)->fields[index], value); !valid.has_value()) {
+                        return std::unexpected(valid.error());
+                    }
+                }
+                sources.setFormFill(*base, *info, request.formValues, request.formFailures);
+            }
             switch (request.mode) {
                 case PdfAssemblyRequest::Mode::PreserveBase: {
                     const auto base = ownedDocument(engine, request.base, "base");
                     if (!base.has_value()) {
                         return std::unexpected(base.error());
                     }
-                    return assemblePreserveBase(**base, *pages, sources, sink, annotationReport, contentReport);
+                    if (request.removeSecurity && request.removeMetadata) {
+                        return std::unexpected(
+                            invalidArgument("the password and the metadata cannot be removed in one save"));
+                    }
+                    if (request.removeMetadata && (*base)->info().isEncrypted) {
+                        // A rebuild would silently drop the encryption.
+                        return std::unexpected(
+                            invalidArgument("the metadata of an encrypted document cannot be removed"));
+                    }
+                    return assemblePreserveBase(**base, *pages, request, sources, sink, annotationReport,
+                                                contentReport);
                 }
                 case PdfAssemblyRequest::Mode::Fresh:
                     // `base` is ignored: a Fresh document has no base.

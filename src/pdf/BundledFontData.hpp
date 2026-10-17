@@ -6,7 +6,7 @@
 #include <span>
 
 // Internal: the font bytes compiled in by cmake/EmbedFonts.cmake. The index
-// is the PdfBundledFont enumerator value (Sans/Serif/Mono x Regular/Bold);
+// is the PdfBundledFont enumerator value (Sans/Serif/Mono x Regular/Bold, then Math);
 // the generated translation unit is BundledFontData.cpp in the build tree.
 // Use bundledFontData() (BundledFonts.hpp) instead.
 

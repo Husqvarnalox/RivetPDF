@@ -12,8 +12,7 @@
 #include "render/RenderPriority.hpp"
 #include "render/RenderRequest.hpp"
 
-#include <sys/stat.h>
-#include <unistd.h>
+#include "TestProcess.hpp"
 
 #include <chrono>
 #include <cmath>
@@ -44,7 +43,7 @@ public:
     TempDir() {
         static int counter = 0;
         path_ = fs::temp_directory_path() /
-                ("rivet-annot-" + std::to_string(::getpid()) + "-" +
+                ("rivet-annot-" + std::to_string(rivet::test::processId()) + "-" +
                  std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + "-" +
                  std::to_string(counter++));
         fs::create_directories(path_);
@@ -238,6 +237,7 @@ RIVET_TEST(annotationCreateAllKindsInEveryView) {
                 CHECK(near(view.lineStart, d.lineStart));
                 CHECK(near(view.lineEnd, d.lineEnd));
                 break;
+            case Kind::Signature:
             case Kind::Other:
                 CHECK(false);
                 break;
@@ -1014,4 +1014,71 @@ RIVET_TEST(annotationSaveSendsEditsToTheEngine) {
     CHECK_EQ(f.engine.lastEdits.size(), f.session->pageCount());
     CHECK_EQ(f.engine.lastEdits[0].create.size(), std::size_t{1});
     CHECK(f.engine.lastEdits[1].removeIndices == (std::vector<std::uint32_t>{0}));
+}
+
+// --- Visual signatures (ADR-0025) -------------------------------------------------
+
+RIVET_TEST(annotationSignatureCreateMoveResizeAndImageReadsUpright) {
+    for (const int degrees : {0, 90, 180, 270}) {
+        AnnotationFixture f;
+        if (degrees != 0) {
+            CHECK(f.session->execute(std::make_unique<RotatePagesCommand>(f.session->pageModel(),
+                                                                          std::vector<PageId>{f.id(0)}, degrees))
+                      .has_value());
+        }
+        auto created = core::Bitmap::create(4, 2);
+        CHECK(created.has_value());
+        if (!created) return;
+        // Pixel (0,0) marked, so the turn of the displayed bitmap is visible.
+        reinterpret_cast<std::uint8_t*>(created->data())[0] = 200;
+        pdf::PdfSignatureAppearance appearance;
+        appearance.source = pdf::PdfSignatureSource::Image;
+        appearance.image = std::make_shared<const core::Bitmap>(std::move(*created));
+
+        AnnotationDraft d = draft(f.id(0), Kind::Signature);
+        d.rect = Rect{60, 80, 160, 60};
+        d.signature = std::make_shared<const pdf::PdfSignatureAppearance>(std::move(appearance));
+        const auto ids = create(f, {d});
+        CHECK_EQ(ids.size(), std::size_t{1});
+        if (ids.empty()) return;
+        const AnnotationView view = viewOf(f, 0, ids[0]);
+        CHECK(view.kind == Kind::Signature);
+        CHECK(nearRect(view.bounds, d.rect));
+        CHECK_EQ(view.caps, unsigned{kCapMove | kCapResize | kCapDelete});
+        CHECK(view.appearance.has_value());
+        if (!view.appearance.has_value() || view.appearance->images.size() != 1) {
+            CHECK(false);
+            return;
+        }
+        // Placed upright on screen whatever the page rotation: the displayed
+        // bitmap is the source (no turn), fitted 2:1 into the 160 x 60 box.
+        const DisplayImage& image = view.appearance->images[0];
+        CHECK_EQ(image.bitmap->width(), std::uint32_t{4});
+        CHECK_EQ(reinterpret_cast<const std::uint8_t*>(image.bitmap->data())[0], std::uint8_t{200});
+        CHECK(nearRect(image.box, Rect{80, 80, 120, 60}, 1e-6));
+
+        CHECK(f.run(moveAnnotation(*f.session, ids[0], Point{10, 5})));
+        CHECK(nearRect(viewOf(f, 0, ids[0]).bounds, Rect{70, 85, 160, 60}));
+        CHECK(f.run(resizeAnnotation(*f.session, ids[0], Rect{70, 85, 80, 80})));
+        const AnnotationView resized = viewOf(f, 0, ids[0]);
+        CHECK(nearRect(resized.bounds, Rect{70, 85, 80, 80}));
+        CHECK(resized.appearance.has_value() && resized.appearance->images.size() == 1);
+        if (resized.appearance.has_value() && resized.appearance->images.size() == 1) {
+            CHECK(nearRect(resized.appearance->images[0].box, Rect{70, 105, 80, 40}, 1e-6));
+        }
+        // Restyle is not offered for signatures.
+        StylePatch patch;
+        patch.color = pdf::PdfColor{1, 0, 0};
+        CHECK(codeOf(restyleAnnotations(*f.session, {ids[0]}, patch)) == ErrorCode::InvalidArgument);
+    }
+}
+
+RIVET_TEST(annotationSignatureRejectsMissingAppearance) {
+    AnnotationFixture f;
+    AnnotationDraft d = draft(f.id(0), Kind::Signature);
+    d.rect = Rect{60, 80, 160, 60};
+    CHECK(codeOf(createAnnotations(*f.session, {d})) == ErrorCode::InvalidArgument);
+    pdf::PdfSignatureAppearance empty; // ink without strokes
+    d.signature = std::make_shared<const pdf::PdfSignatureAppearance>(empty);
+    CHECK(codeOf(createAnnotations(*f.session, {d})) == ErrorCode::InvalidArgument);
 }

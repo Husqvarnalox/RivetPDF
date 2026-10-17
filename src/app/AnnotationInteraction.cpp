@@ -129,6 +129,23 @@ core::Rect AnnotationInteraction::defaultStampRect(core::Point center, core::Siz
     return core::Rect{x, y, kStampWidth, kStampHeight};
 }
 
+core::Rect AnnotationInteraction::defaultSignatureRect(core::Point center, double aspect, core::Size pageSize) {
+    const double ratio = std::isfinite(aspect) && aspect > 0.0 ? aspect : 3.0;
+    double height = kSignatureHeight;
+    double width = height * ratio;
+    if (width > kSignatureMaxWidth) {
+        width = kSignatureMaxWidth;
+        height = width / ratio;
+    }
+    double x = center.x - width / 2.0;
+    double y = center.y - height / 2.0;
+    if (pageSize.width > 0.0 && pageSize.height > 0.0) {
+        x = std::clamp(x, 0.0, std::max(0.0, pageSize.width - width));
+        y = std::clamp(y, 0.0, std::max(0.0, pageSize.height - height));
+    }
+    return core::Rect{x, y, width, height};
+}
+
 // --- State machine -----------------------------------------------------------------
 
 void AnnotationInteraction::setTool(AnnotationTool tool) {
@@ -240,6 +257,7 @@ AnnotationInteraction::Intent AnnotationInteraction::pointerDown(const PointerIn
     case AnnotationTool::Line:
     case AnnotationTool::Arrow:
     case AnnotationTool::Stamp:
+    case AnnotationTool::Sign:
         gesture.kind = GestureKind::ShapeDrag;
         break;
     }
@@ -336,6 +354,17 @@ AnnotationInteraction::Intent AnnotationInteraction::commit(const Gesture& g) co
             }
             if (const core::Rect rect = dragRect(g.start, g.current, false, g.pageSize); bigEnough(rect)) {
                 intent.kind = Intent::Kind::CreateStamp;
+                intent.rect = rect;
+            }
+            break;
+        case AnnotationTool::Sign:
+            if (!g.started) {
+                intent.kind = Intent::Kind::CreateSignature;
+                intent.rect = defaultSignatureRect(g.start, signatureAspect_, g.pageSize);
+                break;
+            }
+            if (const core::Rect rect = dragRect(g.start, g.current, false, g.pageSize); bigEnough(rect)) {
+                intent.kind = Intent::Kind::CreateSignature;
                 intent.rect = rect;
             }
             break;

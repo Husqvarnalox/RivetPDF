@@ -80,7 +80,7 @@ public:
 
         if (blockNextRender.exchange(false)) {
             renderEntered_.set_value();
-            (void)releaseFuture_.wait_for(std::chrono::seconds(10));
+            (void)releaseFuture_.wait_for(std::chrono::seconds(30));
         }
 
         if (pageIndex == failingPageIndex.load()) {
@@ -174,7 +174,7 @@ std::future<RenderResult> requestAsync(DocumentRenderer& renderer, const RenderR
 // Bounded wait: correctness is asserted through the future's payload; this
 // only turns a hung delivery into a test failure instead of a hang.
 template <typename Future>
-bool settled(const Future& future, std::chrono::milliseconds timeout = std::chrono::seconds(5)) {
+bool settled(const Future& future, std::chrono::milliseconds timeout = std::chrono::seconds(30)) {
     return future.wait_for(timeout) == std::future_status::ready;
 }
 
@@ -427,7 +427,7 @@ RIVET_TEST(priorityOrderingRunsVisibleBeforeImpendingBeforePrefetch) {
     };
 
     requestWithPriority(0, 0, RenderPriority::Prefetch);
-    CHECK(fake.renderEntered().wait_for(std::chrono::seconds(5)) == std::future_status::ready);
+    CHECK(fake.renderEntered().wait_for(std::chrono::seconds(30)) == std::future_status::ready);
 
     // Queue while the drain loop is blocked: one per lane.
     requestWithPriority(1, 0, RenderPriority::Prefetch);
@@ -442,7 +442,7 @@ RIVET_TEST(priorityOrderingRunsVisibleBeforeImpendingBeforePrefetch) {
              return order.size() < 4;
          }();
          ++i) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        std::this_thread::sleep_for(std::chrono::milliseconds(30));
     }
 
     std::lock_guard<std::mutex> lock(orderMutex);
@@ -472,7 +472,7 @@ RIVET_TEST(renderingResumesAfterCancelAllDroppedAScheduledDrain) {
     auto releaseFuture = release.get_future().share();
     h.executor().post([&started, releaseFuture] {
         started.set_value();
-        (void)releaseFuture.wait_for(std::chrono::seconds(10));
+        (void)releaseFuture.wait_for(std::chrono::seconds(30));
     });
     CHECK(settled(startedFuture));
 

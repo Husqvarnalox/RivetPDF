@@ -1,0 +1,135 @@
+// SPDX-License-Identifier: MPL-2.0
+#pragma once
+
+#include "core/Error.hpp"
+#include "pdf/PdfAnnotation.hpp"
+#include "pdf/PdfContent.hpp"
+#include "pdf/PdfPageGeometry.hpp"
+
+#include <cstddef>
+#include <optional>
+#include <string>
+#include <variant>
+#include <vector>
+
+// A NEW document described as Rivet-owned data (ADR-0023): pages with a size
+// in points and an ordered list of items in page user space (points, origin
+// bottom-left, y-up), plus external URI link rectangles.
+// PdfEngine::buildDocument materializes it; validatePdfBuild is the contract
+// every backend enforces first. No backend type appears here.
+
+namespace rivet::pdf {
+
+// --- Limits (defensive; validatePdfBuild rejects anything beyond them) -----
+
+inline constexpr std::size_t kMaxBuildPages = 10000;
+inline constexpr std::size_t kMaxBuildItemsPerPage = 100000;
+// Items over the whole document (keeps one build's memory bounded).
+inline constexpr std::size_t kMaxBuildItemsTotal = 2'000'000;
+inline constexpr std::size_t kMaxBuildLinksPerPage = 10000;
+// UTF-8 bytes of one text run (one run = one line of text).
+inline constexpr std::size_t kMaxBuildTextBytes = 16 * 1024;
+// Page width/height range in points (the PDF 1.7 implementation limits).
+inline constexpr double kMinBuildPageSize = 3.0;
+inline constexpr double kMaxBuildPageSize = 14400.0;
+// Rectangle stroke width range in points (exclusive minimum).
+inline constexpr double kMaxBuildStrokeWidth = 100.0;
+// Bytes of a link URI.
+inline constexpr std::size_t kMaxBuildUriBytes = 2048;
+// Segments of one path item, and entries of its dash array.
+inline constexpr std::size_t kMaxBuildPathSegments = 65536;
+inline constexpr std::size_t kMaxBuildDashCount = 16;
+inline constexpr double kMaxBuildDashLength = 1000.0;
+// Synthetic oblique shear of a text run (|skew| at most this; 0.5 ~ 26.6 deg).
+inline constexpr double kMaxBuildTextSkew = 0.5;
+// The shear used for italic text in faces without an italic (about 12 deg,
+// what PDF viewers and CSS use for synthetic obliques).
+inline constexpr double kSyntheticObliqueSkew = 0.2126;
+// Slack allowed when checking that a box lies within its page (layout
+// arithmetic rounds); boxes beyond it are rejected, never clamped.
+inline constexpr double kBuildPageEpsilon = 1.0e-6;
+
+// --- Items ---------------------------------------------------------------------
+
+// A rectangle: filled, stroked or both (at least one).
+struct PdfBuildRect {
+    PdfBox box;
+    std::optional<PdfColor> fill;
+    std::optional<PdfColor> stroke;
+    float strokeWidth = 1.0F; // points, used when `stroke` is set
+};
+
+// One line of text in one bundled font. Every code point must be covered by
+// the font (bundledFontCovers) and be printable: no line breaks, no control
+// characters. Advances are the font's own (see BundledFontMetrics), with no
+// kerning, so a run measured with bundledFontMetrics(font).textWidth is
+// exactly as wide in the written PDF.
+struct PdfBuildText {
+    PdfBundledFont font = PdfBundledFont::SansRegular;
+    double fontSize = 11.0; // points, [kMinFontSize, kMaxFontSize]
+    PdfColor color;
+    PdfPoint origin;        // baseline start, user space, inside the page
+    std::string utf8;       // non-empty, valid UTF-8
+    // Synthetic oblique (the bundled faces have no italic): the glyphs are
+    // sheared by x += skew * y around the baseline (text matrix
+    // {1, 0, skew, 1, x, y}); advances are unchanged. Finite, |skew| <=
+    // kMaxBuildTextSkew; 0 = upright.
+    double skew = 0.0;
+};
+
+// An image stretched onto `box`.
+struct PdfBuildImage {
+    PdfImageData image;
+    PdfBox box;
+};
+
+// A vector path (Markdown diagrams, ADR-0032): absolute segments in page
+// user space, the first a MoveTo; every point (control points included) lies
+// inside the page. Filled with the nonzero winding rule and/or stroked (at
+// least one). `dash` (points, alternating on/off lengths; empty = solid)
+// applies to the stroke. Round joins and caps when `roundJoins`, else miter
+// joins and butt caps.
+struct PdfBuildPath {
+    std::vector<PdfPathSegment> segments;
+    std::optional<PdfColor> fill;
+    std::optional<PdfColor> stroke;
+    float strokeWidth = 1.0F; // points, used when `stroke` is set
+    std::vector<float> dash;  // at most kMaxBuildDashCount entries in (0, kMaxBuildDashLength]
+    bool roundJoins = false;
+};
+
+using PdfBuildItem = std::variant<PdfBuildRect, PdfBuildText, PdfBuildImage, PdfBuildPath>; // painted in order
+
+// An external link annotation: clicking `box` opens `uri` (http, https or
+// mailto only; printable ASCII).
+struct PdfBuildLink {
+    PdfBox box;
+    std::string uri;
+};
+
+struct PdfBuildPage {
+    double width = 612.0;
+    double height = 792.0;
+    std::vector<PdfBuildItem> items;
+    std::vector<PdfBuildLink> links;
+};
+
+struct PdfBuildDocument {
+    std::vector<PdfBuildPage> pages;
+};
+
+// Structural validation: at least one page and the limits above; finite,
+// in-range page sizes; valid (positive-size) boxes lying within their page;
+// text origins inside the page; text skews finite and within
+// kMaxBuildTextSkew; font sizes in [kMinFontSize, kMaxFontSize];
+// color components in [0, 1]; stroke widths in (0, kMaxBuildStrokeWidth];
+// paths starting with a MoveTo, at most kMaxBuildPathSegments segments with
+// every point inside the page, fill and/or stroke, valid dash arrays;
+// text runs non-empty valid UTF-8 whose every code point the run's font
+// covers (the first offending one is named as U+XXXX); image data consistent
+// with its format (validateImageData); link URIs with an allowed scheme
+// (compared case-insensitively), no control characters, spaces or non-ASCII
+// bytes. InvalidArgument otherwise; nothing is clamped or replaced.
+core::Status validatePdfBuild(const PdfBuildDocument& document);
+
+} // namespace rivet::pdf

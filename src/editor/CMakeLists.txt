@@ -5,9 +5,13 @@ add_library(rivet_editor STATIC
     ContentGeometry.cpp
     ContentCommands.cpp
     ContentService.cpp
+    FormCommands.cpp
+    FormService.cpp
+    SignatureService.cpp
     TextBlocks.cpp
     PageCommands.cpp
     PageModel.cpp
+    RedactionCommands.cpp
     PageSelection.cpp
     SelectionModel.cpp
     SelectionText.cpp
@@ -15,12 +19,15 @@ add_library(rivet_editor STATIC
     TextSearchController.cpp
     TextService.cpp
     LinkService.cpp
+    OcrLayer.cpp
     CommandStack.cpp
     DocumentRenderer.cpp
     DocumentSession.cpp
     DocumentSaver.cpp
     PrintSpooler.cpp
     PageRangeParser.cpp
+    TextDiff.cpp
+    DocumentComparison.cpp
 )
 
 add_library(rivet::editor ALIAS rivet_editor)

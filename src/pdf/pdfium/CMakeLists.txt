@@ -5,12 +5,16 @@ add_library(rivet_pdfium STATIC
     PdfiumAnnotationReader.cpp
     PdfiumAnnotationWriter.cpp
     PdfiumAssembly.cpp
+    PdfiumBuilder.cpp
     PdfiumContent.cpp
     PdfiumDocument.cpp
+    PdfiumForms.cpp
+    PdfiumImageReduce.cpp
     PdfiumFileSource.cpp
     PdfiumTextPage.cpp
     PdfiumLibrary.cpp
     PdfiumStrings.cpp
+    PdfiumWriting.cpp
 )
 add_library(rivet::pdfium ALIAS rivet_pdfium)
 target_link_libraries(rivet_pdfium

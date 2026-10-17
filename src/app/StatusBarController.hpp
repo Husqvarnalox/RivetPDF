@@ -31,7 +31,9 @@ std::string zoomPercentText(double zoom);
 // Main thread only.
 class StatusBarController {
 public:
-    static constexpr double kHeight = 26.0;
+    static constexpr double kHeight = 24.0;
+    // Size of the page indicator once it lives in the toolbar.
+    static constexpr double kPageIndicatorWidth = 88.0;
 
     // Builds the bar into `parent` (appended as its next child).
     StatusBarController(ShellContext& context, ui::Widget& parent, std::string initialStatus);
@@ -44,6 +46,11 @@ public:
     void layout(const core::Rect& frame);
 
     void setStatus(std::string text);
+    // A transient tool hint ("Drag the handles to crop…"): shown like a
+    // status, but clearHint() removes it once the tool/selection that asked
+    // for it is gone. Any later setStatus() replaces it for good.
+    void setHint(std::string text);
+    void clearHint();
     const std::string& statusText() const;
 
     // Page-selection summary ("3 pages selected"; empty hides it), shown
@@ -64,6 +71,11 @@ public:
     // the 0-based page index, or nullopt when the text is not a valid page.
     static std::optional<std::size_t> parsePageNumber(std::string_view text, std::size_t pageCount);
 
+    // Moves the page field and count into `host` (the toolbar's page
+    // navigation group, ADR-0033 §5): field at x 0, "/ N" after it. The
+    // status bar then shows only the status text and the selection summary.
+    void attachPageIndicator(ui::Widget& host);
+
     ui::TextField& pageField() { return *pageField_; }
     const std::string& pageCountText() const;
 
@@ -72,10 +84,12 @@ private:
     // Raw pointers into widgets owned by the parent's tree.
     ui::Container* bar_ = nullptr;
     TextLabel* statusLabel_ = nullptr;
+    bool showingHint_ = false;
     TextLabel* selectionLabel_ = nullptr;
     TextLabel* pageCaptionLabel_ = nullptr;
     ui::TextField* pageField_ = nullptr;
     TextLabel* pageCountLabel_ = nullptr;
+    bool pageIndicatorAttached_ = false;
 };
 
 } // namespace rivet::app

@@ -22,9 +22,14 @@ enum class AnnotationTool : std::uint8_t {
     Line,
     Arrow,
     Stamp,
+    // Places the armed visual signature (ADR-0025). Not on the annotation
+    // strip: it is chosen through Annotate > Sign..., which arms a signature.
+    Sign,
 };
 
-inline constexpr std::size_t kAnnotationToolCount = 11;
+inline constexpr std::size_t kAnnotationToolCount = 12;
+// Tools 0..10 double as AnnotationCommand values (Select .. Stamp); Sign does not.
+inline constexpr std::size_t kMenuToolCount = 11;
 
 // Highlight / Underline / StrikeOut: made from the text selection.
 inline constexpr bool isMarkupTool(AnnotationTool tool) {

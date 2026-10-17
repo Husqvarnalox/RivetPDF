@@ -23,10 +23,17 @@ Documents never leave the machine: Rivet has no network code of its own, no acco
 | Saving: background Save / Save As with atomic file replacement, unsaved-changes prompts | Implemented (macOS) |
 | Annotations: highlight, underline, strikeout, notes, ink, shapes, stamps | Implemented (macOS) |
 | Content editing: select/move/resize/delete page objects, retype text, add text, replace images | Implemented (macOS), with the limits below |
-| Forms, signatures, OCR, redaction, compression, encryption, document comparison | Not implemented |
-| Windows / Linux shells | Not implemented. Portable layers are built and tested on Ubuntu/GCC in CI |
-| Markdown: Rendered (read-only), Source (with live preview) and Split views; text editing with undo/redo and background save | Implemented (macOS) |
-| Markdown WYSIWYG editing, export to PDF, print, Mermaid, math | Not implemented |
+| Forms (AcroForm): fill text, check box, radio, combo and list fields with undo/redo, Reset Form, field highlighting; saved with the document. XFA and form scripts are not supported | Implemented (macOS) |
+| Redaction: mark areas or selected text, review, apply as one undo step; on save the content under the marks (glyphs, image pixels, drawings, links, form widgets and their values) is removed, not covered; optional metadata removal | Implemented (macOS) |
+| Reduce file size: File > Save Reduced Copy (High / Medium / Small) downsamples and JPEG-recompresses oversized images in a copy; Remove Password and Save As for documents opened with a password. Adding a password is not supported | Implemented (macOS; Linux and Windows image encoders, Windows pending a PDFium build), with the limits in ADR-0028 |
+| Signatures: place a drawn, typed or image signature (saved signatures are remembered); existing digital signatures are listed as present but are not verified, and saving edits over them warns first. No cryptographic signing | Implemented (macOS) |
+| Document comparison: File > Compare With… shows two PDFs side by side with synchronized scrolling, word-level text differences (deletions red, insertions green), a change list and inserted/deleted pages; text only, no visual diff, compares the saved files | Implemented (macOS) |
+| OCR: Content > Recognize Text adds an invisible text layer to scanned pages (searchable, selectable); recognition uses the system engine (Vision), so it is available on macOS only; accuracy on real scans is not measured | Implemented (macOS) |
+| Encryption (adding a password) | Not implemented (needs an approved crypto dependency) |
+| Windows (Win32 + Direct2D) and Linux (X11 + Cairo) shells | Implemented; see docs/BUILDING.md for platform differences |
+| Markdown: Rendered, Source (with live preview) and Split views; WYSIWYG editing in the Rendered view and a Format menu; undo/redo shared by both views; background save | Implemented |
+| Markdown export to PDF (vector, bundled fonts, links) and printing | Implemented (macOS) |
+| Markdown diagrams and math: Mermaid flowcharts and sequence diagrams, inline and display TeX math (subset), drawn natively and identical in preview, print and PDF export | Implemented |
 
 macOS is currently the primary supported desktop shell; the portable core layers build and are tested elsewhere.
 
@@ -36,6 +43,7 @@ macOS is currently the primary supported desktop shell; the portable core layers
 - Existing objects cannot be reordered in z.
 - Bundled fallback fonts (Arimo, Tinos, Cousine) cover Latin, Greek and Cyrillic only.
 - Extract and split do not carry document-level structure (outline, metadata, forms, page labels).
+- Redaction is refused on pages PDFium cannot regenerate faithfully and over read-only, button or signature form fields; partly covered vector drawings and form XObjects are removed whole. Removing metadata rebuilds the file without its outline, form fields and page labels and is not offered for encrypted documents.
 - Undo history does not survive a save, and editing is paused while a save runs.
 - Closing a window with several unsaved tabs saves only one per review pass.
 
@@ -97,8 +105,8 @@ CI (GitHub Actions) builds with `-Werror` and runs CTest on macOS (AppleClang) a
 
 ## Roadmap
 
-Done: PDF viewer, page editing, annotations, content editing, Markdown viewing and source editing (see Status).
-Next: form filling and signatures, then OCR, redaction, compression, encryption and document comparison. Windows and Linux shells have no schedule.
+Done: PDF viewer, page editing, annotations, content editing, form filling, redaction, file size reduction, password removal, visual signatures, document comparison, OCR, Markdown viewing, WYSIWYG and source editing, diagrams and math, export (see Status).
+Next: visual design system (ADR-0033) and release QA.
 
 ## Contributing
 

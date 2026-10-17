@@ -38,7 +38,9 @@ bool rigid(const core::Matrix& m) {
            std::fabs(m.a * m.a + m.b * m.b - 1.0) <= kRigidEpsilon;
 }
 
-core::Status validateImage(const PdfImageData& image) {
+} // namespace
+
+core::Status validateImageData(const PdfImageData& image) {
     if (image.width == 0 || image.height == 0 || image.width > kMaxImageSide || image.height > kMaxImageSide) {
         return invalid("replacement image dimensions out of range");
     }
@@ -75,8 +77,6 @@ core::Status validateImage(const PdfImageData& image) {
     return invalid("unknown replacement image format");
 }
 
-} // namespace
-
 core::Status validate(const PdfPageContentEdits& edits, std::size_t sourceObjectCount) {
     // --- Object edits -------------------------------------------------------
     std::set<std::uint32_t> editedObjects;
@@ -93,7 +93,7 @@ core::Status validate(const PdfPageContentEdits& edits, std::size_t sourceObject
         }
         if (edit.replaceImage != nullptr) {
             if (edit.remove) return invalid("object is both removed and replaced");
-            if (core::Status status = validateImage(*edit.replaceImage); !status) return status;
+            if (core::Status status = validateImageData(*edit.replaceImage); !status) return status;
         }
     }
 
@@ -137,6 +137,51 @@ core::Status validate(const PdfPageContentEdits& edits, std::size_t sourceObject
     }
     // Total text accepted per page is bounded by the counts above
     // (kMaxTextBlocksPerPage * kMaxTextBlockBytes).
+
+    // --- Redactions ---------------------------------------------------------
+    if (edits.redactions.size() > kMaxRedactionsPerPage) return invalid("too many redaction areas");
+    const auto unitComponent = [](float v) { return std::isfinite(v) && v >= 0.0F && v <= 1.0F; };
+    for (const PdfRedaction& redaction : edits.redactions) {
+        const PdfBox& area = redaction.area;
+        if (!finiteBounded(area.left) || !finiteBounded(area.bottom) || !finiteBounded(area.right) ||
+            !finiteBounded(area.top)) {
+            return invalid("redaction area is not finite");
+        }
+        if (!(area.right > area.left) || !(area.top > area.bottom)) {
+            return invalid("redaction area must have a positive width and height");
+        }
+        if (!unitComponent(redaction.fill.r) || !unitComponent(redaction.fill.g) ||
+            !unitComponent(redaction.fill.b)) {
+            return invalid("redaction fill color out of range");
+        }
+    }
+
+    // --- Invisible (OCR) runs -------------------------------------------------
+    if (edits.invisibleRuns.size() > kMaxInvisibleRunsPerPage) return invalid("too many invisible text runs");
+    if (!edits.invisibleRuns.empty()) {
+        if (edits.invisibleTag == 0 || tags.count(edits.invisibleTag) != 0) {
+            return invalid("invisible text tag must be non-zero and unique");
+        }
+        for (const PdfInvisibleTextRun& run : edits.invisibleRuns) {
+            if (run.text.empty() || run.text.size() > kMaxInvisibleRunBytes) {
+                return invalid("invisible text run length out of range");
+            }
+            for (const char ch : run.text) {
+                const auto byte = static_cast<unsigned char>(ch);
+                if (byte < 0x20 || byte == 0x7F) return invalid("invisible text run has a control character");
+            }
+            if (!std::isfinite(run.fontSize) || run.fontSize < kMinFontSize || run.fontSize > kMaxFontSize) {
+                return invalid("invisible text font size out of range");
+            }
+            if (!std::isfinite(run.horizontalScale) || run.horizontalScale < kMinInvisibleHorizontalScale ||
+                run.horizontalScale > kMaxInvisibleHorizontalScale) {
+                return invalid("invisible text horizontal scale out of range");
+            }
+            if (!rigid(run.placement)) {
+                return invalid("invisible text placement must be a rotation plus translation");
+            }
+        }
+    }
     return core::ok();
 }
 

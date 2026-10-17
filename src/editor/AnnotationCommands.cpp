@@ -329,10 +329,17 @@ core::Result<AnnotationEdit> createAnnotations(DocumentSession& session, std::ve
         case pdf::PdfAnnotationKind::Square:
         case pdf::PdfAnnotationKind::Circle:
         case pdf::PdfAnnotationKind::Stamp:
+        case pdf::PdfAnnotationKind::Signature:
             if (!draft.rect.isFinite()) return std::unexpected(invalid("the annotation rect is not finite"));
             data.rect = displayRectToBox(view, draft.rect);
             if (draft.kind == pdf::PdfAnnotationKind::Stamp) {
                 data.stampName = draft.stampName;
+                data.rotation = (360 - core::rotationDegrees(view.rotation)) % 360;
+            }
+            if (draft.kind == pdf::PdfAnnotationKind::Signature) {
+                if (draft.signature == nullptr) return std::unexpected(invalid("the signature has no appearance"));
+                data.signature = draft.signature;
+                data.opacity = 1.0F;
                 data.rotation = (360 - core::rotationDegrees(view.rotation)) % 360;
             }
             break;
@@ -394,6 +401,7 @@ core::Result<AnnotationEdit> resizeAnnotation(DocumentSession& session, core::An
             case pdf::PdfAnnotationKind::Square:
             case pdf::PdfAnnotationKind::Circle:
             case pdf::PdfAnnotationKind::Stamp:
+            case pdf::PdfAnnotationKind::Signature:
                 data.rect = displayRectToBox(view, displayBounds);
                 break;
             case pdf::PdfAnnotationKind::Ink:

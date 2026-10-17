@@ -23,6 +23,7 @@ RIVET_TEST(shellServicesNewMembersDefaultToNull) {
     CHECK(services.alerts == nullptr);
     CHECK(services.lifecycle == nullptr);
     CHECK(!services.setDocumentEdited);
+    CHECK(services.appData == nullptr);
 }
 
 RIVET_TEST(closeAndQuitProceedWithoutHandlers) {

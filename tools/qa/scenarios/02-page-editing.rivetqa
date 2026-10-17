@@ -1,0 +1,57 @@
+# Scenario 2: page editing - rotate, delete, undo/redo, reorder, crop,
+# Save As to a new path, reopen and verify the page count.
+resize 1280 850
+theme light
+open ${QA_FIX}/sample.pdf
+assert-pages 4
+
+cmd Page/Rotate Right
+log-state
+shot 02-rotated.png
+cmd Page/Rotate Left
+
+# Delete the current page (1), undo, redo.
+cmd Page/Delete
+assert-pages 3
+cmd Edit/Undo
+assert-pages 4
+cmd Edit/Redo
+assert-pages 3
+shot 02-deleted.png
+cmd Edit/Undo
+assert-pages 4
+
+# Reorder: there is no menu command; drag thumbnail 1 below thumbnail 2.
+drag 110 240 110 560
+log-state
+shot 02-reordered.png
+assert-pages 4
+
+# Crop page 1: start the tool, pull the top-left corner in, apply.
+click 110 240
+cmd Page/Crop…
+assert-status Drag the handles to crop
+shot 02-crop-tool.png
+dragpage 1 1 791 150 650
+shot 02-crop-dragged.png
+key return
+log-state
+# The crop hint ends with the tool (bug 11).
+refute-status Drag the handles
+shot 02-cropped.png
+
+# Duplicate, then Save As a new file.
+cmd Page/Duplicate
+assert-pages 5
+answer save ${QA_WORK}/02-edited.pdf
+cmd File/Save As…
+log-state
+
+# Reopen from disk.
+key cmd+w
+assert-tabs 0
+open ${QA_WORK}/02-edited.pdf
+assert-pages 5
+log-state
+shot 02-reopened.png
+quit

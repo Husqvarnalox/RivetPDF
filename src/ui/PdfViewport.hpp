@@ -101,6 +101,14 @@ public:
     // pass until manual zoom exits the mode. Applies immediately via layout().
     void setFitMode(render::ZoomState::FitMode mode);
 
+    // The bound page layout (null when unbound). Read-only; the QA harness
+    // maps PDF user-space points through it.
+    const render::PageLayout* pageLayout() const { return layout_; }
+
+    // True when the last paint drew at least one placeholder (a visible tile
+    // was not rendered yet). Diagnostics / QA idle detection only.
+    bool lastPaintMissedTiles() const { return lastPaintMissedTiles_; }
+
     // Scroll offset: the content-space point (at zoom 1.0) shown at the
     // viewport's top-left. Reads/writes through the bound state, clamped.
     core::Point scrollOffsetPoints() const { return state_->scrollOffsetPoints(); }
@@ -148,15 +156,22 @@ public:
     void setAnnotationLayer(ViewportLayer* layer);
     ViewportLayer* annotationLayer() const { return annotationLayer_; }
 
-    // Additional ordered layers (the content layer). The annotation layer, when
-    // installed, is always first; added layers follow in insertion order. For
-    // events the first layer that consumes wins; every layer paints (earlier
-    // layers below later ones). A layer ignores input while its tool is not
-    // the active one, so only the active tool's layer ever handles input.
-    // Non-owning; removeLayer must run before the layer dies.
-    void addLayer(ViewportLayer* layer);
+    // Additional ordered layers (the content layer). Order: layers added with
+    // LayerPlacement::BelowAnnotations (the form layer), then the annotation
+    // layer when installed, then the other added layers, each group in
+    // insertion order. For events the first layer that consumes wins; every
+    // layer paints (earlier layers below later ones). A layer ignores input
+    // while its tool is not the active one, so only the active tool's layer
+    // ever handles input. Non-owning; removeLayer must run before the layer
+    // dies.
+    enum class LayerPlacement : std::uint8_t { AboveAnnotations, BelowAnnotations };
+    void addLayer(ViewportLayer* layer, LayerPlacement placement = LayerPlacement::AboveAnnotations);
     void removeLayer(ViewportLayer* layer);
     std::size_t layerCount() const { return layers_.size(); }
+
+    // `rect` (logical points) with every edge rounded to the device-pixel
+    // grid of `backingScale`: page tiles meet on whole device pixels.
+    static core::Rect snapToDevicePixels(const core::Rect& rect, double backingScale);
 
     // ViewportToolHost
     std::optional<core::Rect> pageRectInViewport(std::size_t pageIndex) const override;
@@ -171,6 +186,11 @@ public:
 
     // Status-bar hook; invoked when the zoom actually changes (not on scroll).
     void setZoomChangedCallback(std::function<void(double)> onZoomChanged);
+
+    // Fired when the scroll offset or the zoom of the bound state changed
+    // (user scrolling, programmatic scrolling, zoom). The comparison view
+    // keeps its two viewports in step with it. Not fired while unbound.
+    void setScrollChangedCallback(std::function<void()> onScrollChanged);
 
     // Fired when the tracked current page changes (scroll, zoom, resize,
     // goToPage). The shell updates the sidebar selection and the page field.
@@ -271,11 +291,15 @@ private:
     double anchorFraction_ = 0.0;
     ViewportTool* activeTool_ = nullptr;
     ViewportLayer* annotationLayer_ = nullptr;
-    std::vector<ViewportLayer*> layers_; // annotationLayer_ first when installed
+    // Below-annotation layers first, then annotationLayer_ when installed,
+    // then the others.
+    std::vector<ViewportLayer*> layers_;
+    std::size_t belowAnnotationLayers_ = 0; // leading entries of layers_
 
     std::function<void(double)> onZoomChanged_;
     std::function<void(std::size_t)> onPageChanged_;
     std::function<void()> onFocusRequested_;
+    std::function<void()> onScrollChanged_;
 
     // Scrollbar children, overlaying the content (created here, owned by the
     // widget tree; raw pointers valid for the viewport's lifetime).
@@ -296,6 +320,8 @@ private:
 
     // Alive flag shared with in-flight render callbacks (see class comment).
     std::shared_ptr<std::atomic<bool>> aliveFlag_;
+    // See lastPaintMissedTiles(); written by the (const) paint pass.
+    mutable bool lastPaintMissedTiles_ = false;
 };
 
 } // namespace rivet::ui

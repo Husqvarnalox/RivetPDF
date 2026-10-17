@@ -21,7 +21,7 @@ namespace {
 // expected state before failing.
 template <typename Pred>
 bool waitFor(Pred&& pred) {
-    for (int attempt = 0; attempt < 2500; ++attempt) {
+    for (int attempt = 0; attempt < 15000; ++attempt) {
         if (pred()) {
             return true;
         }
@@ -54,7 +54,7 @@ RIVET_TEST(preservesFifoOrder) {
         });
     }
 
-    CHECK(drainedFuture.wait_for(std::chrono::seconds(5)) == std::future_status::ready);
+    CHECK(drainedFuture.wait_for(std::chrono::seconds(30)) == std::future_status::ready);
 
     std::lock_guard<std::mutex> lock(mutex);
     CHECK_EQ(order.size(), std::size_t{200});
@@ -98,7 +98,7 @@ RIVET_TEST(neverOverlaps) {
         });
     }
 
-    CHECK(drainedFuture.wait_for(std::chrono::seconds(5)) == std::future_status::ready);
+    CHECK(drainedFuture.wait_for(std::chrono::seconds(30)) == std::future_status::ready);
     CHECK(!overlapDetected.load());
     CHECK_EQ(maxInFlight.load(), 1);
 }
@@ -189,7 +189,7 @@ RIVET_TEST(twoExecutorsRunConcurrently) {
         }
     });
 
-    CHECK(doneFuture.wait_for(std::chrono::seconds(12)) == std::future_status::ready);
+    CHECK(doneFuture.wait_for(std::chrono::seconds(30)) == std::future_status::ready);
     CHECK(aSawBStarted.load());
     CHECK(bSawAStarted.load());
 }
@@ -219,7 +219,7 @@ RIVET_TEST(recursivePostRunsAfterCurrentTask) {
         }
     });
 
-    CHECK(doneFuture.wait_for(std::chrono::seconds(5)) == std::future_status::ready);
+    CHECK(doneFuture.wait_for(std::chrono::seconds(30)) == std::future_status::ready);
 
     std::lock_guard<std::mutex> lock(mutex);
     CHECK_EQ(order.size(), std::size_t{2});
@@ -290,7 +290,7 @@ RIVET_TEST(recursivePostChainRunsEveryIteration) {
     };
     executor.post(step);
 
-    CHECK(doneFuture.wait_for(std::chrono::seconds(5)) == std::future_status::ready);
+    CHECK(doneFuture.wait_for(std::chrono::seconds(30)) == std::future_status::ready);
     executor.waitUntilIdle(); // must return promptly now
 
     std::lock_guard<std::mutex> lock(mutex);

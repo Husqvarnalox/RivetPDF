@@ -120,6 +120,20 @@ public:
     // A press inside the list wants keyboard focus (the host routes focus).
     void setOnFocusRequested(std::function<void()> onFocusRequested);
 
+    // Paints unsaved overlays (edited annotations, form values) over a
+    // page's thumbnail: the raster omits what the viewport draws in its
+    // layers, so without this a thumbnail would lag behind the page until
+    // the file is saved and reopened. Called inside a clip whose origin is
+    // the thumbnail's top-left; `pageRect` is {0, 0, thumbnail size} and
+    // `zoom` the thumbnail points per page display point. Main thread.
+    using PageOverlayPainter =
+        std::function<void(std::size_t pageIndex, const core::Rect& pageRect, double zoom, PaintContext& context)>;
+    void setPageOverlayPainter(PageOverlayPainter painter) { pageOverlay_ = std::move(painter); }
+
+    // Text shown while no document is bound (default "No document open").
+    void setEmptyText(std::string text);
+    const std::string& emptyText() const { return emptyText_; }
+
     // The bound layout changed in place (page model edit): rebuilds the row
     // geometry, keeps the scroll offset (clamped) and cancels a drag. The
     // current row and page selection are left to the owner to re-push.
@@ -190,6 +204,8 @@ private:
     std::function<void()> onSelectAllRequested_;
     std::function<void(std::size_t)> onMoveRequested_;
     std::function<void()> onFocusRequested_;
+    PageOverlayPainter pageOverlay_;
+    std::string emptyText_ = "No document open";
 
     // Press / drag state.
     std::optional<std::size_t> pressedRow_;

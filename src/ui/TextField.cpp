@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: MPL-2.0
 #include "ui/TextField.hpp"
+#include "ui/Theme.hpp"
 
 #include "core/geometry/Insets.hpp"
 #include "core/geometry/Point.hpp"
+#include "ui/Drawing.hpp"
 #include "ui/Utf8.hpp"
 
 #include <algorithm>
@@ -14,14 +16,6 @@ namespace {
 
 constexpr Font kTextFont{13.0, Font::Weight::Regular};
 
-constexpr Color kUnfocusedBackground = Color::gray(0.96);
-constexpr Color kFocusedBackground = Color::white();
-constexpr Color kUnfocusedBorder = Color::rgba(0.0, 0.0, 0.0, 0.2);
-constexpr Color kFocusedBorder = Color::rgba(0.0, 0.47, 1.0, 1.0); // accent blue
-constexpr Color kTextColor = Color::black();
-constexpr Color kPlaceholderColor = Color::gray(0.55);
-constexpr Color kSelectionFill = Color::rgba(0.0, 0.47, 1.0, 0.25);
-constexpr Color kCaretColor = Color::rgba(0.0, 0.47, 1.0, 1.0);
 constexpr double kCaretWidth = 1.5;
 constexpr double kStrokeWidth = 1.0;
 
@@ -29,11 +23,23 @@ constexpr double kStrokeWidth = 1.0;
 
 TextField::TextField(std::string placeholder) : placeholder_(std::move(placeholder)) {}
 
+void TextField::setPlaceholder(std::string placeholder) {
+    if (placeholder == placeholder_) return;
+    placeholder_ = std::move(placeholder);
+    invalidate();
+}
+
 void TextField::setText(std::string text) {
     text_ = std::move(text);
     caret_ = text_.size();
     anchor_ = caret_;
     prefixWidths_.clear();
+    invalidate();
+}
+
+void TextField::selectAll() {
+    anchor_ = 0;
+    caret_ = text_.size();
     invalidate();
 }
 
@@ -101,7 +107,7 @@ double TextField::prefixWidthUpTo(std::size_t byteIndex) const {
 }
 
 void TextField::updateHorizontalScroll(const core::Rect& bounds) const {
-    const double viewWidth = std::max(0.0, bounds.size.width - 2.0 * kHorizontalPadding);
+    const double viewWidth = std::max(0.0, bounds.size.width - leadingPadding() - kHorizontalPadding);
     const double caretX = prefixWidthUpTo(caret_);
     double scroll = horizontalScroll_;
     if (caretX < scroll) {
@@ -116,11 +122,11 @@ std::size_t TextField::boundaryForClickX(double localX) const {
     if (prefixWidths_.size() != text_.size() + 1) {
         // No cached measurement (never painted since the last text change):
         // right of the text start maps to the end, at/before it to 0.
-        return localX > kHorizontalPadding ? text_.size() : 0;
+        return localX > leadingPadding() ? text_.size() : 0;
     }
     // Click position in text space (text origin sits at the padded left edge
     // minus the scroll offset).
-    const double textX = localX - kHorizontalPadding + horizontalScroll_;
+    const double textX = localX - leadingPadding() + horizontalScroll_;
     std::size_t bestByte = 0;
     double bestDistance = 0.0;
     bool found = false;
@@ -326,12 +332,17 @@ void TextField::paintSelf(PaintContext& context) const {
     }
 
     const bool focused = isFocused();
-    context.fillRoundedRect(rect, focused ? kFocusedBackground : kUnfocusedBackground, kCornerRadius);
-    context.strokeRect(rect.inset(core::Insets::uniform(0.5)),
-                       focused ? kFocusedBorder : kUnfocusedBorder, kStrokeWidth);
+    context.fillRoundedRect(rect, colors().fieldBackground, kCornerRadius);
+    strokeRoundedRect(context, rect, colors().fieldBorder, kStrokeWidth, kCornerRadius);
+    if (focused) drawFocusRing(context, rect, kCornerRadius);
+    if (leadingIcon_.has_value()) {
+        const double side = 14.0;
+        drawIcon(context, *leadingIcon_,
+                 core::Rect{kHorizontalPadding + 1.0, (rect.size.height - side) / 2.0, side, side}, colors().textSecondary);
+    }
 
     context.pushClip(rect);
-    const double textOriginX = kHorizontalPadding - horizontalScroll_;
+    const double textOriginX = leadingPadding() - horizontalScroll_;
     if (!text_.empty()) {
         const Selection selected = selection();
         if (selected.begin != selected.end) {
@@ -340,22 +351,32 @@ void TextField::paintSelf(PaintContext& context) const {
             const core::Rect selectionRect{
                 core::Point{selLeft, rect.minY()},
                 core::Size{std::max(0.0, selRight - selLeft), rect.size.height}};
-            context.fillRect(selectionRect, kSelectionFill);
+            context.fillRect(selectionRect, colors().selectionHighlight);
         }
         const core::Rect textRect{core::Point{textOriginX, rect.minY()},
                                   core::Size{rect.size.width, rect.size.height}};
-        context.drawText(displayText, textRect, kTextFont, kTextColor, TextAlign::Left);
+        context.drawText(displayText, textRect, kTextFont, colors().textPrimary, TextAlign::Left);
     } else if (!focused && !placeholder_.empty()) {
         const core::Rect textRect{core::Point{textOriginX, rect.minY()},
                                   core::Size{rect.size.width, rect.size.height}};
-        context.drawText(placeholder_, textRect, kTextFont, kPlaceholderColor, TextAlign::Left);
+        context.drawText(placeholder_, textRect, kTextFont, colors().textSecondary, TextAlign::Left);
     }
     if (focused) {
         const double caretX = textOriginX + prefixWidthUpTo(caret_);
         context.drawLine(core::Point{caretX, rect.minY()}, core::Point{caretX, rect.maxY()},
-                         kCaretColor, kCaretWidth);
+                         colors().textPrimary, kCaretWidth);
     }
     context.popClip();
+}
+
+} // namespace rivet::ui
+
+namespace rivet::ui {
+
+void TextField::setLeadingIcon(std::optional<Icon> icon) {
+    if (leadingIcon_ == icon) return;
+    leadingIcon_ = icon;
+    invalidate();
 }
 
 } // namespace rivet::ui

@@ -19,8 +19,7 @@
 #include "pdf/PdfPageGeometry.hpp"
 #include "pdf/PdfSystem.hpp"
 
-#include <sys/stat.h>
-#include <unistd.h>
+#include "TestProcess.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -60,7 +59,7 @@ public:
     TempDir() {
         static std::atomic<int> counter{0};
         path_ = fs::temp_directory_path() /
-                ("rivet-saver-" + std::to_string(::getpid()) + "-" +
+                ("rivet-saver-" + std::to_string(rivet::test::processId()) + "-" +
                  std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + "-" +
                  std::to_string(counter.fetch_add(1)));
         fs::create_directories(path_);
@@ -276,8 +275,10 @@ RIVET_TEST(saverFailureLeavesOriginalIntact) {
     CHECK(session->isDirty());
 }
 
+// POSIX directory permission bits; Windows ignores them on directories.
+#if !defined(_WIN32)
 RIVET_TEST(saverUnwritableDirectoryIsPermissionDenied) {
-    if (::geteuid() == 0) return; // root ignores directory permissions
+    if (rivet::test::runningAsRoot()) return; // root ignores directory permissions
     TempDir dir;
     FakeWritableEngine engine;
     core::TaskScheduler scheduler(1);
@@ -299,6 +300,7 @@ RIVET_TEST(saverUnwritableDirectoryIsPermissionDenied) {
     CHECK(missingDir.has_value());
     if (missingDir) CHECK(!editor::runDocumentWrite(engine, *missingDir).written.has_value());
 }
+#endif
 
 RIVET_TEST(saverExtractWritesSelectedPagesInModelOrder) {
     TempDir dir;

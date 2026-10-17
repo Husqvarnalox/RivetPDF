@@ -3,6 +3,7 @@
 
 #include "core/Log.hpp"
 
+#include <algorithm>
 #include <cerrno>
 #include <cstdio>
 #include <format>
@@ -19,6 +20,16 @@
 #include <unistd.h>
 #endif
 
+#if defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#endif
+
 #if defined(__APPLE__)
 #include <copyfile.h>
 #include <stdio.h> // renamex_np, RENAME_EXCL
@@ -33,8 +44,6 @@ constexpr std::string_view kSubsystem = "core.io";
 Error makeIoError(ErrorCode code, std::string message) {
     return makeError(code, std::move(message), std::string(kSubsystem));
 }
-
-#if !defined(_WIN32)
 
 // Maps an errno from `operation` to a Rivet error with a user-presentable
 // message. Paths are deliberately not included (privacy; the UI knows the
@@ -92,6 +101,16 @@ Error cancelledError() {
     return makeIoError(ErrorCode::Cancelled, "save was cancelled");
 }
 
+std::string randomSuffix() {
+    static std::atomic<std::uint64_t> counter{0};
+    std::random_device device;
+    const std::uint64_t value = (static_cast<std::uint64_t>(device()) << 32U) ^ device() ^
+                                counter.fetch_add(0x9E3779B97F4A7C15ULL, std::memory_order_relaxed);
+    return std::format("{:012x}", value & 0xFFFFFFFFFFFFULL);
+}
+
+#if !defined(_WIN32)
+
 // Follows a chain of symlinks at `path` to the final (possibly nonexistent)
 // target. errno-style failure code on error.
 Result<std::filesystem::path> resolveSymlinks(std::filesystem::path path) {
@@ -121,14 +140,6 @@ std::string utf8Prefix(const std::string& name, std::size_t maxBytes) {
     return name.substr(0, cut);
 }
 
-std::string randomSuffix() {
-    static std::atomic<std::uint64_t> counter{0};
-    std::random_device device;
-    const std::uint64_t value = (static_cast<std::uint64_t>(device()) << 32U) ^ device() ^
-                                counter.fetch_add(0x9E3779B97F4A7C15ULL, std::memory_order_relaxed);
-    return std::format("{:012x}", value & 0xFFFFFFFFFFFFULL);
-}
-
 void closeQuietly(int& fd) {
     if (fd >= 0) {
         ::close(fd);
@@ -154,36 +165,268 @@ int fullSync(int fd) {
 
 #if defined(_WIN32)
 
-// Windows sketch (not compiled into a working path yet): create the temp
-// with CreateFileW(CREATE_NEW, FILE_FLAG_WRITE_THROUGH) in the destination
-// directory, WriteFile + FlushFileBuffers, then ReplaceFileW(dest, temp)
-// when the destination exists (keeps ACLs/attributes/streams) or
-// MoveFileExW(temp, dest, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)
-// otherwise. Limitation: replacement fails with ERROR_SHARING_VIOLATION while
-// another handle (including our own source handle, unless opened with
-// FILE_SHARE_DELETE) has the destination open. See ADR-0010.
-Result<std::unique_ptr<AtomicFileWriter>> AtomicFileWriter::begin(const std::filesystem::path&,
-                                                                  AtomicWriteOptions) {
-    return std::unexpected(
-        makeIoError(ErrorCode::Unsupported, "atomic file replacement is not implemented on Windows"));
+namespace {
+
+// Maps a Win32 error code from `operation` to a Rivet error (no paths in the
+// message, like errnoError).
+Error win32Error(DWORD err, std::string_view operation) {
+    switch (err) {
+        case ERROR_ACCESS_DENIED:
+            return makeIoError(ErrorCode::PermissionDenied, std::format("{}: permission denied", operation));
+        case ERROR_SHARING_VIOLATION:
+        case ERROR_LOCK_VIOLATION:
+        case ERROR_USER_MAPPED_FILE:
+            return makeIoError(ErrorCode::PermissionDenied,
+                               std::format("{}: the file is in use by another program", operation));
+        case ERROR_WRITE_PROTECT:
+            return makeIoError(ErrorCode::PermissionDenied, std::format("{}: the volume is read-only", operation));
+        case ERROR_DISK_FULL:
+        case ERROR_HANDLE_DISK_FULL:
+            return makeIoError(ErrorCode::DiskFull,
+                               std::format("{}: not enough free space on the volume", operation));
+        case ERROR_FILE_NOT_FOUND:
+        case ERROR_PATH_NOT_FOUND:
+        case ERROR_BAD_NETPATH:
+            return makeIoError(ErrorCode::NotFound,
+                               std::format("{}: the destination folder does not exist", operation));
+        case ERROR_FILENAME_EXCED_RANGE:
+        case ERROR_INVALID_NAME:
+            return makeIoError(ErrorCode::InvalidArgument,
+                               std::format("{}: the file name is too long or invalid", operation));
+        case ERROR_FILE_EXISTS:
+        case ERROR_ALREADY_EXISTS:
+            return makeIoError(ErrorCode::AlreadyExists,
+                               std::format("{}: a file with that name already exists", operation));
+        case ERROR_CANCELLED:
+            return makeIoError(ErrorCode::Cancelled, std::format("{}: cancelled", operation));
+        default:
+            return makeIoError(ErrorCode::Io, std::format("{}: {}", operation,
+                                                          std::system_category().message(static_cast<int>(err))));
+    }
 }
 
-AtomicFileWriter::~AtomicFileWriter() = default;
-
-Status AtomicFileWriter::write(const void*, std::size_t) {
-    return std::unexpected(makeIoError(ErrorCode::Unsupported, "not implemented on Windows"));
+// Follows symlinks/junctions at `path` (up to 32 hops) to the final, possibly
+// nonexistent, target.
+Result<std::filesystem::path> resolveSymlinksWin(std::filesystem::path path) {
+    for (int hop = 0; hop < 32; ++hop) {
+        std::error_code ec;
+        const std::filesystem::file_status status = std::filesystem::symlink_status(path, ec);
+        if (ec || status.type() == std::filesystem::file_type::not_found) return path;
+        if (status.type() != std::filesystem::file_type::symlink) return path;
+        const std::filesystem::path target = std::filesystem::read_symlink(path, ec);
+        if (ec) return path; // not a resolvable link (e.g. an app-exec link): replace the entry itself
+        path = target.is_absolute() ? target : path.parent_path() / target;
+        path = path.lexically_normal();
+    }
+    return std::unexpected(errnoError(ELOOP, "cannot resolve the destination"));
 }
 
-Status AtomicFileWriter::commit() {
-    return std::unexpected(makeIoError(ErrorCode::Unsupported, "not implemented on Windows"));
+// Leading part of a UTF-16 file name, at most `maxUnits` code units, never
+// splitting a surrogate pair.
+std::wstring widePrefix(const std::wstring& name, std::size_t maxUnits) {
+    if (name.size() <= maxUnits) return name;
+    std::size_t cut = maxUnits;
+    if (cut > 0 && name[cut - 1] >= 0xD800 && name[cut - 1] <= 0xDBFF) --cut;
+    return name.substr(0, cut);
 }
 
-void AtomicFileWriter::abort() {}
+void closeHandleQuietly(void*& handle) {
+    if (handle != nullptr) {
+        ::CloseHandle(static_cast<HANDLE>(handle));
+        handle = nullptr;
+    }
+}
+
+} // namespace
+
+Result<std::unique_ptr<AtomicFileWriter>> AtomicFileWriter::begin(const std::filesystem::path& destination,
+                                                                  AtomicWriteOptions options) {
+    if (destination.empty() || !destination.has_filename()) {
+        return std::unexpected(makeIoError(ErrorCode::InvalidArgument, "the destination file name is empty"));
+    }
+    std::error_code ec;
+    const std::filesystem::path absolute = std::filesystem::absolute(destination, ec);
+    if (ec) return std::unexpected(makeIoError(ErrorCode::InvalidArgument, "cannot resolve the destination"));
+
+    auto resolved = resolveSymlinksWin(absolute.lexically_normal());
+    if (!resolved) return std::unexpected(resolved.error());
+
+    std::unique_ptr<AtomicFileWriter> writer(new AtomicFileWriter());
+    writer->destination_ = std::move(*resolved);
+    writer->options_ = std::move(options);
+
+    const std::filesystem::path& dest = writer->destination_;
+    std::filesystem::path directory = dest.parent_path();
+    if (directory.empty()) directory = ".";
+    const std::wstring fileName = dest.filename().wstring();
+    if (fileName.empty() || fileName == L"." || fileName == L"..") {
+        return std::unexpected(makeIoError(ErrorCode::InvalidArgument, "the destination file name is invalid"));
+    }
+
+    const DWORD dirAttributes = ::GetFileAttributesW(directory.c_str());
+    if (dirAttributes == INVALID_FILE_ATTRIBUTES) return std::unexpected(win32Error(::GetLastError(), "cannot save"));
+    if ((dirAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0) return std::unexpected(errnoError(ENOTDIR, "cannot save"));
+    if (fileName.size() > 255) return std::unexpected(errnoError(ENAMETOOLONG, "cannot save"));
+
+    const DWORD destAttributes = ::GetFileAttributesW(dest.c_str());
+    if (destAttributes != INVALID_FILE_ATTRIBUTES) {
+        if ((destAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0) {
+            return std::unexpected(errnoError(EISDIR, "cannot save"));
+        }
+        if (!writer->options_.overwriteExisting) return std::unexpected(errnoError(EEXIST, "cannot save"));
+        if ((destAttributes & FILE_ATTRIBUTE_READONLY) != 0) {
+            return std::unexpected(
+                makeIoError(ErrorCode::PermissionDenied, "cannot save: the file is read-only or locked"));
+        }
+        // Probe write access (ACLs) without modifying the file.
+        HANDLE probe = ::CreateFileW(dest.c_str(), GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                                     nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (probe == INVALID_HANDLE_VALUE) {
+            const DWORD err = ::GetLastError();
+            if (err == ERROR_ACCESS_DENIED) {
+                return std::unexpected(
+                    makeIoError(ErrorCode::PermissionDenied, "cannot save: the file is read-only or locked"));
+            }
+            return std::unexpected(win32Error(err, "cannot save"));
+        }
+        ::CloseHandle(probe);
+        writer->destinationExisted_ = true;
+    } else {
+        const DWORD err = ::GetLastError();
+        if (err != ERROR_FILE_NOT_FOUND) return std::unexpected(win32Error(err, "cannot save"));
+    }
+
+    const std::wstring base = widePrefix(fileName, 32);
+    HANDLE handle = INVALID_HANDLE_VALUE;
+    for (int attempt = 0; attempt < 16; ++attempt) {
+        const std::string suffix = randomSuffix();
+        std::filesystem::path candidate =
+            directory / (L"." + base + L".rivet-" + std::wstring(suffix.begin(), suffix.end()) + L".tmp");
+        handle = ::CreateFileW(candidate.c_str(), GENERIC_READ | GENERIC_WRITE | DELETE, 0, nullptr, CREATE_NEW,
+                               FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (handle != INVALID_HANDLE_VALUE) {
+            writer->tempPath_ = std::move(candidate);
+            break;
+        }
+        const DWORD err = ::GetLastError();
+        if (err != ERROR_FILE_EXISTS && err != ERROR_ALREADY_EXISTS) {
+            return std::unexpected(win32Error(err, "cannot create the file"));
+        }
+    }
+    if (handle == INVALID_HANDLE_VALUE) return std::unexpected(errnoError(EEXIST, "cannot create a temporary file"));
+    writer->handle_ = handle;
+    return writer;
+}
+
+AtomicFileWriter::~AtomicFileWriter() { abort(); }
 
 Status AtomicFileWriter::fail(Error error) {
+    closeHandleQuietly(handle_);
+    if (!tempPath_.empty()) ::DeleteFileW(tempPath_.c_str());
     state_ = State::Failed;
     error_ = error;
     return std::unexpected(std::move(error));
+}
+
+void AtomicFileWriter::abort() {
+    if (state_ != State::Open) return;
+    closeHandleQuietly(handle_);
+    if (!tempPath_.empty()) ::DeleteFileW(tempPath_.c_str());
+    state_ = State::Aborted;
+}
+
+Status AtomicFileWriter::write(const void* data, std::size_t size) {
+    switch (state_) {
+        case State::Open: break;
+        case State::Failed: return std::unexpected(error_);
+        case State::Committed: return std::unexpected(makeIoError(ErrorCode::InvalidArgument, "write after commit"));
+        case State::Aborted: return std::unexpected(makeIoError(ErrorCode::Cancelled, "write after abort"));
+    }
+    if (cancelled(options_)) return fail(cancelledError());
+    if (size == 0) return ok();
+    if (data == nullptr) return fail(makeIoError(ErrorCode::InvalidArgument, "write of a null buffer"));
+
+    const auto* bytes = static_cast<const unsigned char*>(data);
+    std::size_t remaining = size;
+    while (remaining > 0) {
+        if (const int fault = injected(options_, AtomicWriteFault::Write); fault != 0) {
+            return fail(errnoError(fault, "cannot write the file"));
+        }
+        const DWORD chunk = static_cast<DWORD>(std::min<std::size_t>(remaining, 1U << 30));
+        DWORD written = 0;
+        if (!::WriteFile(static_cast<HANDLE>(handle_), bytes, chunk, &written, nullptr)) {
+            return fail(win32Error(::GetLastError(), "cannot write the file"));
+        }
+        if (written == 0) return fail(errnoError(EIO, "cannot write the file"));
+        bytes += written;
+        remaining -= written;
+        bytesWritten_ += written;
+    }
+    return ok();
+}
+
+Status AtomicFileWriter::commit() {
+    switch (state_) {
+        case State::Open: break;
+        case State::Failed: return std::unexpected(error_);
+        case State::Committed: return std::unexpected(makeIoError(ErrorCode::InvalidArgument, "already committed"));
+        case State::Aborted: return std::unexpected(makeIoError(ErrorCode::Cancelled, "commit after abort"));
+    }
+    if (cancelled(options_)) return fail(cancelledError());
+
+    if (const int fault = injected(options_, AtomicWriteFault::Sync); fault != 0) {
+        return fail(errnoError(fault, "cannot flush the file to disk"));
+    }
+    HANDLE handle = static_cast<HANDLE>(handle_);
+    if (!::FlushFileBuffers(handle)) return fail(win32Error(::GetLastError(), "cannot flush the file to disk"));
+
+    LARGE_INTEGER size{};
+    if (!::GetFileSizeEx(handle, &size)) return fail(win32Error(::GetLastError(), "cannot verify the file"));
+    if (static_cast<std::uint64_t>(size.QuadPart) != bytesWritten_) {
+        return fail(makeIoError(ErrorCode::Io, std::format("cannot verify the file: size is {} bytes, expected {}",
+                                                           static_cast<long long>(size.QuadPart), bytesWritten_)));
+    }
+    closeHandleQuietly(handle_);
+
+    if (cancelled(options_)) return fail(cancelledError());
+    if (const int fault = injected(options_, AtomicWriteFault::Rename); fault != 0) {
+        return fail(errnoError(fault, "cannot replace the file"));
+    }
+
+    bool replaced = false;
+    DWORD err = ERROR_SUCCESS;
+    if (options_.overwriteExisting && destinationExisted_) {
+        // Keeps the destination's ACLs, attributes and streams.
+        replaced = ::ReplaceFileW(destination_.c_str(), tempPath_.c_str(), nullptr, REPLACEFILE_IGNORE_MERGE_ERRORS,
+                                  nullptr, nullptr) != FALSE;
+        if (!replaced) {
+            err = ::GetLastError();
+            // Sharing/permission failures are final; anything else (e.g. a
+            // file system without ReplaceFile support) falls back to a move.
+            if (err != ERROR_SHARING_VIOLATION && err != ERROR_ACCESS_DENIED && err != ERROR_LOCK_VIOLATION &&
+                err != ERROR_USER_MAPPED_FILE) {
+                replaced = ::MoveFileExW(tempPath_.c_str(), destination_.c_str(),
+                                         MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != FALSE;
+                if (!replaced) err = ::GetLastError();
+            }
+        }
+    } else {
+        // Without REPLACE_EXISTING the move fails atomically when the
+        // destination appeared meanwhile (overwriteExisting == false).
+        const DWORD flags = MOVEFILE_WRITE_THROUGH | (options_.overwriteExisting ? MOVEFILE_REPLACE_EXISTING : 0U);
+        replaced = ::MoveFileExW(tempPath_.c_str(), destination_.c_str(), flags) != FALSE;
+        if (!replaced) err = ::GetLastError();
+    }
+    if (!replaced) return fail(win32Error(err, "cannot replace the file"));
+    state_ = State::Committed;
+
+    // NTFS has no directory fsync; MOVEFILE_WRITE_THROUGH / ReplaceFileW
+    // already flushed the rename. The fault point is kept for parity.
+    if (const int syncError = injected(options_, AtomicWriteFault::DirSync); syncError != 0) {
+        log::warning(std::format("atomic save: directory fsync failed after replace: {}",
+                                 std::generic_category().message(syncError)));
+    }
+    return ok();
 }
 
 #else

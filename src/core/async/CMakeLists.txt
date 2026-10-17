@@ -14,6 +14,7 @@ endif()
 set_property(GLOBAL PROPERTY RIVET_ASYNC_CORE_SOURCES_WIRED ON)
 
 target_sources(rivet_core PRIVATE
+    DelayedTaskQueue.cpp
     SerialExecutor.cpp
     TaskScheduler.cpp
 )

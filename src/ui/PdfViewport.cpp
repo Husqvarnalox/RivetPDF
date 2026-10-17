@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 #include "ui/PdfViewport.hpp"
+#include "ui/Theme.hpp"
 
 #include "core/Error.hpp"
 #include "render/PageLayout.hpp"
@@ -19,11 +20,6 @@
 namespace rivet::ui {
 namespace {
 
-constexpr Color kCanvasBackground = Color::gray(0.82);
-constexpr Color kEmptyStateColor = Color::gray(0.45);
-constexpr Color kPageBackground = Color::white();
-constexpr Color kPageBorder = Color::gray(0.7);
-constexpr Color kTilePlaceholder = Color::gray(0.92);
 constexpr Font kEmptyStateFont{15.0, Font::Weight::Regular};
 constexpr const char* kEmptyStateText = "Open a PDF to begin";
 
@@ -187,8 +183,12 @@ core::Point PdfViewport::clampedScrollOffset(const core::Point& offset) const {
         const double maxOffset = std::max(0.0, contentExtent - visibleExtentPoints);
         return std::clamp(value, 0.0, maxOffset);
     };
-    return core::Point{clampAxis(offset.x, content.width, visibleExtent.width),
-                       clampAxis(offset.y, content.height, visibleExtent.height)};
+    // Content narrower than the viewport is centred horizontally (QA #17):
+    // the offset becomes negative by half the slack, so every transform
+    // ((frame.origin - offset) * zoom) places the pages in the middle.
+    const double x = content.width < visibleExtent.width ? (content.width - visibleExtent.width) / 2.0
+                                                         : clampAxis(offset.x, content.width, visibleExtent.width);
+    return core::Point{x, clampAxis(offset.y, content.height, visibleExtent.height)};
 }
 
 core::Rect PdfViewport::visibleContentRectPoints() const {
@@ -254,9 +254,10 @@ void PdfViewport::setAnnotationLayer(ViewportLayer* layer) {
     // -Wnull-dereference misfires on vector::insert's reallocating path.
     std::vector<ViewportLayer*> layers;
     layers.reserve(layers_.size() + 1);
+    for (std::size_t i = 0; i < belowAnnotationLayers_; ++i) layers.push_back(layers_[i]);
     if (layer != nullptr) layers.push_back(layer);
-    for (ViewportLayer* existing : layers_) {
-        if (existing != annotationLayer_) layers.push_back(existing);
+    for (std::size_t i = belowAnnotationLayers_; i < layers_.size(); ++i) {
+        if (layers_[i] != annotationLayer_) layers.push_back(layers_[i]);
     }
     layers_ = std::move(layers);
     annotationLayer_ = layer;
@@ -271,14 +272,28 @@ bool PdfViewport::hasLayer(const ViewportLayer* layer) const {
     return std::find(layers_.begin(), layers_.end(), layer) != layers_.end();
 }
 
-void PdfViewport::addLayer(ViewportLayer* layer) {
+void PdfViewport::addLayer(ViewportLayer* layer, LayerPlacement placement) {
     if (layer == nullptr || std::find(layers_.begin(), layers_.end(), layer) != layers_.end()) return;
-    layers_.push_back(layer);
+    if (placement == LayerPlacement::BelowAnnotations) {
+        // Rebuilt (see setAnnotationLayer): after the existing below-layers.
+        std::vector<ViewportLayer*> layers;
+        layers.reserve(layers_.size() + 1);
+        for (std::size_t i = 0; i < belowAnnotationLayers_; ++i) layers.push_back(layers_[i]);
+        layers.push_back(layer);
+        for (std::size_t i = belowAnnotationLayers_; i < layers_.size(); ++i) layers.push_back(layers_[i]);
+        layers_ = std::move(layers);
+        ++belowAnnotationLayers_;
+    } else {
+        layers_.push_back(layer);
+    }
     invalidate();
 }
 
 void PdfViewport::removeLayer(ViewportLayer* layer) {
     if (layer == nullptr || layer == annotationLayer_) return;
+    const auto it = std::find(layers_.begin(), layers_.end(), layer);
+    if (it == layers_.end()) return;
+    if (static_cast<std::size_t>(it - layers_.begin()) < belowAnnotationLayers_) --belowAnnotationLayers_;
     if (std::erase(layers_, layer) == 0) return;
     selecting_ = false;
     linkPressed_ = false;
@@ -326,6 +341,17 @@ void PdfViewport::setOnFocusRequested(std::function<void()> onFocusRequested) {
 }
 
 void PdfViewport::onStateChanged() {
+    // A zoom change does not move the offset by itself: re-clamp it so the
+    // content stays in bounds and narrow content stays centred (QA #17).
+    // The corrected offset re-enters here once and does the rest.
+    if (layout_ != nullptr && state_ != &emptyStateState_ && !frame().isEmpty()) {
+        const core::Point current = state_->scrollOffsetPoints();
+        const core::Point clamped = clampedScrollOffset(current);
+        if (!core::Point::nearlyEqual(current, clamped, 1e-9)) {
+            state_->setScrollOffsetPoints(clamped);
+            return;
+        }
+    }
     const double zoomValue = state_->zoom().zoom();
     if (zoomValue != lastReportedZoom_) {
         // Queued renders were requested at the previous scale; drop them so
@@ -341,6 +367,11 @@ void PdfViewport::onStateChanged() {
     syncScrollbars();
     updateCurrentPage();
     invalidate();
+    if (onScrollChanged_ && state_ != &emptyStateState_) onScrollChanged_();
+}
+
+void PdfViewport::setScrollChangedCallback(std::function<void()> onScrollChanged) {
+    onScrollChanged_ = std::move(onScrollChanged);
 }
 
 void PdfViewport::syncScrollbars() {
@@ -480,13 +511,14 @@ bool PdfViewport::handlePointer(const PointerEvent& event) {
             // content underneath stays approximately stationary. Manual zoom
             // exits an active fit mode.
             const double oldZoom = state_->zoom().zoom();
+            // Captured first: the zoom change re-clamps the offset.
+            const core::Point oldOffset = state_->scrollOffsetPoints();
             state_->zoom().setFitMode(render::ZoomState::FitMode::None);
             const bool changed = event.scrollDelta.y < 0.0 ? state_->zoom().zoomIn()
                                                            : state_->zoom().zoomOut();
             if (changed) {
                 const double newZoom = state_->zoom().zoom();
-                const core::Point contentAnchor =
-                    state_->scrollOffsetPoints() + event.position / oldZoom;
+                const core::Point contentAnchor = oldOffset + event.position / oldZoom;
                 setScrollOffsetPoints(contentAnchor - event.position / newZoom);
             }
             event.accepted = true;
@@ -725,15 +757,17 @@ void PdfViewport::resolveFitMode() {
         return;
     }
     if (mode == render::ZoomState::FitMode::Width) {
-        double widest = 0.0;
-        for (const render::PageLayout::PageInfo& page : layout_->pages()) {
-            widest = std::max(widest, page.sizePoints.width);
-        }
-        state_->zoom().setZoom(state_->zoom().fitWidthZoom(frame().size.width, widest));
+        // The layout's content width includes the page margin on both sides:
+        // fitting the bare page width would overflow horizontally by the
+        // margins and show a horizontal scrollbar.
+        state_->zoom().setZoom(
+            state_->zoom().fitWidthZoom(frame().size.width, layout_->contentSizePoints().width));
     } else { // FitMode::Page: fit the current page within the viewport
         const std::size_t index = std::min(currentPage_, layout_->pageCount() - 1);
+        const double margin = 2.0 * layout_->pageMarginPoints();
+        const core::Size page = layout_->pages()[index].sizePoints;
         state_->zoom().setZoom(state_->zoom().fitPageZoom(
-            frame().size.width, frame().size.height, layout_->pages()[index].sizePoints));
+            frame().size.width, frame().size.height, core::Size{page.width + margin, page.height + margin}));
     }
     // Fit modes are modes: the intent survives this layout pass and keeps
     // recomputing on resize until manual zoom exits the mode.
@@ -752,10 +786,11 @@ void PdfViewport::resolveFitMode() {
 //   6. Scrollbar children paint on top via Widget::paint's child pass.
 void PdfViewport::paintSelf(PaintContext& context) const {
     context.pushClip(bounds());
-    context.fillRect(bounds(), presentationMode_ ? Color::black() : kCanvasBackground);
+    context.fillRect(bounds(), presentationMode_ ? colors().presentationBackground : colors().canvasBackground);
+    lastPaintMissedTiles_ = false;
 
     if (layout_ == nullptr || source_ == nullptr) {
-        context.drawText(kEmptyStateText, bounds(), kEmptyStateFont, kEmptyStateColor,
+        context.drawText(kEmptyStateText, bounds(), kEmptyStateFont, colors().textSecondary,
                          TextAlign::Center);
         context.popClip();
         return;
@@ -771,8 +806,20 @@ void PdfViewport::paintSelf(PaintContext& context) const {
             const core::Rect pageFrame = layout_->pageFramePoints(i);
             const core::Rect pageInViewport{(pageFrame.origin - state_->scrollOffsetPoints()) * zoomFactor,
                                             pageFrame.size * zoomFactor};
-            context.fillRect(pageInViewport, kPageBackground);
-            context.strokeRect(pageInViewport, kPageBorder, 1.0);
+            if (!presentationMode_) {
+                // Soft shadow (ADR-0033 §5): a few widening translucent
+                // layers, offset downward, under the page.
+                const Color shadow = colors().pageShadow;
+                for (int layer = 3; layer >= 1; --layer) {
+                    const double grow = static_cast<double>(layer);
+                    const core::Rect halo{pageInViewport.minX() - grow, pageInViewport.minY() - grow + 1.0,
+                                          pageInViewport.size.width + 2.0 * grow,
+                                          pageInViewport.size.height + 2.0 * grow};
+                    context.fillRoundedRect(halo, withAlpha(shadow, shadow.a / (1.0 + grow)), grow + 1.0);
+                }
+            }
+            context.fillRect(pageInViewport, colors().pageBackground);
+            if (!presentationMode_) context.strokeRect(pageInViewport, colors().pageBorder, 1.0);
             paintPageTiles(i, pageFrame, pageInViewport, contentRect, revision, context);
             for (ViewportLayer* layer : layers_) layer->paintPage(*this, i, pageInViewport, context);
             paintPageOverlays(i, pageFrame, context);
@@ -862,6 +909,19 @@ void PdfViewport::requestTileWithPriority(const render::TileKey& key,
                            });
 }
 
+core::Rect PdfViewport::snapToDevicePixels(const core::Rect& rect, double backingScale) {
+    const double scale = backingScale > 0.0 && std::isfinite(backingScale) ? backingScale : 1.0;
+    // Edges are rounded independently: two tiles sharing an edge compute it
+    // from the same value, so they meet exactly on one device-pixel line -
+    // no gap, no overlap, no half-covered pixel blending with the background
+    // (QA #18 tile seams).
+    const double left = std::round(rect.minX() * scale) / scale;
+    const double top = std::round(rect.minY() * scale) / scale;
+    const double right = std::round(rect.maxX() * scale) / scale;
+    const double bottom = std::round(rect.maxY() * scale) / scale;
+    return core::Rect{left, top, std::max(0.0, right - left), std::max(0.0, bottom - top)};
+}
+
 // Overlay pass (selection highlights, search matches): rects arrive in page
 // display space from the bridge and map to viewport space exactly like tile
 // destinations. Painted AFTER the tiles, never baked into them.
@@ -876,7 +936,7 @@ void PdfViewport::paintPageOverlays(std::size_t pageIndex, const core::Rect& pag
             const core::Rect dest{
                 (pageFramePoints.origin + rect.origin - state_->scrollOffsetPoints()) * zoomFactor,
                 rect.size * zoomFactor};
-            context.strokeRect(dest, Color::rgba(0.15, 0.4, 0.9, 0.8), 1.0);
+            context.strokeRect(dest, colors().linkOutline, 1.0);
         }
     }
     const std::vector<OverlayRect> overlays = textBridge_->overlayRects(pageIndex);
@@ -955,12 +1015,15 @@ void PdfViewport::paintPageTiles(std::size_t pageIndex, const core::Rect& pageFr
             if (clipped.isEmpty()) continue;
 
             const render::TileKey key{documentId_, info.id, physicalKey, tx, ty, info.contentRevision};
-            const core::Rect dest{pageInViewport.origin + clipped.origin * state_->zoom().zoom(),
-                                  clipped.size * state_->zoom().zoom()};
+            const core::Rect dest = snapToDevicePixels(
+                core::Rect{pageInViewport.origin + clipped.origin * state_->zoom().zoom(),
+                           clipped.size * state_->zoom().zoom()},
+                context.backingScale());
             if (const std::shared_ptr<const core::Bitmap> tile = source_->cachedTile(key, revision)) {
                 context.drawBitmap(*tile, dest);
             } else {
-                context.fillRect(dest, kTilePlaceholder);
+                context.fillRect(dest, colors().pagePlaceholder);
+                lastPaintMissedTiles_ = true;
                 requestTile(key, render::RasterParams{clipped, devicePixelsPerPoint});
             }
         }

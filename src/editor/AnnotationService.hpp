@@ -110,6 +110,13 @@ public:
     };
     std::optional<Located> locate(core::AnnotationId id) const;
 
+    // Every /Annots entry of the page's source as stored in its file
+    // (editable or not: links, widgets, popups, ...), requesting the load
+    // when needed. Null while not loaded, or for an unknown page. Main
+    // thread. Used by redaction (ADR-0026), which removes whatever lies in
+    // the redacted areas.
+    pdf::PdfPageAnnotationsPtr originals(core::PageId pageId) const;
+
     // Drops resolved lists of removed pages (main thread). The registry and
     // the originals cache are kept: an undo brings the pages back.
     void evictPages(std::span<const core::PageId> pageIds);

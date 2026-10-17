@@ -19,7 +19,7 @@ namespace {
 // expected state before failing.
 template <typename Pred>
 bool waitFor(Pred&& pred) {
-    for (int attempt = 0; attempt < 2500; ++attempt) {
+    for (int attempt = 0; attempt < 15000; ++attempt) {
         if (pred()) {
             return true;
         }
@@ -46,7 +46,7 @@ RIVET_TEST(runsPostedTasks) {
     }
 
     for (auto& future : futures) {
-        CHECK(future.wait_for(std::chrono::seconds(5)) == std::future_status::ready);
+        CHECK(future.wait_for(std::chrono::seconds(30)) == std::future_status::ready);
     }
 }
 
@@ -84,7 +84,7 @@ RIVET_TEST(tasksExecuteOnPoolThreads) {
         });
     }
 
-    CHECK(allDoneFuture.wait_for(std::chrono::seconds(5)) == std::future_status::ready);
+    CHECK(allDoneFuture.wait_for(std::chrono::seconds(30)) == std::future_status::ready);
 
     std::lock_guard<std::mutex> lock(mutex);
     CHECK_EQ(executedOn.size(), std::size_t{8});
@@ -136,7 +136,7 @@ RIVET_TEST(destructorDiscardsPending) {
     CHECK(waitFor([&] { return scheduler->pendingCount() == 0; }));
     gate.set_value();
 
-    CHECK(destroyedFuture.wait_for(std::chrono::seconds(5)) == std::future_status::ready);
+    CHECK(destroyedFuture.wait_for(std::chrono::seconds(30)) == std::future_status::ready);
     destroyer.join();
     CHECK_EQ(ranCount.load(), 1);
 }

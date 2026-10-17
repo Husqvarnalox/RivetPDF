@@ -159,7 +159,12 @@ public:
     // --- ContentLayerClient (public: tests drive intents directly) ------------------------
     ContentInteraction& interaction() override { return interaction_; }
     const ContentInteraction& interaction() const override { return interaction_; }
-    bool active() const override { return interaction_.tool() != ContentTool::None; }
+    // The object tools only: the Redact tool shares the tool state (it
+    // suspends the annotation layer too) but its input belongs to the
+    // RedactionController.
+    bool active() const override {
+        return interaction_.tool() == ContentTool::SelectObject || interaction_.tool() == ContentTool::AddText;
+    }
     std::optional<ContentInteraction::Selected> currentSelection() const override;
     void pointerPressed() override;
     void applyIntent(const ContentInteraction::Intent& intent, bool shift) override;

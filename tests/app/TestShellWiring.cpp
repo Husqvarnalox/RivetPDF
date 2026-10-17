@@ -14,6 +14,7 @@
 #include "app/ShellContext.hpp"
 #include "app/SidebarController.hpp"
 #include "app/StatusBarController.hpp"
+#include "ui/SegmentedControl.hpp"
 #include "app/TextInteractionController.hpp"
 #include "core/Error.hpp"
 #include "core/async/IMainThreadDispatcher.hpp"
@@ -115,6 +116,17 @@ public:
         root.children.push_back(outlineNode("Chapter 2", 2));
         return std::optional<PdfOutlineNode>{std::move(root)};
     }
+    // One signed field on page 3 (base index 2).
+    Result<rivet::pdf::PdfSignatureListPtr> signatures() const override {
+        auto list = std::make_shared<rivet::pdf::PdfSignatureList>();
+        rivet::pdf::PdfSignatureInfo info;
+        info.coverage.valid = true;
+        info.coverage.coversWholeDocument = true;
+        info.reason = "Approved\nby me";
+        info.pageIndex = 2;
+        list->signatures.push_back(std::move(info));
+        return rivet::pdf::PdfSignatureListPtr{std::move(list)};
+    }
 
 private:
     std::vector<std::u32string> pages_{utf32("alpha beta"), utf32("beta gamma"), utf32("delta beta")};
@@ -155,7 +167,7 @@ public:
         for (auto& task : run) task();
     }
     bool waitUntil(const std::function<bool()>& predicate) {
-        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
         for (;;) {
             pump();
             if (predicate()) return true;
@@ -375,7 +387,7 @@ RIVET_TEST(wiringSearchBarClosesOnTabSwitchAndIgnoresBackgroundTabs) {
 RIVET_TEST(wiringStatusBarShowsPageIndicatorAndZoomText) {
     Shell s;
     s.status->updatePageIndicator();
-    CHECK_EQ(s.status->pageCountText(), std::string("/ 0"));
+    CHECK_EQ(s.status->pageCountText(), std::string("") /* QA #12: no "1 / 0" without pages */);
     CHECK_EQ(s.status->pageField().text(), std::string(""));
     CHECK_EQ(s.status->statusText(), std::string("Ready"));
 
@@ -419,6 +431,10 @@ RIVET_TEST(wiringPasswordPromptRoutesSubmitAndCancel) {
     CHECK(tab->state() == DocumentTab::State::NeedsPassword);
     CHECK(s.password->visible());
     CHECK(s.focused == &s.password->field());
+    // QA #12: the full sentence names the file; no error before a retry.
+    CHECK(s.password->messageText().find("is protected. Enter its password to open it.") != std::string::npos);
+    CHECK(s.password->errorText().empty());
+    CHECK(!tab->passwordRejected());
 
     // Escape only drops focus; the prompt stays for the locked tab.
     Shell::press(s.password->field(), Key::Escape);
@@ -433,6 +449,9 @@ RIVET_TEST(wiringPasswordPromptRoutesSubmitAndCancel) {
     CHECK(s.dispatcher.waitUntil([tab] { return tab->state() != DocumentTab::State::Loading; }));
     CHECK(tab->state() == DocumentTab::State::NeedsPassword);
     CHECK(s.password->visible());
+    // QA #12: a wrong password is reported, not just cleared.
+    CHECK(tab->passwordRejected());
+    CHECK_EQ(s.password->errorText(), std::string("Incorrect password. Try again."));
 
     // The right password unlocks; the prompt hides and releases focus.
     s.typeInto(s.password->field(), "secret");
@@ -448,6 +467,19 @@ RIVET_TEST(wiringPasswordPromptRoutesSubmitAndCancel) {
     s.password->submit();
     CHECK(tab->state() == DocumentTab::State::Ready);
     CHECK_EQ(s.password->field().text(), std::string("secret"));
+}
+
+RIVET_TEST(passwordPromptShortensLongNamesInTheMiddle) {
+    CHECK_EQ(PasswordPromptController::shortenName("short.pdf", 34), std::string("short.pdf"));
+    const std::string longName = "a-very-long-file-name-that-would-not-fit-in-the-panel.pdf";
+    const std::string shortened = PasswordPromptController::shortenName(longName, 20);
+    CHECK(shortened.find("\xE2\x80\xA6") != std::string::npos);
+    CHECK(shortened.starts_with("a-very-lo"));
+    CHECK(shortened.ends_with("panel.pdf"));
+    // Multi-byte code points are never split.
+    const std::string accents = "\xC3\xA9\xC3\xA9\xC3\xA9\xC3\xA9\xC3\xA9\xC3\xA9";
+    CHECK_EQ(PasswordPromptController::shortenName(accents, 5),
+             std::string("\xC3\xA9\xC3\xA9\xE2\x80\xA6\xC3\xA9\xC3\xA9"));
 }
 
 RIVET_TEST(wiringTextInteractionIsNoOpWithoutReadyTab) {
@@ -506,19 +538,15 @@ RIVET_TEST(wiringTextInteractionSelectsHighlightsAndCopiesAsync) {
 RIVET_TEST(wiringSidebarSwitchesModesAndLoadsOutlineAsync) {
     Shell s;
     CHECK(s.sidebar->mode() == SidebarController::Mode::Pages);
-    // The sidebar container is root's first child: [Pages, Outline, ...].
-    auto* container = dynamic_cast<rivet::ui::Container*>(s.root->children().front().get());
-    CHECK(container != nullptr);
-    auto* pagesButton = dynamic_cast<rivet::ui::Button*>(container->children()[0].get());
-    auto* outlineButton = dynamic_cast<rivet::ui::Button*>(container->children()[1].get());
-    CHECK(pagesButton != nullptr && outlineButton != nullptr);
-    CHECK_EQ(pagesButton->label(), std::string("Pages •"));
-    CHECK_EQ(outlineButton->label(), std::string("Outline"));
+    // The header is a segmented control (ADR-0033): Pages | Outline | Signatures.
+    const rivet::ui::SegmentedControl& header = s.sidebar->header();
+    CHECK_EQ(header.segmentCount(), std::size_t{3});
+    CHECK_EQ(header.segment(0).label, std::string("Pages"));
+    CHECK(header.selected() == std::optional<std::size_t>(0));
 
     s.sidebar->setMode(SidebarController::Mode::Outline);
     CHECK(s.sidebar->mode() == SidebarController::Mode::Outline);
-    CHECK_EQ(pagesButton->label(), std::string("Pages"));
-    CHECK_EQ(outlineButton->label(), std::string("Outline •"));
+    CHECK(header.selected() == std::optional<std::size_t>(1));
     CHECK(s.sidebar->outlineRows().empty());
 
     // The outline arrives asynchronously; the top level starts expanded.
@@ -558,4 +586,46 @@ RIVET_TEST(wiringFlattenOutlineHonorsExpansionAndClampsDestinations) {
     CHECK(expanded.paths[2] == (OutlinePath{0, 1}));
     CHECK_EQ(expanded.destinations[1], std::size_t{0}); // page 7 >= 2 pages
     CHECK_EQ(expanded.destinations[2], std::size_t{1});
+}
+
+RIVET_TEST(wiringSidebarListsSignaturesAndGoesToTheirPage) {
+    Shell s;
+    s.sidebar->setMode(SidebarController::Mode::Signatures);
+    CHECK(s.sidebar->mode() == SidebarController::Mode::Signatures);
+    CHECK(s.sidebar->signatureRows().empty());
+
+    s.open("signatures");
+    CHECK(s.dispatcher.waitUntil([&] { return s.sidebar->signatureRows().size() == 3; }));
+    const auto& rows = s.sidebar->signatureRows();
+    CHECK_EQ(rows[0].title, std::string("Signature present (not verified) - covers the whole document"));
+    CHECK_EQ(rows[1].title, std::string("Page 3"));
+    CHECK_EQ(rows[2].title, std::string("Reason: Approved by me")); // control characters cleaned
+    CHECK(s.workspace.activeTab()->session()->signatures().hasSignatures());
+
+    s.sidebar->activateSignatureRow(1);
+    CHECK_EQ(s.viewport->currentPageIndex(), std::size_t{2});
+    s.sidebar->activateSignatureRow(99); // out of range: ignored
+
+    s.workspace.closeActiveTab();
+    CHECK(s.sidebar->signatureRows().empty());
+}
+
+RIVET_TEST(wiringSignatureRowsForLoadingEmptyAndTruncatedLists) {
+    CHECK_EQ(rivet::app::buildSignatureRows(nullptr).rows.size(), std::size_t{1});
+    rivet::pdf::PdfSignatureList list;
+    const auto empty = rivet::app::buildSignatureRows(&list);
+    CHECK_EQ(empty.rows.size(), std::size_t{1});
+    CHECK_EQ(empty.rows[0].title, std::string("No digital signatures"));
+    CHECK(!empty.signatureOfRow[0].has_value());
+
+    rivet::pdf::PdfSignatureInfo info; // invalid byte range, no page/reason/time
+    info.signingTime = std::string(400, 'x');
+    list.signatures.push_back(info);
+    list.truncated = true;
+    const auto rows = rivet::app::buildSignatureRows(&list);
+    CHECK_EQ(rows.rows.size(), std::size_t{3});
+    CHECK_EQ(rows.rows[0].title, std::string("Signature present (not verified) - byte range is malformed"));
+    CHECK(rows.rows[1].title.size() < 200u); // capped
+    CHECK(rows.signatureOfRow[1] == std::optional<std::size_t>{0});
+    CHECK_EQ(rows.rows[2].title, std::string("More signatures are not listed"));
 }

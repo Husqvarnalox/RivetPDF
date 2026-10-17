@@ -1,16 +1,71 @@
 // SPDX-License-Identifier: MPL-2.0
 #include "app/SidebarController.hpp"
+#include "ui/Theme.hpp"
 
-#include "ui/Button.hpp"
+#include "ui/SegmentedControl.hpp"
 #include "ui/Container.hpp"
 #include "ui/PageThumbnailList.hpp"
 #include "ui/PdfViewport.hpp"
 
 #include <algorithm>
 #include <memory>
+#include <string>
+#include <string_view>
 #include <utility>
 
 namespace rivet::app {
+
+namespace {
+
+// Untrusted signature strings for display: control characters become
+// spaces, the text is capped at a UTF-8 boundary.
+std::string displayText(std::string_view text) {
+    constexpr std::size_t kMaxBytes = 160;
+    std::string out;
+    out.reserve(std::min(text.size(), kMaxBytes));
+    for (const char ch : text) {
+        const auto byte = static_cast<unsigned char>(ch);
+        out.push_back(byte < 0x20 || byte == 0x7F ? ' ' : ch);
+    }
+    if (out.size() > kMaxBytes) {
+        std::size_t cut = kMaxBytes;
+        while (cut > 0 && (static_cast<unsigned char>(out[cut]) & 0xC0u) == 0x80u) --cut;
+        out.resize(cut);
+        out += "\xE2\x80\xA6";
+    }
+    return out;
+}
+
+} // namespace
+
+SignatureRows buildSignatureRows(const pdf::PdfSignatureList* list) {
+    SignatureRows result;
+    const auto add = [&result](std::string title, int depth, std::optional<std::size_t> signature) {
+        ui::OutlineRow row;
+        row.title = std::move(title);
+        row.depth = depth;
+        row.hasChildren = false; // details are always shown (no disclosure marker)
+        result.rows.push_back(std::move(row));
+        result.signatureOfRow.push_back(signature);
+    };
+    if (list == nullptr) {
+        add("Loading signatures\xE2\x80\xA6", 0, std::nullopt);
+        return result;
+    }
+    if (list->signatures.empty()) {
+        add("No digital signatures", 0, std::nullopt);
+        return result;
+    }
+    for (std::size_t i = 0; i < list->signatures.size(); ++i) {
+        const pdf::PdfSignatureInfo& info = list->signatures[i];
+        add(pdf::signatureStatusText(info), 0, i);
+        if (info.pageIndex.has_value()) add("Page " + std::to_string(*info.pageIndex + 1), 1, i);
+        if (!info.reason.empty()) add("Reason: " + displayText(info.reason), 1, i);
+        if (!info.signingTime.empty()) add("Signed: " + displayText(info.signingTime), 1, i);
+    }
+    if (list->truncated) add("More signatures are not listed", 0, std::nullopt);
+    return result;
+}
 
 // Iterative DFS with an explicit path stack (the tree is depth-bounded by
 // the adapter, but recursion is still avoided here for uniformity). The
@@ -63,20 +118,18 @@ FlattenedOutline flattenOutline(const pdf::PdfOutlineNode& root, const std::set<
 SidebarController::SidebarController(ShellContext& context, ui::Widget& parent) : context_(context) {
     auto container = std::make_unique<ui::Container>();
     container_ = container.get();
-    container_->setBackgroundColor(ui::Color::rgba(0.93, 0.93, 0.93, 1.0));
+    container_->setBackground(&ui::Palette::chromeBackground);
     parent.addChild(std::move(container));
 
-    auto pagesButton = std::make_unique<ui::Button>("Pages");
-    pagesButton_ = pagesButton.get();
-    pagesButton_->setFrame(core::Rect{8.0, 6.0, 64.0, 24.0});
-    pagesButton_->setOnClick([this] { setMode(Mode::Pages); });
-    container_->addChild(std::move(pagesButton));
-
-    auto outlineButton = std::make_unique<ui::Button>("Outline");
-    outlineButton_ = outlineButton.get();
-    outlineButton_->setFrame(core::Rect{76.0, 6.0, 72.0, 24.0});
-    outlineButton_->setOnClick([this] { setMode(Mode::Outline); });
-    container_->addChild(std::move(outlineButton));
+    // Segmented header (ADR-0033 §5): Pages | Outline | Signatures.
+    auto header = std::make_unique<ui::SegmentedControl>(
+        std::vector<ui::SegmentedControl::Segment>{{"Pages", {}, "Page thumbnails", 0.0, true},
+                                                   {"Outline", {}, "Document outline", 0.0, true},
+                                                   {"Signatures", {}, "Digital signatures", 0.0, true}},
+        true);
+    header_ = header.get();
+    header_->setOnSelect([this](std::size_t index) { setMode(static_cast<Mode>(index)); });
+    container_->addChild(std::move(header));
 
     auto thumbnails = std::make_unique<ui::PageThumbnailList>();
     thumbnails_ = thumbnails.get();
@@ -89,13 +142,28 @@ SidebarController::SidebarController(ShellContext& context, ui::Widget& parent) 
         [this](std::size_t row, bool expanded) { setRowExpanded(row, expanded); });
     container_->addChild(std::move(outlinePanel));
 
+    auto signaturesPanel = std::make_unique<ui::OutlinePanel>();
+    signaturesPanel_ = signaturesPanel.get();
+    signaturesPanel_->setOnRowActivated([this](std::size_t row) { activateSignatureRow(row); });
+    container_->addChild(std::move(signaturesPanel));
+
     setMode(Mode::Pages);
 }
 
 void SidebarController::bindTab(DocumentTab* tab) {
     if (tab == nullptr || tab->state() != DocumentTab::State::Ready) {
+        // Say why there are no pages (QA #12: "No document open" next to a
+        // password prompt read as a broken open).
+        const DocumentTab::State state = tab != nullptr ? tab->state() : DocumentTab::State::Ready;
+        thumbnails_->setEmptyText(tab == nullptr                                 ? "No document open"
+                                  : state == DocumentTab::State::NeedsPassword ? "Locked document"
+                                  : state == DocumentTab::State::Loading       ? "Loading…"
+                                                                               : "No pages");
         thumbnails_->clearDocument();
         clearOutline();
+        signatures_ = SignatureRows{};
+        shownSignatures_ = nullptr;
+        signaturesPanel_->setRows({});
         return;
     }
     editor::DocumentSession* session = tab->session();
@@ -111,6 +179,16 @@ void SidebarController::bindTab(DocumentTab* tab) {
         topLevelExpanded_ = false;
     }
     rebuildOutlineRows();
+
+    // Digital signatures load once per base document (also needed by the
+    // save warning); the panel refreshes when they arrive, if this session
+    // is still the active one. The delivery dies with the session.
+    session->signatures().setOnChanged([this, session] {
+        DocumentTab* active = context_.readyActiveTab();
+        if (active != nullptr && active->session() == session) rebuildSignatureRows();
+    });
+    session->signatures().ensureLoaded();
+    rebuildSignatureRows();
 
     // Restore the per-tab current page.
     thumbnails_->setSelectedIndex(tab->currentPage());
@@ -132,22 +210,52 @@ void SidebarController::setCurrentPage(std::size_t page) {
 
 void SidebarController::layout(const core::Rect& frame) {
     container_->setFrame(frame);
+    const double headerWidth = std::max(0.0, frame.size.width - 2.0 * ui::metrics::kSpace8 - 1.0);
+    header_->setFrame(core::Rect{ui::metrics::kSpace8, (kHeaderHeight - ui::metrics::kSmallControlHeight) / 2.0, headerWidth,
+                                 ui::metrics::kSmallControlHeight});
     panelFrame_ = core::Rect{0.0, kHeaderHeight, frame.size.width,
                              std::max(0.0, frame.size.height - kHeaderHeight)};
-    // Both panels share one slot; only the active mode's panel occupies it.
-    const bool pages = mode_ == Mode::Pages;
-    thumbnails_->setFrame(pages ? panelFrame_ : kHiddenFrame);
-    outlinePanel_->setFrame(pages ? kHiddenFrame : panelFrame_);
+    setMode(mode_);
 }
 
 void SidebarController::setMode(Mode mode) {
     mode_ = mode;
-    const bool pages = mode == Mode::Pages;
-    thumbnails_->setFrame(pages ? panelFrame_ : kHiddenFrame);
-    outlinePanel_->setFrame(pages ? kHiddenFrame : panelFrame_);
-    pagesButton_->setLabel(pages ? "Pages •" : "Pages");
-    outlineButton_->setLabel(!pages ? "Outline •" : "Outline");
+    // All panels share one slot; only the active mode's panel occupies it.
+    thumbnails_->setFrame(mode == Mode::Pages ? panelFrame_ : kHiddenFrame);
+    outlinePanel_->setFrame(mode == Mode::Outline ? panelFrame_ : kHiddenFrame);
+    signaturesPanel_->setFrame(mode == Mode::Signatures ? panelFrame_ : kHiddenFrame);
+    header_->setSelected(static_cast<std::size_t>(mode));
     container_->invalidate();
+}
+
+void SidebarController::rebuildSignatureRows() {
+    DocumentTab* tab = context_.readyActiveTab();
+    shownSignatures_ = tab != nullptr ? tab->session()->signatures().list() : nullptr;
+    signatures_ = buildSignatureRows(shownSignatures_.get());
+    signaturesPanel_->setRows(signatures_.rows);
+}
+
+void SidebarController::activateSignatureRow(std::size_t row) {
+    if (row >= signatures_.signatureOfRow.size() || shownSignatures_ == nullptr) return;
+    const std::optional<std::size_t> index = signatures_.signatureOfRow[row];
+    if (!index.has_value() || *index >= shownSignatures_->signatures.size()) return;
+    DocumentTab* tab = context_.readyActiveTab();
+    if (tab == nullptr) return;
+    const std::optional<std::size_t> page = shownSignatures_->signatures[*index].pageIndex;
+    if (!page.has_value()) {
+        context_.setStatus("This signature has no visible field");
+        return;
+    }
+    // The page index is in the BASE document: resolve it through the page
+    // model (reordered / deleted pages).
+    pdf::PdfDestination destination;
+    destination.pageIndex = *page;
+    const std::optional<editor::PageDestination> resolved = tab->session()->resolveOutlineDestination(destination);
+    if (!resolved.has_value()) {
+        context_.setStatus("The signature's page is no longer in the document");
+        return;
+    }
+    context_.viewport.goToPage(resolved->index);
 }
 
 void SidebarController::setRowExpanded(std::size_t row, bool expanded) {

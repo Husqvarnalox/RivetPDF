@@ -80,11 +80,11 @@ RIVET_TEST(tabStripLayoutIsLeftToRightAndClamped) {
 
     // Geometry is reachable via tabIndexAt probes against the primed cache.
     // Tab 0 starts at x=0 with width >= kMinTabWidth.
-    CHECK_EQ(f.strip.tabIndexAt(Point{2.0, 14.0}), std::optional<std::size_t>(0));
+    CHECK_EQ(f.strip.tabIndexAt(Point{TabStrip::kLeadingInset + 2.0, 14.0}), std::optional<std::size_t>(0));
     // Tab 1 starts right after tab 0's width and the gap.
-    CHECK_EQ(f.strip.tabIndexAt(Point{min + gap + 2.0, 14.0}), std::optional<std::size_t>(1));
+    CHECK_EQ(f.strip.tabIndexAt(Point{TabStrip::kLeadingInset + min + gap + 2.0, 14.0}), std::optional<std::size_t>(1));
     // Outside every tab: below the strip body.
-    CHECK_EQ(f.strip.tabIndexAt(Point{2.0, 14.0 + 100.0}), std::nullopt);
+    CHECK_EQ(f.strip.tabIndexAt(Point{TabStrip::kLeadingInset + 2.0, 14.0 + 100.0}), std::nullopt);
 }
 
 RIVET_TEST(tabStripClickActivates) {
@@ -92,7 +92,7 @@ RIVET_TEST(tabStripClickActivates) {
     std::optional<std::size_t> activated;
     f.strip.setOnTabActivated([&activated](std::size_t index) { activated = index; });
 
-    PointerEvent event = f.downAt(Point{TabStrip::kMinTabWidth + TabStrip::kTabGap + 4.0, 14.0});
+    PointerEvent event = f.downAt(Point{TabStrip::kLeadingInset + TabStrip::kMinTabWidth + TabStrip::kTabGap + 4.0, 14.0});
     CHECK_EQ(f.strip.onMouse(event), true);
     CHECK_EQ(activated.has_value(), true);
     CHECK_EQ(*activated, std::size_t{1});
@@ -127,8 +127,8 @@ RIVET_TEST(tabStripCloseButtonRequestsCloseOnUpInside) {
     // Down on the tab body does not arm the close button; a stray Up with
     // nothing armed is not consumed.
     closed.reset();
-    CHECK_EQ(f.strip.onMouse(f.downAt(Point{4.0, 14.0})), true);
-    CHECK_EQ(f.strip.onMouse(f.upAt(Point{4.0, 14.0})), false);
+    CHECK_EQ(f.strip.onMouse(f.downAt(Point{TabStrip::kLeadingInset + 4.0, 14.0})), true);
+    CHECK_EQ(f.strip.onMouse(f.upAt(Point{TabStrip::kLeadingInset + 4.0, 14.0})), false);
     CHECK_EQ(closed.has_value(), false);
 }
 
@@ -142,7 +142,7 @@ RIVET_TEST(tabStripOverflowsWithoutCrashing) {
 
     // Tabs beyond the strip width are not hit-testable.
     CHECK_EQ(f.strip.tabIndexAt(Point{799.0, 14.0}), std::nullopt);
-    CHECK_EQ(f.strip.tabIndexAt(Point{2.0, 14.0}), std::optional<std::size_t>(0));
+    CHECK_EQ(f.strip.tabIndexAt(Point{TabStrip::kLeadingInset + 2.0, 14.0}), std::optional<std::size_t>(0));
 }
 
 RIVET_TEST(tabStripEllipsizesLongTitles) {
@@ -169,10 +169,10 @@ RIVET_TEST(tabStripEmptyPaintsAndDoesNotCrash) {
     strip.setFrame(Rect{0.0, 0.0, 800.0, TabStrip::kTabHeight});
     FakePaintContext context;
     strip.paint(context);
-    CHECK_EQ(strip.tabIndexAt(Point{4.0, 14.0}), std::nullopt);
+    CHECK_EQ(strip.tabIndexAt(Point{TabStrip::kLeadingInset + 4.0, 14.0}), std::nullopt);
 
     PointerEvent event;
     event.type = PointerEventType::Down;
-    event.position = Point{4.0, 14.0};
+    event.position = Point{TabStrip::kLeadingInset + 4.0, 14.0};
     CHECK_EQ(strip.onMouse(event), false);
 }

@@ -772,3 +772,74 @@ RIVET_TEST(topmostHitWinsAndPointerMovesWithoutAPressPassThrough) {
     (void)f.up(Point{160.0, 160.0});
     CHECK(!f.move(Point{500.0, 500.0}).consumed);
 }
+
+// --- Sign (ADR-0025) -------------------------------------------------------------------
+
+RIVET_TEST(signClickPlacesTheArmedSignatureAtItsAspect) {
+    Fixture f(AnnotationTool::Sign);
+    f.machine.setSignatureAspect(2.0);
+    (void)f.down(Point{300.0, 400.0});
+    const Intent released = f.up(Point{300.0, 400.0});
+    CHECK(released.consumed);
+    CHECK(released.kind == IntentKind::CreateSignature);
+    CHECK_EQ(released.page, 0u);
+    // 50 tall at 2:1, centered on the click.
+    CHECK(nearRect(released.rect, Rect{250.0, 375.0, 100.0, 50.0}));
+
+    // A very wide signature is capped at the maximum width (height shrinks).
+    f.machine.setSignatureAspect(10.0);
+    (void)f.down(Point{300.0, 400.0});
+    const Intent wide = f.up(Point{300.0, 400.0});
+    CHECK(nearRect(wide.rect, Rect{175.0, 387.5, 250.0, 25.0}));
+}
+
+RIVET_TEST(signPlacementStaysInsideThePageAndIgnoresZoom) {
+    const Rect corner = AnnotationInteraction::defaultSignatureRect(Point{2.0, 798.0}, 3.0, kPage);
+    CHECK(nearRect(corner, Rect{0.0, 750.0, 150.0, 50.0}));
+    CHECK(nearRect(AnnotationInteraction::defaultSignatureRect(Point{300.0, 400.0}, -1.0, kPage),
+                   Rect{225.0, 375.0, 150.0, 50.0})); // invalid aspect -> 3:1
+    Fixture f(AnnotationTool::Sign);
+    f.machine.setSignatureAspect(3.0);
+    (void)f.down(Point{300.0, 400.0}, false, 4.0);
+    const Intent released = f.up(Point{300.0, 400.0}, false, 4.0);
+    CHECK_NEAR(released.rect.size.width, 150.0, 1e-9);
+    CHECK_NEAR(released.rect.size.height, 50.0, 1e-9);
+}
+
+RIVET_TEST(signDragSetsTheBoxAndPreviewsIt) {
+    Fixture f(AnnotationTool::Sign);
+    (void)f.down(Point{100.0, 100.0});
+    (void)f.move(Point{200.0, 150.0});
+    const auto preview = f.machine.preview();
+    CHECK(preview.kind == PreviewKind::Rect);
+    CHECK(preview.tool == AnnotationTool::Sign);
+    CHECK(!preview.editing);
+    const Intent released = f.up(Point{260.0, 160.0});
+    CHECK(released.kind == IntentKind::CreateSignature);
+    CHECK(nearRect(released.rect, Rect{100.0, 100.0, 160.0, 60.0}));
+    // A flat drag places nothing.
+    CHECK(f.drag(Point{100.0, 100.0}, Point{260.0, 100.0}).kind == IntentKind::None);
+}
+
+RIVET_TEST(signPressOnAnAnnotationSelectsInsteadOfPlacing) {
+    Fixture f(AnnotationTool::Sign);
+    f.addHit(7, Rect{100.0, 100.0, 50.0, 50.0});
+    const Intent pressed = f.down(Point{120.0, 120.0});
+    CHECK(pressed.kind == IntentKind::Select);
+    CHECK(pressed.id == AnnotationId{7});
+    CHECK(f.up(Point{120.0, 120.0}).kind != IntentKind::CreateSignature);
+}
+
+RIVET_TEST(signEscapeCancelsThenReturnsToSelect) {
+    Fixture f(AnnotationTool::Sign);
+    (void)f.down(Point{100.0, 100.0});
+    (void)f.move(Point{200.0, 150.0});
+    CHECK(f.machine.gestureInProgress());
+    const Intent cancelled = f.machine.key(AnnotationInteraction::KeyInput::Escape);
+    CHECK(cancelled.consumed);
+    CHECK(!f.machine.gestureInProgress());
+    CHECK(f.up(Point{200.0, 150.0}).kind != IntentKind::CreateSignature);
+    const Intent back = f.machine.key(AnnotationInteraction::KeyInput::Escape);
+    CHECK(back.kind == IntentKind::SelectTool);
+    CHECK(f.machine.tool() == AnnotationTool::Select);
+}
