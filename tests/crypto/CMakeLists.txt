@@ -28,3 +28,5 @@ target_link_libraries(rivet_crypto_tests PRIVATE
 
 rivet_set_target_warnings(rivet_crypto_tests)
 rivet_set_target_sanitizers(rivet_crypto_tests)
+
+add_subdirectory(providers)

@@ -27,6 +27,10 @@ enum class CryptoErrorCode : std::uint8_t {
     CertificateNotFound,
     NotExportable,
     Cancelled,
+    PinLocked,          // token / container PIN is blocked (no retries left)
+    DeviceRemoved,      // token or card was removed / is not present
+    SessionExpired,     // provider session ended (token reset, logout, timeout)
+    LicenseInvalid,     // CSP / provider licence missing or expired
     Io,
     Internal,
 };

@@ -18,6 +18,9 @@ add_library(rivet_crypto STATIC
     Providers.cpp
     SecretBuffer.cpp
     Validation.cpp
+    X509Parse.cpp
+    Qualification.cpp
+    CertificateDisplay.cpp
 )
 add_library(rivet::crypto ALIAS rivet_crypto)
 
@@ -33,6 +36,11 @@ if(RIVET_ENABLE_CRYPTO)
 else()
     message(STATUS "Rivet: crypto backend OFF (null provider; RIVET_ENABLE_CRYPTO=OFF)")
 endif()
+
+# Optional provider backends (default OFF; see src/crypto/providers).
+option(RIVET_ENABLE_CRYPTOPRO "Build the CryptoPro CSP provider (needs the CSP SDK headers; the library is dlopen'ed at run time)" OFF)
+option(RIVET_ENABLE_PKCS11 "Build the PKCS#11 token provider (module is dlopen'ed at run time)" OFF)
+add_subdirectory(providers)
 
 rivet_set_target_warnings(rivet_crypto)
 rivet_set_target_sanitizers(rivet_crypto)
