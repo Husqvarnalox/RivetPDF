@@ -76,6 +76,10 @@ class ContentSource {
 public:
     static ContentSource fromBytes(Bytes bytes);
     static ContentSource fromFile(std::filesystem::path path);
+    // NON-OWNING concatenation of memory ranges (e.g. the two signed ranges of
+    // a PDF /ByteRange). The caller keeps the memory alive and unchanged for
+    // the lifetime of the source and of every use of it.
+    static ContentSource fromSpans(std::vector<ByteView> parts);
 
     CryptoResult<Bytes> digest(CryptoProvider& provider, DigestAlgorithm algorithm, const CancelToken& cancel) const;
     // Reads the whole content (bounded by kMaxAttachedContent).
@@ -83,6 +87,8 @@ public:
 
 private:
     std::shared_ptr<const Bytes> bytes_;
+    std::vector<ByteView> spans_;
+    bool useSpans_ = false;
     std::filesystem::path path_;
 };
 
@@ -90,7 +96,10 @@ struct CmsSignOptions {
     DigestAlgorithm digest = DigestAlgorithm::Sha256;
     // Default: RSA PKCS#1 v1.5 or ECDSA over `digest`, by the key type.
     std::optional<SignatureAlgorithm> signature;
-    bool cadesBes = true; // adds signing-certificate-v2 (and forces signing-time)
+    bool cadesBes = true; // adds signing-certificate-v2
+    // Adds the signing-time attribute. CAdES signatures embedded in PDF
+    // (PAdES, EN 319 142-1) must NOT carry it: the time is the signature
+    // dictionary's /M entry; set false together with cadesBes for them.
     bool includeSigningTime = true;
     bool includeChain = true; // embed the identity's whole chain, not just the leaf
     std::chrono::system_clock::time_point signingTime = std::chrono::system_clock::now();

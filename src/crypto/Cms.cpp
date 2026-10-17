@@ -663,6 +663,13 @@ ContentSource ContentSource::fromBytes(Bytes bytes) {
     return s;
 }
 
+ContentSource ContentSource::fromSpans(std::vector<ByteView> parts) {
+    ContentSource s;
+    s.spans_ = std::move(parts);
+    s.useSpans_ = true;
+    return s;
+}
+
 ContentSource ContentSource::fromFile(std::filesystem::path path) {
     ContentSource s;
     s.path_ = std::move(path);
@@ -675,6 +682,15 @@ CryptoResult<Bytes> ContentSource::digest(CryptoProvider& provider, DigestAlgori
     if (!hasher) return std::unexpected(hasher.error());
     if (bytes_) {
         (*hasher)->update(*bytes_);
+        return (*hasher)->finish();
+    }
+    if (useSpans_) {
+        constexpr std::size_t kChunk = std::size_t{1} << 22;
+        for (const ByteView part : spans_)
+            for (std::size_t off = 0; off < part.size(); off += kChunk) {
+                if (cancel.cancelled()) return fail(CryptoErrorCode::Cancelled, "operation cancelled");
+                (*hasher)->update(part.subspan(off, std::min(kChunk, part.size() - off)));
+            }
         return (*hasher)->finish();
     }
     std::ifstream in(path_, std::ios::binary);
@@ -692,6 +708,15 @@ CryptoResult<Bytes> ContentSource::digest(CryptoProvider& provider, DigestAlgori
 
 CryptoResult<Bytes> ContentSource::read() const {
     if (bytes_) return *bytes_;
+    if (useSpans_) {
+        std::size_t total = 0;
+        for (const ByteView part : spans_) total += part.size();
+        if (total > kMaxAttachedContent) return fail(CryptoErrorCode::LimitExceeded, "content too large to load into memory");
+        Bytes out;
+        out.reserve(total);
+        for (const ByteView part : spans_) out.insert(out.end(), part.begin(), part.end());
+        return out;
+    }
     std::ifstream in(path_, std::ios::binary | std::ios::ate);
     if (!in) return fail(CryptoErrorCode::Io, "cannot open the content file");
     const std::streamoff size = in.tellg();
@@ -734,7 +759,7 @@ CryptoResult<CmsSignerInfo> buildSignerInfo(CryptoProvider& provider, SigningIde
     std::vector<CmsAttribute> attrs;
     if (!contentType.empty()) attrs.push_back(makeAttribute(oid::kContentType, oidElement(contentType)));
     attrs.push_back(makeAttribute(oid::kMessageDigest, octetString(contentDigest)));
-    if (o.includeSigningTime || o.cadesBes)
+    if (o.includeSigningTime)
         attrs.push_back(makeAttribute(oid::kSigningTime, timeElement(o.signingTime)));
     if (o.cadesBes) {
         auto certHash = provider.digest(DigestAlgorithm::Sha256, cert.der);
