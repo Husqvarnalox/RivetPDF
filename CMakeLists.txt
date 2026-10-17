@@ -76,6 +76,7 @@ endmacro()
 
 rivet_add_subdirectory(src/core)
 rivet_add_subdirectory(src/crypto)
+rivet_add_subdirectory(src/net)
 rivet_add_subdirectory(src/markdown)
 rivet_add_subdirectory(src/render)
 rivet_add_subdirectory(src/pdf)

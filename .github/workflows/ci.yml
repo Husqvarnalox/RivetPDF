@@ -30,8 +30,10 @@ jobs:
         include:
           - os: ubuntu-latest   # GCC portability build (/usr/bin/c++ = g++)
             name: linux-gcc
-          - os: macos-latest    # AppleClang product build
+            cmake_args: -DRIVET_ENABLE_NETWORK=ON
+          - os: macos-latest    # AppleClang product build (system libcurl)
             name: macos
+            cmake_args: -DRIVET_ENABLE_NETWORK=ON
           - os: macos-latest    # universal binary: arm64 + x86_64 slices
             name: macos-universal
             cmake_args: -DCMAKE_OSX_ARCHITECTURES=arm64;x86_64
@@ -49,7 +51,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y cmake ninja-build pkg-config \
             libx11-dev libcairo2-dev libfreetype-dev libharfbuzz-dev \
-            libfontconfig-dev libpng-dev libjpeg-dev libcups2-dev
+            libfontconfig-dev libpng-dev libjpeg-dev libcups2-dev \
+            libcurl4-openssl-dev
 
       - name: Configure (PDFium OFF, warnings visible)
         run: |
