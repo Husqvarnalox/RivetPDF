@@ -539,12 +539,8 @@ RoundTrip roundTrip(PdfEngine& engine, const PdfDocument& document, const PdfPag
                     std::size_t page = 0) {
     RoundTrip out;
     out.assembled = assemble(engine, document, page, edits);
-    CHECK(out.assembled.status.has_value());
-    if (!out.assembled.status.has_value()) {
-        std::printf("    assemble failed: %s\n", out.assembled.status.error().message.c_str());
-        std::fflush(stdout);
-        return out;
-    }
+    CHECK_EQ(std::string(out.assembled.status.has_value() ? "" : out.assembled.status.error().message), std::string());
+    if (!out.assembled.status.has_value()) return out;
     out.reopened = openSink(engine, out.assembled.sink);
     if (out.reopened) out.content = contentOf(*out.reopened, page);
     return out;

@@ -678,8 +678,7 @@ RIVET_TEST(pdfiumAssemblyReadsOriginalBytesAfterPathReplaced) {
     }
     // Atomic replace of the path (what a save does).
     fs::rename(replacement, path, error);
-    CHECK(!error);
-    if (error) { std::printf("    rename failed: %s\n", error.message().c_str()); std::fflush(stdout); }
+    CHECK_EQ(error.message(), std::string());
 
     auto req = request(PdfAssemblyRequest::Mode::PreserveBase, base.get());
     for (std::size_t i : {4u, 0u}) addPage(req, *base, i);
