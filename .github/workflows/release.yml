@@ -1,0 +1,190 @@
+# Rivet release artifacts for Linux x64 and Windows x64 (macOS artifacts are
+# built by hand with tools/package-macos.sh, see docs/RELEASING.md).
+#
+# - push of a v* tag: build both, upload workflow artifacts, attach them to the
+#   GitHub release for that tag (created as a prerelease if missing).
+# - workflow_dispatch with a tag: same, for that existing tag.
+# - workflow_dispatch without a tag: build and upload workflow artifacts only.
+#
+# The PDFium cache keys and steps are identical to ci.yml, so a release build
+# reuses the PDFium that CI already built.
+name: release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing tag to build and publish to (empty: build artifacts only, no release)'
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  linux-x64:
+    name: linux-x64
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    env:
+      PDFIUM_ROOT: ${{ github.workspace }}/pdfium-install
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - name: Install build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build pkg-config g++ python3 \
+            libx11-dev libcairo2-dev libfreetype-dev libharfbuzz-dev \
+            libfontconfig-dev libpng-dev libjpeg-dev libcups2-dev \
+            libcurl4-openssl-dev libssl-dev
+
+      - name: Restore PDFium
+        id: pdfium-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: pdfium-install
+          key: pdfium-linux-x64-${{ hashFiles('tools/pdfium/**') }}
+
+      - name: Build PDFium (cache miss)
+        if: steps.pdfium-cache.outputs.cache-hit != 'true'
+        run: tools/pdfium/build-pdfium.sh --arch x64 --install "$PDFIUM_ROOT" --work "$RUNNER_TEMP/pdfium-work"
+
+      - name: Save PDFium
+        if: steps.pdfium-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: pdfium-install
+          key: pdfium-linux-x64-${{ hashFiles('tools/pdfium/**') }}
+
+      - name: Package
+        env:
+          RIVET_PDFIUM_ROOT: ${{ env.PDFIUM_ROOT }}
+        run: tools/package-linux.sh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rivet-linux-x64
+          path: dist/*
+          if-no-files-found: error
+
+  windows-x64:
+    name: windows-x64
+    runs-on: windows-latest
+    timeout-minutes: 180
+    env:
+      PDFIUM_ROOT: ${{ github.workspace }}\pdfium-install
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - name: MSVC developer environment
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Ensure Ninja
+        shell: pwsh
+        run: |
+          if (-not (Get-Command ninja -ErrorAction SilentlyContinue)) { choco install ninja -y --no-progress }
+
+      - name: Restore PDFium
+        id: pdfium-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: pdfium-install
+          key: pdfium-windows-x64-${{ hashFiles('tools/pdfium/**') }}
+
+      - name: Build PDFium (cache miss)
+        if: steps.pdfium-cache.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: tools/pdfium/build-pdfium.ps1 -Arch x64 -Install "$env:PDFIUM_ROOT" -Work "$env:RUNNER_TEMP\pdfium-work"
+
+      - name: Save PDFium
+        if: steps.pdfium-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: pdfium-install
+          key: pdfium-windows-x64-${{ hashFiles('tools/pdfium/**') }}
+
+      # Static /MT OpenSSL from the runner's vcpkg, same as the
+      # windows-msvc-pdfium job in ci.yml.
+      - name: vcpkg revision
+        id: vcpkg-rev
+        shell: pwsh
+        run: |
+          $rev = (git -C "$env:VCPKG_INSTALLATION_ROOT" rev-parse HEAD 2>$null)
+          if (-not $rev) { $rev = 'unknown' }
+          "rev=$rev" >> $env:GITHUB_OUTPUT
+
+      - name: Restore OpenSSL (vcpkg binary cache)
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}\vcpkg-bincache
+          key: vcpkg-openssl-x64-windows-static-${{ steps.vcpkg-rev.outputs.rev }}
+          restore-keys: |
+            vcpkg-openssl-x64-windows-static-
+
+      - name: Install OpenSSL (x64-windows-static)
+        shell: pwsh
+        working-directory: ${{ runner.temp }}
+        run: |
+          New-Item -ItemType Directory -Force -Path "$env:RUNNER_TEMP\vcpkg-bincache" | Out-Null
+          $env:VCPKG_BINARY_SOURCES = "clear;files,$env:RUNNER_TEMP\vcpkg-bincache,readwrite"
+          & "$env:VCPKG_INSTALLATION_ROOT\vcpkg.exe" install "openssl:x64-windows-static" --clean-after-build
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $root = "$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows-static"
+          if (-not (Test-Path "$root\include\openssl\evp.h")) { throw "OpenSSL headers not found under $root" }
+          "OPENSSL_ROOT_DIR=$root" >> $env:GITHUB_ENV
+
+      - name: Package
+        shell: pwsh
+        env:
+          RIVET_PDFIUM_ROOT: ${{ env.PDFIUM_ROOT }}
+        run: tools/package-windows.ps1
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rivet-windows-x64
+          path: dist/*
+          if-no-files-found: error
+
+  publish:
+    name: publish
+    needs: [linux-x64, windows-x64]
+    if: startsWith(github.ref, 'refs/tags/v') || inputs.tag != ''
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ inputs.tag || github.ref_name }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Collect assets and checksums
+        run: |
+          set -euo pipefail
+          mkdir assets
+          # Per-OS SHA256SUMS files are superseded by the combined list below
+          # (and must never replace the macOS SHA256SUMS on the release).
+          find artifacts -type f ! -name SHA256SUMS -exec cp {} assets/ \;
+          ( cd assets && sha256sum * > ../SHA256SUMS-linux-windows.txt )
+          mv SHA256SUMS-linux-windows.txt assets/
+          cat assets/SHA256SUMS-linux-windows.txt
+
+      - name: Create release if missing, upload assets
+        run: |
+          set -euo pipefail
+          if ! gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --prerelease \
+              --title "$TAG" --notes "Linux x64 and Windows x64 alpha builds (unsigned). See docs/RELEASING.md."
+          fi
+          gh release upload "$TAG" assets/* --repo "$GITHUB_REPOSITORY" --clobber
