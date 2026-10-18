@@ -8,6 +8,7 @@
 #include "core/async/TaskScheduler.hpp"
 #include "app/ComparisonTabState.hpp"
 #include "app/MarkdownTabState.hpp"
+#include "crypto/SecretBuffer.hpp"
 #include "editor/DocumentSession.hpp"
 #include "editor/SelectionModel.hpp"
 #include "editor/TextSearchController.hpp"
@@ -233,7 +234,10 @@ public:
     // Retries the open of a NeedsPassword tab with a password. The password
     // is forwarded to the background open and NOT stored anywhere: the tab
     // drops it as soon as the completion runs. Never log it.
+    // The string overload wraps the password in a wiping buffer and zeroes
+    // its by-value argument; prefer the SecretBuffer overload.
     void retryWithPassword(std::size_t tabIndex, std::string password);
+    void retryWithPassword(std::size_t tabIndex, crypto::SecretBuffer password);
 
     // Closes the tab (cancelling a pending open for it). Closing the active
     // tab activates the nearest remaining tab; closing the last tab leaves
@@ -282,7 +286,7 @@ private:
 
     void handleOpenCompleted(const std::shared_ptr<OpenOperation>& operation);
     void finishOpen(const std::shared_ptr<OpenOperation>& operation);
-    void startOpen(DocumentTab& tab, std::string password, bool isRetry);
+    void startOpen(DocumentTab& tab, crypto::SecretBuffer password, bool isRetry);
     void activate(std::size_t index);
     void fireTabsChanged();
 

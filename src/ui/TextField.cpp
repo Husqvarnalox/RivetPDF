@@ -2,6 +2,7 @@
 #include "ui/TextField.hpp"
 #include "ui/Theme.hpp"
 
+#include "core/SecureWipe.hpp"
 #include "core/geometry/Insets.hpp"
 #include "core/geometry/Point.hpp"
 #include "ui/Drawing.hpp"
@@ -30,6 +31,9 @@ void TextField::setPlaceholder(std::string placeholder) {
 }
 
 void TextField::setText(std::string text) {
+    // The previous contents may be a typed password (masked fields): zero the
+    // old storage before it is released.
+    core::wipeString(text_);
     text_ = std::move(text);
     caret_ = text_.size();
     anchor_ = caret_;

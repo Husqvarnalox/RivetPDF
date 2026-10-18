@@ -17,6 +17,7 @@
 #include "PdfiumStrings.h"
 #include "PdfiumTextPage.h"
 #include "PdfiumWriting.h"
+#include "core/SecureWipe.hpp"
 #include "core/geometry/Matrix.hpp"
 #include "fpdf_doc.h"  // FPDF_GetMetaText
 #include "PdfiumDisplayTransform.h"
@@ -154,12 +155,8 @@ PdfiumDocument::PdfiumDocument(FPDF_DOCUMENT document,
 }
 
 PdfiumDocument::~PdfiumDocument() {
-    // Best-effort wipe of the retained password (volatile writes are not
-    // elided as dead stores).
-    volatile char* secret = password_.data();
-    for (std::size_t i = 0; i < password_.size(); ++i) {
-        secret[i] = '\0';
-    }
+    // Non-elidable wipe of the retained password (its whole storage).
+    core::wipeString(password_);
 
     if (document_ == nullptr && annotationReader_ == nullptr && content_ == nullptr && liveForm_ == nullptr) {
         return;

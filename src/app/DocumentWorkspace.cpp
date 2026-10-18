@@ -2,6 +2,7 @@
 #include "app/DocumentWorkspace.hpp"
 
 #include "core/Log.hpp"
+#include "core/SecureWipe.hpp"
 
 #include <algorithm>
 #include <optional>
@@ -151,7 +152,7 @@ void DocumentWorkspace::openDocument(const std::filesystem::path& path) {
     DocumentTab& tabRef = *tab;
     tabs_.push_back(std::move(tab));
     activate(tabs_.size() - 1);
-    startOpen(tabRef, {}, false);
+    startOpen(tabRef, crypto::SecretBuffer{}, false);
     fireTabsChanged();
 }
 
@@ -166,6 +167,11 @@ DocumentTab* DocumentWorkspace::openComparisonTab(std::string title,
 }
 
 void DocumentWorkspace::retryWithPassword(std::size_t tabIndex, std::string password) {
+    core::ScopedWipe wipe(password); // the caller's by-value copy dies zeroed on every path
+    retryWithPassword(tabIndex, crypto::SecretBuffer{std::string_view(password)});
+}
+
+void DocumentWorkspace::retryWithPassword(std::size_t tabIndex, crypto::SecretBuffer password) {
     DocumentTab* retryTab = tab(tabIndex);
     if (retryTab == nullptr || retryTab->state() != DocumentTab::State::NeedsPassword) return;
     retryTab->beginPasswordRetry(); // -> Loading
@@ -173,7 +179,7 @@ void DocumentWorkspace::retryWithPassword(std::size_t tabIndex, std::string pass
     fireTabsChanged();
 }
 
-void DocumentWorkspace::startOpen(DocumentTab& tab, std::string password, bool isRetry) {
+void DocumentWorkspace::startOpen(DocumentTab& tab, crypto::SecretBuffer password, bool isRetry) {
     auto operation = std::make_shared<OpenOperation>();
     operation->tab = tab.id();
     operation->request = tab.beginOpenRequest();
@@ -188,6 +194,10 @@ void DocumentWorkspace::startOpen(DocumentTab& tab, std::string password, bool i
     }
     // std::function needs a copyable callable: share the move-only token.
     auto token = std::make_shared<core::AsyncScope::Token>(std::move(*entered));
+    // Same for the password: one shared SecretBuffer that is zeroed as soon as
+    // the open finished, and in any case when the last holder (the task, even
+    // one that never runs) is destroyed.
+    auto secret = std::make_shared<crypto::SecretBuffer>(std::move(password));
     inFlight_.push_back(operation);
 
     if (tab.kind() == DocumentKind::Markdown) {
@@ -217,10 +227,11 @@ void DocumentWorkspace::startOpen(DocumentTab& tab, std::string password, bool i
     // destroys them. The password lives only in this task (never stored,
     // never logged) and is wiped before delivery.
     scheduler_.post([this, operation, token, openPath = tab.path(), alive = workspaceAlive_,
-                     dispatcher = mainDispatcher_, password = std::move(password)]() mutable {
+                     dispatcher = mainDispatcher_, secret]() mutable {
         if (!token->cancelled()) {
             auto created = editor::DocumentSession::create(engine_, scheduler_, dispatcher,
-                                                           openPath, password);
+                                                           openPath,
+                                                           std::string_view(secret->chars(), secret->size()));
             if (token->cancelled()) {
                 // Nobody will take the session: destroy it here, while the
                 // engine and scheduler are guaranteed alive (token held).
@@ -229,8 +240,7 @@ void DocumentWorkspace::startOpen(DocumentTab& tab, std::string password, bool i
             }
             operation->result = std::move(created);
         }
-        std::fill(password.begin(), password.end(), '\0');
-        std::string().swap(password);
+        secret->clear();
         // Posted delivery holds the operation and a liveness flag only; the
         // workspace itself is touched after the flag check on the main
         // thread, where shutdown() also runs.

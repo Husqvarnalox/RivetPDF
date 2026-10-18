@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: MPL-2.0
 #include "RivetTest.h"
 
+#include "core/SecureWipe.hpp"
 #include "crypto/SecretBuffer.hpp"
 
 #include <cstdint>
 #include <cstring>
+#include <string>
 #include <type_traits>
 #include <utility>
 
@@ -41,4 +43,40 @@ RIVET_TEST(secureZeroOverwrites) {
     secureZero(buf, sizeof buf);
     for (std::uint8_t b : buf) CHECK_EQ(b, 0);
     secureZero(nullptr, 0); // must not crash
+}
+
+RIVET_TEST(wipeStringZeroesTheOwnedStorageInPlace) {
+    // Long enough to be heap allocated; clear() keeps the allocation, so the
+    // storage stays readable through the saved pointer.
+    std::string s(64, 'x');
+    s.resize(40);
+    const char* storage = s.data();
+    const std::size_t capacity = s.capacity();
+    rivet::core::wipeString(s);
+    CHECK(s.empty());
+    CHECK_EQ(s.capacity(), capacity);
+    bool allZero = true;
+    for (std::size_t i = 0; i < capacity; ++i) allZero = allZero && storage[i] == '\0';
+    CHECK(allZero);
+}
+
+RIVET_TEST(scopedWipeZeroesOnEveryExitPath) {
+    std::string s(48, 'p');
+    const char* storage = s.data();
+    const std::size_t capacity = s.capacity();
+    try {
+        rivet::core::ScopedWipe guard(s);
+        throw 1; // error path
+    } catch (int) {
+    }
+    CHECK(s.empty());
+    bool allZero = true;
+    for (std::size_t i = 0; i < capacity; ++i) allZero = allZero && storage[i] == '\0';
+    CHECK(allZero);
+
+    std::string moved(48, 'q');
+    std::string taken = std::move(moved);
+    rivet::core::wipeString(moved); // moved-from strings are safe to wipe
+    rivet::core::wipeString(taken);
+    CHECK(taken.empty());
 }

@@ -2,6 +2,7 @@
 #include "app/SetPasswordController.hpp"
 
 #include "app/SecurityText.hpp"
+#include "core/SecureWipe.hpp"
 #include "core/io/AtomicFileWriter.hpp"
 
 #include <algorithm>
@@ -26,11 +27,6 @@ bool sameBytes(const crypto::SecretBuffer& a, const crypto::SecretBuffer& b) {
 // std::string copy of a secret for the encryptor API; zeroed by the caller.
 std::string toString(const crypto::SecretBuffer& secret) {
     return std::string(reinterpret_cast<const char*>(secret.bytes().data()), secret.size());
-}
-
-void wipe(std::string& text) {
-    crypto::secureZero(text.data(), text.size());
-    text.clear();
 }
 
 core::Error cancelledError() { return core::makeError(core::ErrorCode::Cancelled, "cancelled", "app"); }
@@ -190,15 +186,18 @@ void SetPasswordController::submit(SetPasswordForm form) {
                 core::Result<PdfBytes> plain = job->producer(cancelled);
                 if (!plain.has_value()) return std::unexpected(plain.error());
                 if (cancelled()) return std::unexpected(cancelledError());
-                pdf::encrypt::EncryptOptions options;
-                options.cipher = job->cipher;
-                options.userPassword = toString(job->user);
-                options.ownerPassword = toString(job->owner);
-                options.permissions = job->permissions;
-                options.encryptMetadata = job->encryptMetadata;
-                core::Result<PdfBytes> sealed = encrypt_(*plain, options);
-                wipe(options.userPassword);
-                wipe(options.ownerPassword);
+                core::Result<PdfBytes> sealed = [&] {
+                    pdf::encrypt::EncryptOptions options;
+                    // Zeroed when this block ends, also if the encryptor throws.
+                    core::ScopedWipe wipeUser(options.userPassword);
+                    core::ScopedWipe wipeOwner(options.ownerPassword);
+                    options.cipher = job->cipher;
+                    options.userPassword = toString(job->user);
+                    options.ownerPassword = toString(job->owner);
+                    options.permissions = job->permissions;
+                    options.encryptMetadata = job->encryptMetadata;
+                    return encrypt_(*plain, options);
+                }();
                 job->clearSecrets(); // no longer needed: do not keep them through the file write
                 if (!sealed.has_value()) return std::unexpected(sealed.error());
                 if (cancelled()) return std::unexpected(cancelledError());

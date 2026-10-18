@@ -1,30 +1,15 @@
 // SPDX-License-Identifier: MPL-2.0
 #include "crypto/SecretBuffer.hpp"
 
+#include "core/SecureWipe.hpp"
+
 #include <cstring>
 #include <utility>
 
-#if defined(_WIN32)
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-#include <windows.h>
-#endif
 
 namespace rivet::crypto {
 
-void secureZero(void* data, std::size_t size) {
-    if (!data || size == 0) return;
-#if defined(_WIN32)
-    SecureZeroMemory(data, size);
-#else
-    volatile std::uint8_t* p = static_cast<volatile std::uint8_t*>(data);
-    for (std::size_t i = 0; i < size; ++i) p[i] = 0;
-#if defined(__GNUC__) || defined(__clang__)
-    __asm__ __volatile__("" : : "r"(data) : "memory");
-#endif
-#endif
-}
+void secureZero(void* data, std::size_t size) { core::secureZero(data, size); }
 
 SecretBuffer::SecretBuffer(std::string_view bytes) {
     assign(reinterpret_cast<const std::uint8_t*>(bytes.data()), bytes.size());
