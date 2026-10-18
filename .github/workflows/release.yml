@@ -13,6 +13,12 @@ name: release
 on:
   push:
     tags: ['v*']
+  # Build-only check (publish is skipped) when the packaging itself changes.
+  pull_request:
+    paths:
+      - 'tools/package-linux.sh'
+      - 'tools/package-windows.ps1'
+      - '.github/workflows/release.yml'
   workflow_dispatch:
     inputs:
       tag:
