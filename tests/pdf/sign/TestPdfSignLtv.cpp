@@ -670,3 +670,43 @@ RIVET_TEST(ltvInteropWithIndependentTools) {
         std::printf("    SKIP pdftk not installed\n");
     }
 }
+
+RIVET_TEST(ltvBudgetsFailClosedWithClearReasons) {
+    LtvEnv env;
+    auto out = signPdf(makeFixture(), env.request(PadesLevel::BaselineLT), *env.provider, *env.identity);
+    CHECK(out.has_value());
+    if (!out) return;
+
+    // Baseline: the document is B-LT under the default budgets.
+    const auto base = env.verify(out->data);
+    CHECK_EQ(base.size(), std::size_t{1});
+    if (base.empty()) return;
+    CHECK(base[0].level == PadesLevel::BaselineLT);
+    CHECK(!base[0].ltv.limitExceeded);
+
+    // DSS larger than the OCSP budget: not evaluated, flagged, never B-LT.
+    VerifyOptions tight = env.verifyOpts();
+    tight.limits.maxDssOcsps = 1;
+    const auto tooMany = env.verify(out->data, &tight);
+    CHECK_EQ(tooMany.size(), std::size_t{1});
+    if (!tooMany.empty()) {
+        CHECK(tooMany[0].ltv.limitExceeded);
+        CHECK(!tooMany[0].ltv.evaluated);
+        CHECK(tooMany[0].level != PadesLevel::BaselineLT);
+        bool named = false;
+        for (const auto& r : tooMany[0].ltv.reasons) named = named || r.find("OCSP responses") != std::string::npos;
+        CHECK(named);
+    }
+    // An exhausted chain-building budget makes the chains incomplete, with the reason recorded.
+    VerifyOptions noSteps = env.verifyOpts();
+    noSteps.limits.maxChainSearchSteps = 0;
+    const auto steps = env.verify(out->data, &noSteps);
+    CHECK_EQ(steps.size(), std::size_t{1});
+    if (!steps.empty()) {
+        CHECK(steps[0].level != PadesLevel::BaselineLT);
+        CHECK(!steps[0].ltv.signerEvidenceComplete);
+        bool named = false;
+        for (const auto& m : steps[0].ltv.missing) named = named || m.find("step budget") != std::string::npos;
+        CHECK(named);
+    }
+}

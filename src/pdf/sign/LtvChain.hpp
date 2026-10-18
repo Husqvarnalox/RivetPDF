@@ -22,6 +22,7 @@ struct ChainInput {
     crypto::IssuerFetcher fetchIssuers;        // optional AIA
     crypto::TimePoint validationTime;          // the instant the status is needed for
     crypto::TimePoint now;                     // clock for judging evidence
+    std::size_t maxSearchSteps = 4096;         // chain-building budget (crypto::PathOptions::maxSearchSteps)
 };
 
 struct ChainEvidence {

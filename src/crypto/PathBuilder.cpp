@@ -30,7 +30,7 @@ namespace {
 
 constexpr std::size_t kMaxReasons = 24;
 constexpr std::size_t kMaxPool = 512;
-constexpr std::size_t kMaxSearchSteps = 4096; // bounds the backtracking over hostile pools
+constexpr std::size_t kMaxSearchStepsCeiling = 65536; // hard ceiling for PathOptions::maxSearchSteps (default 4096)
 
 bool brokenSignatureOid(std::string_view oid) {
     return oid == "1.2.840.113549.1.1.2" ||  // md2WithRSA
@@ -64,6 +64,7 @@ struct Search {
     std::size_t bestScore = 0; // 3 anchored, 2 complete unanchored, 1 partial
     std::size_t fetches = 0;
     std::size_t steps = 0;
+    bool stepLimitNoted = false;
     std::vector<Bytes> fetchedUsed;
     std::set<std::string> fetchedFingerprints;
     std::set<std::string> poolFingerprints;
@@ -92,7 +93,14 @@ struct Search {
 
     // `chain` ends with the certificate whose issuer is needed.
     bool extend(std::vector<CertificateInfo>& chain) {
-        if (opt.cancel.cancelled() || ++steps > kMaxSearchSteps) return false;
+        if (opt.cancel.cancelled()) return false;
+        if (++steps > std::min(opt.maxSearchSteps, kMaxSearchStepsCeiling)) {
+            if (!stepLimitNoted) {
+                stepLimitNoted = true;
+                reason("path search stopped: the step budget (" + std::to_string(opt.maxSearchSteps) + ") was exhausted");
+            }
+            return false;
+        }
         const CertificateInfo cur = chain.back();
 
         if (opt.anchors && opt.anchors->contains(cur)) {
@@ -214,7 +222,7 @@ PathResult buildValidationPath(const CertificateInfo& leaf, const PathOptions& o
         empty.reasons.push_back("no crypto backend available");
         return empty;
     }
-    Search s{options, provider, {}, {}, 0, 0, 0, {}, {}, {}, {}};
+    Search s{options, provider, {}, {}, 0, 0, 0, false, {}, {}, {}, {}};
     for (const CertificateInfo& c : options.pool) s.addToPool(c);
     s.best.chain = {leaf};
     s.best.failure = PathFailure::NoIssuer;

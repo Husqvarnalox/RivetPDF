@@ -49,6 +49,7 @@ ChainEvidence checkChain(crypto::CryptoProvider& provider, const ChainInput& in,
     po.anchors = in.anchors;
     po.pool = in.pool;
     po.fetchIssuers = in.fetchIssuers;
+    po.maxSearchSteps = in.maxSearchSteps;
     po.cancel = cancel;
     out.path = crypto::buildValidationPath(in.leaf, po, provider);
     if (!out.path.anchored) {

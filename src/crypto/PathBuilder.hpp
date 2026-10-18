@@ -49,6 +49,7 @@ struct PathOptions {
     IssuerFetcher fetchIssuers;              // optional (AIA caIssuers)
     std::size_t maxLength = 10;              // certificates including leaf and anchor
     std::size_t maxFetches = 8;              // issuer fetches per path
+    std::size_t maxSearchSteps = 4096;       // backtracking budget over a hostile pool (hard ceiling 65536)
     bool checkLeafValidity = true;
     CancelToken cancel;
 };

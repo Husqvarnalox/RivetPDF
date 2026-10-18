@@ -275,3 +275,53 @@ RIVET_TEST(hostileInputsToTheSignerAreBounded) {
     auto limit = signPdf(makeFixture(), req, *s.provider, *s.identity);
     CHECK(!limit.has_value());
 }
+
+RIVET_TEST(documentWithTooManySignaturesIsRefusedWithAClearStatus) {
+    Signer s;
+    Bytes base = makeFixture({.emptySigField = true});
+    auto signedPdf = signPdf(base, [] {
+        SignRequest r = basicRequest();
+        r.placement.kind = SignaturePlacement::Kind::ExistingField;
+        r.placement.fieldName = "Sig1";
+        return r;
+    }(), *s.provider, *s.identity);
+    CHECK(signedPdf.has_value());
+    if (!signedPdf) return;
+    const std::string sigRef = std::to_string(signedPdf->signatureRef.num) + " 0 R";
+
+    // 300 widget fields that all point at the one signature value.
+    constexpr std::uint32_t kFields = 300;
+    std::vector<std::pair<std::uint32_t, std::string>> objects;
+    std::string fields = "5 0 R";
+    for (std::uint32_t i = 0; i < kFields; ++i) {
+        const std::uint32_t n = 100 + i;
+        objects.emplace_back(n, "<< /Type /Annot /Subtype /Widget /FT /Sig /T (D" + std::to_string(i) + ") /V " + sigRef +
+                                    " /Rect [0 0 0 0] /P 3 0 R >>");
+        fields += " " + std::to_string(n) + " 0 R";
+    }
+    objects.emplace_back(7, "<< /Fields [" + fields + "] /DA (/Helv 0 Tf 0 g) /SigFlags 3 >>");
+    const Bytes forged = appendRevision(signedPdf->data, objects);
+
+    // Default budget (256): refused before any signature is verified, naming the limit.
+    auto refused = verifyPdfSignatures(forged, *s.provider);
+    CHECK(!refused.has_value());
+    if (!refused) {
+        CHECK(refused.error().code == SignErrorCode::LimitExceeded);
+        CHECK(refused.error().message.find("maxSignatures") != std::string::npos);
+        CHECK(refused.error().message.find("256") != std::string::npos);
+    }
+
+    // A caller may raise the budget explicitly...
+    VerifyOptions raised;
+    raised.limits.maxSignatures = 1000;
+    auto ok = verifyPdfSignatures(forged, *s.provider, raised);
+    CHECK(ok.has_value());
+    if (ok) CHECK_EQ(ok->size(), std::size_t{kFields + 1});
+
+    // ...or lower it: one signature is fine under a budget of one, two are not.
+    VerifyOptions one;
+    one.limits.maxSignatures = 1;
+    CHECK(verifyPdfSignatures(signedPdf->data, *s.provider, one).has_value());
+    auto two = verifyPdfSignatures(forged, *s.provider, one);
+    CHECK(!two.has_value());
+}

@@ -34,6 +34,20 @@ struct FieldLock {
 
 inline constexpr std::size_t kMaxSignatureContentsBytes = std::size_t{8} << 20; // 8 MiB of CMS
 
+// CPU / size budgets against hostile documents (thousands of signatures or DSS entries). Exceeding a
+// budget never silently skips work: too many signatures fails the call with SignErrorCode::LimitExceeded
+// and a message naming the limit; an oversized /DSS leaves LtvInfo::limitExceeded set with a reason and the
+// affected signatures are not evaluated beyond B-T; an exhausted chain-building budget is reported as a
+// path failure reason.
+struct VerifyLimits {
+    std::size_t maxSignatures = 256;          // signature fields (plus the DocMDP reference) examined per document
+    std::size_t maxDssCertificates = 1024;    // /DSS + all /VRI certificates together
+    std::size_t maxDssCrls = 512;
+    std::size_t maxDssOcsps = 512;
+    std::size_t maxChainSearchSteps = 4096;   // per chain build (ceiling 65536)
+    std::size_t maxTsaCandidates = 8;         // TSA leaf candidates tried per time-stamp token
+};
+
 struct VerifyOptions {
     const crypto::TrustAnchorSet* anchors = nullptr;
     // Trust anchors for TSA chains (signature time-stamps and document
@@ -48,6 +62,7 @@ struct VerifyOptions {
     // true (default): B-LT needs a /VRI entry for the signature (ETSI EN 319 142-1 5.4.2).
     // false: a document-wide /DSS without a /VRI entry is accepted as evidence.
     bool requireVri = true;
+    VerifyLimits limits;
     crypto::CancelToken cancel;
 };
 
@@ -72,6 +87,7 @@ struct LtvInfo {
     // A valid document time-stamp, made after the revision that completed the
     // validation data, covers the /DSS (the archival B-LTA property).
     bool dssCoveredByTimestamp = false;
+    bool limitExceeded = false;     // the /DSS is larger than VerifyOptions::limits allow: no LTV evaluation was done
     std::optional<std::chrono::system_clock::time_point> coveringTimestampTime;
     std::vector<std::string> missing; // certificates without evidence, path problems
     std::vector<std::string> reasons; // why the achieved level is not higher

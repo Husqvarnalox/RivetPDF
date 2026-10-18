@@ -729,8 +729,13 @@ ltv::ChainEvidence checkTsaChain(crypto::CryptoProvider& provider, const VerifyO
     policy.store = store;
     ltv::ChainEvidence best;
     bool any = false;
+    std::size_t tried = 0;
     for (const crypto::CertificateInfo& cand : ltv::parseCertificates(provider, side.tokenCerts)) {
         if (!tsaSubject.empty() && cand.subject != tsaSubject) continue;
+        if (++tried > options.limits.maxTsaCandidates) {
+            best.missing.push_back("too many time-stamp authority candidate certificates (VerifyOptions::limits.maxTsaCandidates)");
+            break;
+        }
         ltv::ChainInput in;
         in.role = "time-stamp authority";
         in.leaf = cand;
@@ -738,6 +743,7 @@ ltv::ChainEvidence checkTsaChain(crypto::CryptoProvider& provider, const VerifyO
         in.pool = pool;
         in.validationTime = genTime;
         in.now = options.validationTime;
+        in.maxSearchSteps = options.limits.maxChainSearchSteps;
         ltv::ChainEvidence ce = ltv::checkChain(provider, in, nullptr, policy, options.cancel);
         if (!any || ce.complete) best = std::move(ce);
         any = true;
@@ -752,6 +758,22 @@ ltv::ChainEvidence checkTsaChain(crypto::CryptoProvider& provider, const VerifyO
 void evaluateLtv(PdfFile& f, crypto::CryptoProvider& provider, const VerifyOptions& options,
                  std::vector<PdfSignatureInfo>& results, const std::map<std::size_t, Side>& sides) {
     const DssData dss = readDss(f, 0);
+    std::string dssLimit;
+    {
+        std::size_t certs = dss.global.certs.size(), crls = dss.global.crls.size(), ocsps = dss.global.ocsps.size();
+        for (const auto& [key, v] : dss.vri) {
+            certs += v.evidence.certs.size();
+            crls += v.evidence.crls.size();
+            ocsps += v.evidence.ocsps.size();
+        }
+        const VerifyLimits& lim = options.limits;
+        if (certs > lim.maxDssCertificates)
+            dssLimit = "the /DSS holds " + std::to_string(certs) + " certificates (limit " + std::to_string(lim.maxDssCertificates) + ")";
+        else if (crls > lim.maxDssCrls)
+            dssLimit = "the /DSS holds " + std::to_string(crls) + " CRLs (limit " + std::to_string(lim.maxDssCrls) + ")";
+        else if (ocsps > lim.maxDssOcsps)
+            dssLimit = "the /DSS holds " + std::to_string(ocsps) + " OCSP responses (limit " + std::to_string(lim.maxDssOcsps) + ")";
+    }
     for (const auto& [idx, side] : sides) {
         PdfSignatureInfo& r = results[idx];
         LtvInfo& L = r.ltv;
@@ -782,6 +804,11 @@ void evaluateLtv(PdfFile& f, crypto::CryptoProvider& provider, const VerifyOptio
             continue;
         }
         if (!options.evaluateLtv) continue;
+        if (!dssLimit.empty()) {
+            L.limitExceeded = true;
+            L.reasons.push_back(dssLimit + "; validation data was not evaluated (VerifyOptions::limits)");
+            continue;
+        }
         if (!dss.present) {
             L.reasons.push_back("the document has no /DSS");
             continue;
@@ -841,6 +868,7 @@ void evaluateLtv(PdfFile& f, crypto::CryptoProvider& provider, const VerifyOptio
         in.pool = ltv::parseCertificates(provider, poolDer);
         in.validationTime = *ts->genTime;
         in.now = options.validationTime;
+        in.maxSearchSteps = options.limits.maxChainSearchSteps;
         const ltv::ChainEvidence signerChain = ltv::checkChain(provider, in, nullptr, policy, options.cancel);
         L.signerEvidenceComplete = signerChain.complete;
         absorb(L, signerChain);
@@ -901,6 +929,11 @@ SignResult<std::vector<PdfSignatureInfo>> verifyPdfSignatures(ByteView pdf, cryp
     if (!opened) return std::unexpected(opened.error());
     PdfFile& f = *opened;
 
+    const std::size_t signatureCap = std::min(options.limits.maxSignatures, kMaxSignatures);
+    auto tooManySignatures = [&]() {
+        return fail(SignErrorCode::LimitExceeded, "the document has more than " + std::to_string(signatureCap) +
+                                                      " signatures (VerifyOptions::limits.maxSignatures); verification refused");
+    };
     std::vector<Found> found;
     std::set<std::uint32_t> seen;
     auto addRef = [&](const PdfRef& r, std::string name, std::optional<FieldLock> lock) {
@@ -925,7 +958,7 @@ SignResult<std::vector<PdfSignatureInfo>> verifyPdfSignatures(ByteView pdf, cryp
                 if (ld.isDict()) lock = lockFromDict(f, *ld.dict, 0);
             }
             addRef(v->ref, fi.fullName, std::move(lock));
-            if (found.size() > kMaxSignatures) return fail(SignErrorCode::LimitExceeded, "too many signatures");
+            if (found.size() > signatureCap) return tooManySignatures();
         }
     }
     {
@@ -938,6 +971,8 @@ SignResult<std::vector<PdfSignatureInfo>> verifyPdfSignatures(ByteView pdf, cryp
                     addRef(dm->ref, "", std::nullopt);
         }
     }
+
+    if (found.size() > signatureCap) return tooManySignatures();
 
     bool permsDm = false;
     const auto catalogLevel = docMdpOfView(f, 0, permsDm);
