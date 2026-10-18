@@ -302,7 +302,7 @@ Result<std::unique_ptr<AtomicFileWriter>> AtomicFileWriter::begin(const std::fil
         const std::string suffix = randomSuffix();
         std::filesystem::path candidate =
             directory / (L"." + base + L".rivet-" + std::wstring(suffix.begin(), suffix.end()) + L".tmp");
-        handle = ::CreateFileW(candidate.c_str(), GENERIC_READ | GENERIC_WRITE | DELETE, FILE_SHARE_READ, nullptr, CREATE_NEW,
+        handle = ::CreateFileW(candidate.c_str(), GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ, nullptr, CREATE_NEW,
                                FILE_ATTRIBUTE_NORMAL, nullptr);
         if (handle != INVALID_HANDLE_VALUE) {
             writer->tempPath_ = std::move(candidate);
