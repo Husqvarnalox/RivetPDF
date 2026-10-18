@@ -37,7 +37,12 @@ Six of six jobs pass. Crypto is ON on linux, macOS and both Windows jobs; OFF on
 Produced and self-verified by Rivet's own verifier. No third-party validator was run.
 
 ## CryptoPro
-`CryptoProApi.cpp` has never been built, since the SDK is absent. No real CryptoPro signing. Not verified.
+Checked on a Mac with CryptoPro CSP 5.0 (build 5.0.13700, arm64) installed at /opt/cprocsp: `CryptoProApi.cpp`,
+`CryptoProBackend.cpp` and the new `loadTrustedModule` path build with `RIVET_ENABLE_CRYPTOPRO=ON`, zero warnings; ctest
+31/31 green. Against the real library: Streebog (RFC 6986) vectors, streaming hasher, RFC 7091 GOST R 34.10-2012 verify,
+store enumeration, relative-library-dir refusal. **Not verified:** real signing. The installed licence is expired and
+key generation on macOS needs an interactive dialog (a silent `csptest` run fails with 0x80090022), so no throwaway
+container exists and `cryptoProSignAndVerifyWithOperatorContainer` SKIPs. This build is local only, not in CI.
 
 ## PKCS#11
 SoftHSM2 only. Rutoken, JaCarta: not verified.
@@ -50,7 +55,7 @@ Output checked by Rivet's own reader and tests. No qpdf, mutool or Acrobat cross
 write encrypted PDFs, so the constrained encryptor refuses signed input and several structures.
 
 ## Security
-See `docs/security/phase8-review.md`. Open, low priority: legacy `std::string` password fields not wiped; a race between module check and `dlopen`; nameConstraints and delta CRLs are now enforced (ADR-0044); full ETSI EN 319 102-1 ("ESIC") conformance verification is not implemented, only the `/Extensions /ESIC` declaration is checked.
+See `docs/security/phase8-review.md`. Fixed in this phase: legacy password strings are wiped; modules load from the validated file object (macOS narrows the load race, does not close it); nameConstraints and delta CRLs are enforced (ADR-0044). Still open: full ETSI EN 319 102-1 ("ESIC") conformance verification is not implemented, only the `/Extensions /ESIC` declaration is checked.
 
 ## Not verified (accepted by the owner as out of closure scope)
 Real DSS credentials; hardware tokens; a valid CryptoPro licence; Windows QA; Acrobat interop; live
