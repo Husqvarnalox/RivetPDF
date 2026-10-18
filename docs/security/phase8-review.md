@@ -191,14 +191,14 @@ Fixed (F5): both loaders call `checkModuleFile` before `dlopen` (ownership, perm
 directory). NOT checked: signature/code-signing verification of the module. A module is arbitrary native code that runs with
 the user's rights, so the trust decision is the user's.
 Fixed (residual F5, TOCTOU): both loaders now call `loadTrustedModule` (`ModuleTrust.cpp`), which validates and loads the same
-file object. Linux: open once with `O_NOFOLLOW`, `fstat` the descriptor (regular, owner, mode), confirm the resolved name still
-has the same dev/ino, then `dlopen("/proc/self/fd/N")`; if that fails (no `/proc`, `$ORIGIN` dependencies) it falls back to
-the path strategy. macOS and fallback: validated descriptor, `dlopen(path)` immediately, then dev/ino of the path are
-compared with the validated descriptor and a mismatch `dlclose`s and fails. Windows: the file is held open with
+file object. Linux and macOS: open once with `O_NOFOLLOW`, `fstat` the descriptor (regular, owner, mode), confirm the resolved name still
+has the same dev/ino, `dlopen(path)` immediately, then dev/ino of the path are compared with the validated descriptor and a
+mismatch `dlclose`s and fails. `dlopen("/proc/self/fd/N")` was tried and dropped: glibc matches loaded objects by name, so a
+reused descriptor number returns an unrelated, already loaded module (found by the Linux CI). Windows: the file is held open with
 `FILE_SHARE_READ` only across `LoadLibraryW` (no write/delete/rename by others), reparse points refused. Tests:
 `loadTrustedModule*` in `TestModuleTrust.cpp`, including a swap of the file between validation and load through
-`setModuleLoadHookForTesting` (Linux must still load the original; macOS must refuse).
-Residual risk: on macOS the swapped-in library's static initialisers have already run when the mismatch is detected (the
+`setModuleLoadHookForTesting` (both platforms must refuse).
+Residual risk: on Linux and macOS the swapped-in library's static initialisers have already run when the mismatch is detected (the
 window shrinks to the `dlopen` call; it is not closed); directory components above the file are still checked by path;
 the Windows branch was not built or run here; the explicit override disables the permission checks; the CryptoPro loader
 change is compile-unchecked (SDK headers absent). Tested against test modules and the mock PKCS#11 module only, never a

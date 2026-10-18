@@ -227,20 +227,11 @@ RIVET_TEST(loadTrustedModuleSurvivesTheFileBeingSwappedBetweenCheckAndLoad) {
     auto r = loadTrustedModule(m);
     setModuleLoadHookForTesting(nullptr);
     CHECK_EQ(g_swap.calls, 1);
-    if (r.handle) {
-        // Linux: loaded through the validated descriptor, so it is still the ORIGINAL module.
-        CHECK_EQ(moduleId(r.handle), 1);
-        ::dlclose(r.handle);
-    } else {
-        // Path strategy (macOS): the replacement is detected and refused. Never "module 2 loaded".
-        CHECK(r.refused);
-        CHECK(r.error.find("replaced") != std::string::npos);
-    }
-#if defined(__linux__)
-    CHECK(r.handle != nullptr);
-#else
+    // Path strategy: the replacement is detected and refused. Never "module 2 loaded".
+    if (r.handle) ::dlclose(r.handle);
     CHECK(r.handle == nullptr);
-#endif
+    CHECK(r.refused);
+    CHECK(r.error.find("replaced") != std::string::npos);
 }
 
 #else

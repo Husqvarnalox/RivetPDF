@@ -21,19 +21,15 @@
 // and must name an existing regular file; no ACL or signature inspection is done.
 // checkModuleFile() alone is NOT atomic with a later load (TOCTOU). Loaders must
 // use loadTrustedModule() below, which validates and loads the SAME file object:
-//   - Linux: the file is opened once (O_NOFOLLOW), validated with fstat on that
-//     descriptor, and dlopen()ed through /proc/self/fd/N, so replacing or
-//     re-pointing the path afterwards cannot change what is loaded. Limits: a
-//     module that relies on $ORIGIN to find its own dependencies cannot be
-//     loaded that way; the loader then falls back to the macOS strategy; the
-//     check of the directories above the file is still path based.
-//   - macOS (and the Linux fallback, or when /proc is unavailable): there is no
-//     dlopen-from-descriptor. The file is opened once and validated with fstat,
-//     the path is dlopen()ed immediately, and afterwards dev/ino of the path are
-//     compared with the validated descriptor; a mismatch unloads the library and
-//     fails. REMAINING LIMIT: static initialisers of the swapped-in library have
-//     already run when the mismatch is detected, so this narrows the window to
-//     the dlopen call itself but does not eliminate it.
+//   - Linux and macOS: there is no safe dlopen-from-descriptor (glibc matches loaded
+//     objects by name, and /proc/self/fd/N is the same name for different files once
+//     descriptor numbers are reused). The file is opened once (O_NOFOLLOW) and validated
+//     with fstat, the path is dlopen()ed immediately, and afterwards dev/ino of the path
+//     are compared with the validated descriptor; a mismatch unloads the library and
+//     fails. REMAINING LIMIT: static initialisers of a swapped-in library have already
+//     run when the mismatch is detected, so this narrows the window to the dlopen call
+//     itself but does not eliminate it. The check of the directories above the file is
+//     still path based.
 //   - Windows: the file is opened with FILE_SHARE_READ only (no write / delete /
 //     rename by others) and kept open across LoadLibraryW. Not built or tested
 //     on Windows here.

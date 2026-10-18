@@ -123,19 +123,8 @@ ModuleLoadResult loadPosix(const fs::path& file) {
 
     if (const ModuleLoadHook hook = g_hook.load()) hook(real);
 
-#if defined(__linux__)
-    // dlopen of the descriptor itself: later changes to the name cannot affect what is mapped.
-    {
-        const std::string viaFd = "/proc/self/fd/" + std::to_string(f.fd);
-        ::dlerror();
-        if (void* h = ::dlopen(viaFd.c_str(), RTLD_NOW | RTLD_LOCAL)) {
-            ModuleLoadResult r;
-            r.handle = h;
-            return r;
-        }
-        // /proc missing, or a module that needs $ORIGIN: fall through to the path strategy.
-    }
-#endif
+    // No dlopen-from-descriptor: glibc matches already-loaded objects by NAME, and /proc/self/fd/N is the same
+    // name for different files once descriptor numbers are reused, so it can hand back an unrelated module.
     ::dlerror();
     void* h = ::dlopen(real.c_str(), RTLD_NOW | RTLD_LOCAL);
     if (h == nullptr) return loaderFailure("dlopen failed");
