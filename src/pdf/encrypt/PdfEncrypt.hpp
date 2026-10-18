@@ -15,6 +15,7 @@
 // for older readers. No RC4 content encryption, no public-key handlers.
 
 #include "core/Error.hpp"
+#include "crypto/SecretBuffer.hpp"
 
 #include <cstdint>
 #include <span>
@@ -49,6 +50,10 @@ struct EncryptOptions {
     Cipher cipher = Cipher::Aes256;
     // UTF-8. May be empty (the file then opens without a password but still
     // enforces the permissions for readers that honour them).
+    // Prefer the EncryptSecrets overload of encryptPdf(): these std::string
+    // fields are the caller's copies, which this module can neither wipe nor
+    // prevent from being copied (SSO / reallocation leftovers). They are never
+    // copied by the module itself. See ADR-0046 "secret handling".
     std::string userPassword;
     // UTF-8. Optional: when empty a random owner password is generated and
     // discarded, so nobody can lift the permissions.
@@ -64,5 +69,18 @@ struct EncryptOptions {
 // incremental updates / other constructs outside the supported subset),
 // NotAvailable (built without RIVET_ENABLE_CRYPTO).
 core::Result<std::vector<std::uint8_t>> encryptPdf(std::span<const std::uint8_t> pdf, const EncryptOptions& options);
+
+// Passwords held in wiping buffers. When used, options.userPassword and
+// options.ownerPassword are ignored. Everything the module derives from them
+// (prepared passwords, intermediate hashes, the file key, per-object keys) is
+// zeroed on all paths, including errors. Unavoidable leftovers: the crypto
+// backend's own internal state (OpenSSL contexts), and the output PDF holds
+// only public values (/O /U /OE /UE /Perms).
+struct EncryptSecrets {
+    crypto::SecretBuffer userPassword;
+    crypto::SecretBuffer ownerPassword;
+};
+core::Result<std::vector<std::uint8_t>> encryptPdf(std::span<const std::uint8_t> pdf, const EncryptOptions& options,
+                                                   const EncryptSecrets& secrets);
 
 } // namespace rivet::pdf::encrypt

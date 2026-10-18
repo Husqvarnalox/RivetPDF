@@ -2,6 +2,7 @@
 #include "pdf/encrypt/StandardHandler.hpp"
 
 #include "crypto/Providers.hpp"
+#include "crypto/SecretBuffer.hpp"
 #include "crypto/Symmetric.hpp"
 
 #include <algorithm>
@@ -31,15 +32,57 @@ constexpr std::array<std::uint8_t, 32> kPad = {0x28, 0xBF, 0x4E, 0x5E, 0x4E, 0x7
                                                0x56, 0xFF, 0xFA, 0x01, 0x08, 0x2E, 0x2E, 0x00, 0xB6, 0xD0, 0x68,
                                                0x3E, 0x80, 0x2F, 0x0C, 0xA9, 0xFE, 0x64, 0x53, 0x69, 0x7A};
 
+// Wipes a buffer holding secret material (password, key, intermediate hash)
+// when it goes out of scope, on every path including early error returns.
+// Only the buffer's current contents are wiped, so secret buffers must not be
+// reallocated behind its back: grow them with append() below, which wipes the
+// old storage, or reserve() them up front.
+class Wipe {
+public:
+    explicit Wipe(Bytes& b) : b_(b) {}
+    ~Wipe() { crypto::secureZero(b_.data(), b_.size()); }
+    Wipe(const Wipe&) = delete;
+    Wipe& operator=(const Wipe&) = delete;
+
+private:
+    Bytes& b_;
+};
+
+void wipe(Bytes& b) {
+    crypto::secureZero(b.data(), b.size());
+    b.clear();
+}
+
+// Appends; when the buffer has to grow the old storage is wiped instead of
+// being left behind in freed memory.
+void append(Bytes& to, ByteView from) {
+    if (to.size() + from.size() <= to.capacity()) {
+        to.insert(to.end(), from.begin(), from.end());
+        return;
+    }
+    Bytes grown;
+    grown.reserve(std::max(to.capacity() * 2, to.size() + from.size()));
+    grown.insert(grown.end(), to.begin(), to.end());
+    grown.insert(grown.end(), from.begin(), from.end());
+    wipe(to);
+    to.swap(grown);
+}
+
+// dst = src, wiping the previous contents of dst.
+void replaceWiped(core::Result<Bytes>& dst, core::Result<Bytes>&& src) {
+    if (dst) wipe(*dst);
+    dst = std::move(src);
+}
+
 Bytes padPassword(ByteView password) {
-    Bytes out(password.begin(), password.begin() + static_cast<std::ptrdiff_t>(std::min<std::size_t>(password.size(), 32)));
+    Bytes out;
+    out.reserve(32);
+    out.insert(out.end(), password.begin(), password.begin() + static_cast<std::ptrdiff_t>(std::min<std::size_t>(password.size(), 32)));
     out.insert(out.end(), kPad.begin(), kPad.begin() + static_cast<std::ptrdiff_t>(32 - out.size()));
     return out;
 }
 
-void append(Bytes& to, ByteView from) { to.insert(to.end(), from.begin(), from.end()); }
-
-core::Result<Bytes> randomBytes(std::size_t n) {
+core::Result<Bytes> randomBytes(std::size_t n) {  // callers wipe it when it carries key material
     auto provider = crypto::makeDefaultProvider();
     auto r = provider->randomBytes(n);
     if (!r) return std::unexpected(fromCrypto(r.error()));
@@ -50,6 +93,10 @@ core::Result<Bytes> randomBytes(std::size_t n) {
 // is NEVER used for document content here).
 Bytes rc4(ByteView key, ByteView data) {
     std::array<std::uint8_t, 256> s{};
+    struct StateWipe {
+        std::array<std::uint8_t, 256>& s;
+        ~StateWipe() { crypto::secureZero(s.data(), s.size()); }
+    } stateWipe{s};
     for (std::size_t i = 0; i < 256; ++i) s[i] = static_cast<std::uint8_t>(i);
     std::uint8_t j = 0;
     for (std::size_t i = 0; i < 256; ++i) {
@@ -154,12 +201,21 @@ core::Result<Bytes> cbcNoPad(ByteView key, ByteView iv, ByteView data, bool encr
 
 core::Result<Bytes> prepareR6Password(std::string_view utf8) {
     std::vector<char32_t> cps;
+    cps.reserve(utf8.size());
+    struct CpsWipe {
+        std::vector<char32_t>& v;
+        ~CpsWipe() { crypto::secureZero(v.data(), v.size() * sizeof(char32_t)); }
+    } cpsWipe{cps};
     if (!decodeUtf8(utf8, cps)) return std::unexpected(invalidArgument("password is not valid UTF-8"));
     Bytes out;
+    out.reserve(127 + 4);
     for (char32_t cp : cps) {
         if (isMappedToNothing(cp)) continue;
         if (isNonAsciiSpace(cp)) cp = 0x20;
-        if (isControl(cp)) return std::unexpected(invalidArgument("password contains a control character"));
+        if (isControl(cp)) {
+            wipe(out);
+            return std::unexpected(invalidArgument("password contains a control character"));
+        }
         if (out.size() + encodedLength(cp) > 127) break;
         encodeUtf8(cp, out);
     }
@@ -168,11 +224,19 @@ core::Result<Bytes> prepareR6Password(std::string_view utf8) {
 
 core::Result<Bytes> prepareR4Password(std::string_view utf8) {
     std::vector<char32_t> cps;
+    cps.reserve(utf8.size());
+    struct CpsWipe {
+        std::vector<char32_t>& v;
+        ~CpsWipe() { crypto::secureZero(v.data(), v.size() * sizeof(char32_t)); }
+    } cpsWipe{cps};
     if (!decodeUtf8(utf8, cps)) return std::unexpected(invalidArgument("password is not valid UTF-8"));
     Bytes out;
+    out.reserve(32);
     for (const char32_t cp : cps) {
-        if (cp > 0xFF)
+        if (cp > 0xFF) {
+            wipe(out);
             return std::unexpected(invalidArgument("AES-128 (revision 4) passwords are limited to Latin-1 characters; use AES-256"));
+        }
         if (out.size() < 32) out.push_back(static_cast<std::uint8_t>(cp));
     }
     return out;
@@ -186,39 +250,60 @@ core::Result<Bytes> hashR6(ByteView password, ByteView salt, ByteView udata) {
         return std::move(*r);
     };
 
+    // Every intermediate below is derived from the password and is wiped on all
+    // paths. On success only the returned 32 bytes survive (the caller owns them).
     Bytes seed;
+    seed.reserve(password.size() + salt.size() + udata.size());
+    Wipe seedWipe(seed);
     append(seed, password);
     append(seed, salt);
     append(seed, udata);
     auto k = digestOf(crypto::DigestAlgorithm::Sha256, seed);
     if (!k) return k;
+    struct KWipe {
+        core::Result<Bytes>& r;
+        bool keep = false;
+        ~KWipe() {
+            if (r && !keep) crypto::secureZero(r->data(), r->size());
+        }
+    } kWipe{k};
 
     Bytes e;
+    Wipe eWipe(e);
+    Bytes unit;
+    Wipe unitWipe(unit);
+    Bytes k1;
+    Wipe k1Wipe(k1);
     for (int round = 0; round < 64 || static_cast<int>(e.back()) > round - 32; ++round) {
-        Bytes unit;
+        wipe(unit);
         append(unit, password);
         append(unit, *k);
         append(unit, udata);
-        Bytes k1;
+        wipe(k1);
         k1.reserve(unit.size() * 64);
         for (int i = 0; i < 64; ++i) append(k1, unit);
 
         auto enc = cbcNoPad(ByteView(k->data(), 16), ByteView(k->data() + 16, 16), k1, true);
         if (!enc) return enc;
+        wipe(e);
         e = std::move(*enc);
 
         unsigned sum = 0;
         for (std::size_t i = 0; i < 16; ++i) sum += e[i];
         const unsigned mod = sum % 3;
-        k = digestOf(mod == 0 ? crypto::DigestAlgorithm::Sha256
-                     : mod == 1 ? crypto::DigestAlgorithm::Sha384
-                                : crypto::DigestAlgorithm::Sha512,
-                     e);
+        replaceWiped(k, digestOf(mod == 0 ? crypto::DigestAlgorithm::Sha256
+                                 : mod == 1 ? crypto::DigestAlgorithm::Sha384
+                                            : crypto::DigestAlgorithm::Sha512,
+                                 e));
         if (!k) return k;
     }
+    if (k->size() > 32) crypto::secureZero(k->data() + 32, k->size() - 32);
     k->resize(32);
+    kWipe.keep = true;
     return k;
 }
+
+EncryptionSetup::~EncryptionSetup() { crypto::secureZero(fileKey.data(), fileKey.size()); }
 
 std::int32_t permissionBits(const Permissions& p) {
     std::uint32_t bits = 0xFFFFF0C0u; // bits 7-8 and 13-32 are reserved and must be 1
@@ -235,28 +320,32 @@ std::int32_t permissionBits(const Permissions& p) {
 
 namespace {
 
-core::Result<EncryptionSetup> buildR6(const EncryptOptions& options) {
+// Prepares one password (user or owner) with `prep`; an empty owner password
+// becomes a random one that is used once and discarded.
+template <typename Prep>
+core::Result<Bytes> passwordFor(std::string_view utf8, bool randomIfEmpty, std::size_t randomLen, Prep prep) {
+    if (utf8.empty() && randomIfEmpty) return randomBytes(randomLen);
+    return prep(utf8);
+}
+
+core::Result<EncryptionSetup> buildR6(const EncryptOptions& options, std::string_view userUtf8, std::string_view ownerUtf8) {
     EncryptionSetup s;
     s.cipher = Cipher::Aes256;
     s.encryptMetadata = options.encryptMetadata;
     s.p = permissionBits(options.permissions);
 
-    auto userPw = prepareR6Password(options.userPassword);
+    auto userPw = prepareR6Password(userUtf8);
     if (!userPw) return std::unexpected(userPw.error());
-    Bytes ownerPw;
-    if (options.ownerPassword.empty()) {
-        auto rnd = randomBytes(32);
-        if (!rnd) return std::unexpected(rnd.error());
-        ownerPw = std::move(*rnd);
-    } else {
-        auto o = prepareR6Password(options.ownerPassword);
-        if (!o) return std::unexpected(o.error());
-        ownerPw = std::move(*o);
-    }
+    Wipe userPwWipe(*userPw);
+    auto ownerPwR = passwordFor(ownerUtf8, true, 32, prepareR6Password);
+    if (!ownerPwR) return std::unexpected(ownerPwR.error());
+    Bytes ownerPw = std::move(*ownerPwR);
+    Wipe ownerPwWipe(ownerPw);
 
     // salts: user validation, user key, owner validation, owner key; then the key and the Perms filler.
     auto rnd = randomBytes(32 + 32 + 4);
     if (!rnd) return std::unexpected(rnd.error());
+    Wipe rndWipe(*rnd);
     const std::uint8_t* r = rnd->data();
     s.fileKey.assign(r, r + 32);
     const ByteView uvs(r + 32, 8);
@@ -269,11 +358,13 @@ core::Result<EncryptionSetup> buildR6(const EncryptOptions& options) {
     // U / UE (empty "udata" for the user hash).
     auto uHash = hashR6(*userPw, uvs, {});
     if (!uHash) return std::unexpected(uHash.error());
+    Wipe uHashWipe(*uHash);
     s.u = *uHash;
     append(s.u, uvs);
     append(s.u, uks);
     auto uKey = hashR6(*userPw, uks, {});
     if (!uKey) return std::unexpected(uKey.error());
+    Wipe uKeyWipe(*uKey);
     auto ue = cbcNoPad(*uKey, zeroIv, s.fileKey, true);
     if (!ue) return std::unexpected(ue.error());
     s.ue = std::move(*ue);
@@ -281,17 +372,21 @@ core::Result<EncryptionSetup> buildR6(const EncryptOptions& options) {
     // O / OE (the 48-byte U is the owner hash's extra input).
     auto oHash = hashR6(ownerPw, ovs, s.u);
     if (!oHash) return std::unexpected(oHash.error());
+    Wipe oHashWipe(*oHash);
     s.o = *oHash;
     append(s.o, ovs);
     append(s.o, oks);
     auto oKey = hashR6(ownerPw, oks, s.u);
     if (!oKey) return std::unexpected(oKey.error());
+    Wipe oKeyWipe(*oKey);
     auto oe = cbcNoPad(*oKey, zeroIv, s.fileKey, true);
     if (!oe) return std::unexpected(oe.error());
     s.oe = std::move(*oe);
 
     // Perms: P (LE), 0xFFFFFFFF, 'T'/'F', "adb", 4 random bytes; AES-256-ECB under the file key.
     Bytes block;
+    block.reserve(16);
+    Wipe blockWipe(block);
     putLe32(block, static_cast<std::uint32_t>(s.p));
     putLe32(block, 0xFFFFFFFFu);
     block.push_back(s.encryptMetadata ? 'T' : 'F');
@@ -305,24 +400,20 @@ core::Result<EncryptionSetup> buildR6(const EncryptOptions& options) {
     return s;
 }
 
-core::Result<EncryptionSetup> buildR4(const EncryptOptions& options, ByteView id0) {
+core::Result<EncryptionSetup> buildR4(const EncryptOptions& options, std::string_view userUtf8, std::string_view ownerUtf8,
+                                      ByteView id0) {
     EncryptionSetup s;
     s.cipher = Cipher::Aes128;
     s.encryptMetadata = options.encryptMetadata;
     s.p = permissionBits(options.permissions);
 
-    auto userPw = prepareR4Password(options.userPassword);
+    auto userPw = prepareR4Password(userUtf8);
     if (!userPw) return std::unexpected(userPw.error());
-    Bytes ownerPw;
-    if (options.ownerPassword.empty()) {
-        auto rnd = randomBytes(32);
-        if (!rnd) return std::unexpected(rnd.error());
-        ownerPw = std::move(*rnd);
-    } else {
-        auto o = prepareR4Password(options.ownerPassword);
-        if (!o) return std::unexpected(o.error());
-        ownerPw = std::move(*o);
-    }
+    Wipe userPwWipe(*userPw);
+    auto ownerPwR = passwordFor(ownerUtf8, true, 32, prepareR4Password);
+    if (!ownerPwR) return std::unexpected(ownerPwR.error());
+    Bytes ownerPw = std::move(*ownerPwR);
+    Wipe ownerPwWipe(ownerPw);
 
     auto md5 = [](ByteView d) -> core::Result<Bytes> {
         auto r = crypto::md5(d);
@@ -331,31 +422,54 @@ core::Result<EncryptionSetup> buildR4(const EncryptOptions& options, ByteView id
     };
 
     // Algorithm 3: /O.
-    auto h = md5(padPassword(ownerPw));
+    Bytes ownerPad = padPassword(ownerPw);
+    Wipe ownerPadWipe(ownerPad);
+    auto h = md5(ownerPad);
     if (!h) return std::unexpected(h.error());
+    struct HWipe {
+        core::Result<Bytes>& r;
+        ~HWipe() {
+            if (r) crypto::secureZero(r->data(), r->size());
+        }
+    } hWipe{h};
     for (int i = 0; i < 50; ++i) {
-        h = md5(*h);
+        replaceWiped(h, md5(*h));
         if (!h) return std::unexpected(h.error());
     }
-    const Bytes rc4Key(h->begin(), h->begin() + 16);
-    Bytes o = rc4(rc4Key, padPassword(*userPw));
-    for (std::uint8_t i = 1; i <= 19; ++i) o = rc4(xorKey(rc4Key, i), o);
+    Bytes rc4Key(h->begin(), h->begin() + 16);
+    Wipe rc4KeyWipe(rc4Key);
+    Bytes userPad = padPassword(*userPw);
+    Wipe userPadWipe(userPad);
+    Bytes o = rc4(rc4Key, userPad);
+    for (std::uint8_t i = 1; i <= 19; ++i) {
+        Bytes xk = xorKey(rc4Key, i);
+        Wipe xkWipe(xk);
+        o = rc4(xk, o);
+    }
     s.o = std::move(o);
 
     // Algorithm 2: the file key.
-    Bytes in = padPassword(*userPw);
+    Bytes in;
+    in.reserve(32 + s.o.size() + 4 + id0.size() + 4);
+    Wipe inWipe(in);
+    append(in, userPad);
     append(in, s.o);
     putLe32(in, static_cast<std::uint32_t>(s.p));
     append(in, id0);
     if (!s.encryptMetadata) putLe32(in, 0xFFFFFFFFu);
     auto key = md5(in);
     if (!key) return std::unexpected(key.error());
+    struct KeyWipe {
+        core::Result<Bytes>& r;
+        ~KeyWipe() {
+            if (r) crypto::secureZero(r->data(), r->size());
+        }
+    } keyWipe{key};
     for (int i = 0; i < 50; ++i) {
-        key = md5(ByteView(key->data(), 16));
+        replaceWiped(key, md5(ByteView(key->data(), 16)));
         if (!key) return std::unexpected(key.error());
     }
-    key->resize(16);
-    s.fileKey = std::move(*key);
+    s.fileKey.assign(key->begin(), key->begin() + 16);
 
     // Algorithm 5: /U.
     Bytes uIn(kPad.begin(), kPad.end());
@@ -363,7 +477,11 @@ core::Result<EncryptionSetup> buildR4(const EncryptOptions& options, ByteView id
     auto uh = md5(uIn);
     if (!uh) return std::unexpected(uh.error());
     Bytes u = rc4(s.fileKey, *uh);
-    for (std::uint8_t i = 1; i <= 19; ++i) u = rc4(xorKey(s.fileKey, i), u);
+    for (std::uint8_t i = 1; i <= 19; ++i) {
+        Bytes xk = xorKey(s.fileKey, i);
+        Wipe xkWipe(xk);
+        u = rc4(xk, u);
+    }
     auto filler = randomBytes(16);
     if (!filler) return std::unexpected(filler.error());
     append(u, *filler);
@@ -374,7 +492,13 @@ core::Result<EncryptionSetup> buildR4(const EncryptOptions& options, ByteView id
 } // namespace
 
 core::Result<EncryptionSetup> buildSetup(const EncryptOptions& options, ByteView id0) {
-    return options.cipher == Cipher::Aes256 ? buildR6(options) : buildR4(options, id0);
+    return buildSetup(options, options.userPassword, options.ownerPassword, id0);
+}
+
+core::Result<EncryptionSetup> buildSetup(const EncryptOptions& options, std::string_view userPassword,
+                                         std::string_view ownerPassword, ByteView id0) {
+    return options.cipher == Cipher::Aes256 ? buildR6(options, userPassword, ownerPassword)
+                                            : buildR4(options, userPassword, ownerPassword, id0);
 }
 
 std::string encryptDictionary(const EncryptionSetup& s) {
@@ -394,8 +518,12 @@ std::string encryptDictionary(const EncryptionSetup& s) {
 }
 
 core::Result<Bytes> objectKey(const EncryptionSetup& s, std::uint32_t num, std::uint32_t gen) {
+    // The returned key is secret; callers wipe it (encryptObjectData does).
     if (s.cipher == Cipher::Aes256) return s.fileKey;
-    Bytes in = s.fileKey;
+    Bytes in;
+    in.reserve(s.fileKey.size() + 9);
+    Wipe inWipe(in);
+    in = s.fileKey;
     in.push_back(static_cast<std::uint8_t>(num));
     in.push_back(static_cast<std::uint8_t>(num >> 8));
     in.push_back(static_cast<std::uint8_t>(num >> 16));
@@ -411,6 +539,7 @@ core::Result<Bytes> objectKey(const EncryptionSetup& s, std::uint32_t num, std::
 core::Result<Bytes> encryptObjectData(const EncryptionSetup& s, std::uint32_t num, std::uint32_t gen, ByteView plain) {
     auto key = objectKey(s, num, gen);
     if (!key) return std::unexpected(key.error());
+    Wipe keyWipe(*key);
     auto iv = randomBytes(16);
     if (!iv) return std::unexpected(iv.error());
     auto ct = crypto::aesEncrypt(crypto::AesMode::Cbc, *key, *iv, plain, true);

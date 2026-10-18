@@ -33,6 +33,14 @@ core::Result<Bytes> hashR6(ByteView password, ByteView salt, ByteView userKeyFor
 std::int32_t permissionBits(const Permissions& permissions);
 
 struct EncryptionSetup {
+    EncryptionSetup() = default;
+    EncryptionSetup(const EncryptionSetup&) = default;
+    EncryptionSetup(EncryptionSetup&&) noexcept = default;
+    EncryptionSetup& operator=(const EncryptionSetup&) = default;
+    EncryptionSetup& operator=(EncryptionSetup&&) noexcept = default;
+    // Zeroes the file key (the only secret member) when the setup dies.
+    ~EncryptionSetup();
+
     Cipher cipher = Cipher::Aes256;
     bool encryptMetadata = true;
     std::int32_t p = 0;
@@ -46,7 +54,12 @@ struct EncryptionSetup {
 
 // Builds a fresh setup (random file key, salts and IVs). `id0` is the first
 // element of the trailer /ID (used by R4 only).
+// Uses options.userPassword / options.ownerPassword.
 core::Result<EncryptionSetup> buildSetup(const EncryptOptions& options, ByteView id0);
+// Same, but takes the passwords separately (UTF-8) so that callers holding them in a
+// SecretBuffer need not put them into std::string fields. options' password fields are ignored.
+core::Result<EncryptionSetup> buildSetup(const EncryptOptions& options, std::string_view userPassword,
+                                         std::string_view ownerPassword, ByteView id0);
 
 // The /Encrypt dictionary text ("<< ... >>") for the setup.
 std::string encryptDictionary(const EncryptionSetup& setup);

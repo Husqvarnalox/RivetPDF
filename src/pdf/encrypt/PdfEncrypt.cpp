@@ -321,7 +321,8 @@ struct Substitution {
 
 class Encryptor {
 public:
-    Encryptor(ByteView d, const EncryptOptions& o) : d_(d), options_(o) {}
+    Encryptor(ByteView d, const EncryptOptions& o, std::string_view user, std::string_view owner)
+        : d_(d), options_(o), user_(user), owner_(owner) {}
 
     core::Result<Bytes> run() {
         if (d_.size() < 16 || std::memcmp(d_.data(), "%PDF-", 5) != 0) return failDoc("not a PDF file (missing header)");
@@ -330,7 +331,7 @@ public:
         if (auto s = readXref(); !s) return std::unexpected(s.error());
         if (auto s = readTrailer(); !s) return std::unexpected(s.error());
 
-        auto setup = buildSetup(options_, id0_);
+        auto setup = buildSetup(options_, user_, owner_, id0_);
         if (!setup) return std::unexpected(setup.error());
         setup_ = std::move(*setup);
 
@@ -674,6 +675,8 @@ private:
 
     ByteView d_;
     const EncryptOptions& options_;
+    std::string_view user_;  // views of the caller's password bytes; never copied
+    std::string_view owner_;
     int major_ = 1;
     int minor_ = 7;
     std::vector<XrefObject> objects_; // in file order
@@ -690,17 +693,33 @@ private:
 
 } // namespace
 
-core::Result<std::vector<std::uint8_t>> encryptPdf(std::span<const std::uint8_t> pdf, const EncryptOptions& options) {
-    if (options.userPassword.empty() && options.ownerPassword.empty() && options.permissions.allAllowed())
+namespace {
+
+core::Result<std::vector<std::uint8_t>> encryptWith(std::span<const std::uint8_t> pdf, const EncryptOptions& options,
+                                                    std::string_view user, std::string_view owner) {
+    if (user.empty() && owner.empty() && options.permissions.allAllowed())
         return std::unexpected(core::makeError(core::ErrorCode::InvalidArgument,
                                                "no password and no permission restriction: nothing to protect", kSubsystem));
-    if (options.userPassword.size() > 4096 || options.ownerPassword.size() > 4096)
+    if (user.size() > 4096 || owner.size() > 4096)
         return std::unexpected(core::makeError(core::ErrorCode::InvalidArgument, "password too long", kSubsystem));
     if (!crypto::makeDefaultProvider()->isAvailable())
         return std::unexpected(core::makeError(core::ErrorCode::NotAvailable,
                                                "PDF encryption needs a crypto backend (built with RIVET_ENABLE_CRYPTO=OFF)", kSubsystem));
-    Encryptor encryptor(pdf, options);
+    Encryptor encryptor(pdf, options, user, owner);
     return encryptor.run();
+}
+
+} // namespace
+
+core::Result<std::vector<std::uint8_t>> encryptPdf(std::span<const std::uint8_t> pdf, const EncryptOptions& options) {
+    return encryptWith(pdf, options, options.userPassword, options.ownerPassword);
+}
+
+core::Result<std::vector<std::uint8_t>> encryptPdf(std::span<const std::uint8_t> pdf, const EncryptOptions& options,
+                                                   const EncryptSecrets& secrets) {
+    const std::string_view user(secrets.userPassword.chars(), secrets.userPassword.size());
+    const std::string_view owner(secrets.ownerPassword.chars(), secrets.ownerPassword.size());
+    return encryptWith(pdf, options, user, owner);
 }
 
 } // namespace rivet::pdf::encrypt

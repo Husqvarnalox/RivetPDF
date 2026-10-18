@@ -353,3 +353,53 @@ RIVET_TEST(hostileTokenInputsNeverCrash) {
     CHECK(!pe::encryptPdf(toBytes(buildPdf({"<< /Type /Catalog /Pages 2 0 R /X " + std::string(500, '[') + " >>", "<< >>"})), o).has_value());
     CHECK(!pe::encryptPdf(toBytes(buildPdf({"<< /Type /Catalog /Pages 2 0 R /X (unterminated >>", "<< >>"})), o).has_value());
 }
+
+RIVET_TEST(secretsOverloadMatchesStringOverloadAndIgnoresOptionFields) {
+    const std::string src = samplePdf();
+    // The option strings hold decoys: with EncryptSecrets they must be ignored.
+    auto o = opts(pe::Cipher::Aes256, "decoy-user", "decoy-owner");
+    pe::EncryptSecrets secrets;
+    secrets.userPassword = crypto::SecretBuffer(std::string_view("u-secret"));
+    secrets.ownerPassword = crypto::SecretBuffer(std::string_view("o-secret"));
+    auto r = pe::encryptPdf(toBytes(src), o, secrets);
+    CHECK(r.has_value());
+    const std::string out = r ? toStr(*r) : std::string();
+    const std::string userKey = r6FileKey(out, "u-secret", false);
+    CHECK_EQ(userKey.size(), std::size_t{32});
+    CHECK(userKey == r6FileKey(out, "o-secret", true));
+    CHECK(r6FileKey(out, "decoy-user", false).empty());
+    CHECK(r6FileKey(out, "decoy-owner", true).empty());
+    CHECK_EQ(secrets.userPassword.size(), std::size_t{8}); // the module never consumes or alters the caller's buffer
+}
+
+RIVET_TEST(secretsOverloadErrorPathsAreTypedAndLeaveBuffersIntact) {
+    const std::string src = samplePdf();
+    pe::EncryptOptions o;
+    o.cipher = pe::Cipher::Aes128;
+    pe::EncryptSecrets secrets;
+    secrets.userPassword = crypto::SecretBuffer(std::string_view("\xE2\x82\xAC")); // U+20AC is not Latin-1
+    auto r = pe::encryptPdf(toBytes(src), o, secrets);
+    CHECK(!r.has_value());
+    if (!r) CHECK(r.error().code == core::ErrorCode::InvalidArgument);
+    // Invalid UTF-8 and control characters fail the same way under AES-256.
+    o.cipher = pe::Cipher::Aes256;
+    secrets.userPassword = crypto::SecretBuffer(std::string_view("bad\x01pw"));
+    auto r2 = pe::encryptPdf(toBytes(src), o, secrets);
+    CHECK(!r2.has_value());
+    // Nothing to protect.
+    pe::EncryptSecrets none;
+    auto r3 = pe::encryptPdf(toBytes(src), o, none);
+    CHECK(!r3.has_value());
+}
+
+RIVET_TEST(preparedPasswordsAreWipedByTheCallersGuardContract) {
+    // prepareR6Password returns a plain Bytes that the CALLER owns; the module's own
+    // internal copies are wiped by RAII guards (not observable without reading freed
+    // memory). What is testable: secureZero over such a buffer leaves it all-zero.
+    auto p = pe::prepareR6Password("hunter2-hunter2");
+    CHECK(p.has_value());
+    if (!p) return;
+    CHECK(!p->empty());
+    crypto::secureZero(p->data(), p->size());
+    for (const auto b : *p) CHECK_EQ(b, 0);
+}
