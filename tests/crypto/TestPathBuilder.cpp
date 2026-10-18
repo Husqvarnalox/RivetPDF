@@ -4,6 +4,8 @@
 #include "RivetTest.h"
 
 #include "TestSupport.hpp"
+#include "crypto/Der.hpp"
+#include "crypto/NameConstraints.hpp"
 #include "crypto/PathBuilder.hpp"
 
 #include <algorithm>
@@ -232,12 +234,8 @@ RIVET_TEST(pathBuilderRejectsAnUntrustedRootAndRecordsLimitations) {
     CHECK(!r.anchored);
     CHECK(r.failure == PathFailure::NotAnchored || r.failure == PathFailure::NoIssuer);
 
-    // nameConstraints are not enforced; the path says so.
-    CertSpec nc{.cn = "NC CA", .keyKind = "ec256", .ca = true, .issuer = &p.root};
-    nc.extraExt = {{NID_name_constraints, "critical,permitted;DNS:example.com"}};
-    const TestKey nck = makeCert(nc);
-    const TestKey leaf = makeCert({.cn = "NC Leaf", .keyKind = "ec256", .issuer = &nck});
-    const PathResult lim = build(p, parse(*p.provider, leaf), {parse(*p.provider, nck)});
+    // Certificate policies are not evaluated; the path says so.
+    const PathResult lim = build(p, p.leafInfo, {p.interInfo});
     CHECK(lim.anchored);
     CHECK(!lim.limitations.empty());
 }
@@ -262,4 +260,158 @@ RIVET_TEST(pathBuilderHonoursMaxLengthAndCancellation) {
         g.pool = {junk, p.interInfo};
         (void)buildValidationPath(p.leafInfo, g, *p.provider);
     }
+}
+
+// ---- nameConstraints (RFC 5280 4.2.1.10) ---------------------------------------------
+
+namespace {
+
+// Builds root -> NC CA (carrying `constraint`) -> leaf (with `leafSan`, empty: none) and builds the path.
+PathResult ncPath(Pki& p, const std::string& constraint, const std::string& leafSan, const std::string& leafCn = "NC Leaf",
+                  std::vector<CertSpec::RawExt> raw = {}) {
+    CertSpec nc{.cn = "NC CA", .keyKind = "ec256", .ca = true, .issuer = &p.root};
+    if (!constraint.empty()) nc.extraExt = {{NID_name_constraints, constraint}};
+    nc.rawExt = std::move(raw);
+    const TestKey nck = makeCert(nc);
+    CertSpec ls{.cn = leafCn, .keyKind = "ec256", .issuer = &nck};
+    if (!leafSan.empty()) ls.extraExt = {{NID_subject_alt_name, leafSan}};
+    const TestKey leaf = makeCert(ls);
+    return build(p, parse(*p.provider, leaf), {parse(*p.provider, nck)});
+}
+
+} // namespace
+
+RIVET_TEST(nameConstraintsDnsPermittedAndExcluded) {
+    Pki p;
+    const std::string permit = "critical,permitted;DNS:example.com";
+    PathResult r = ncPath(p, permit, "DNS:example.com");
+    CHECK(r.anchored);
+    r = ncPath(p, permit, "DNS:www.example.com,DNS:A.B.EXAMPLE.COM");
+    CHECK(r.anchored);
+    r = ncPath(p, permit, "DNS:www.example.com,DNS:evil.org");
+    CHECK(!r.anchored);
+    CHECK(r.failure == PathFailure::NameConstraints);
+    r = ncPath(p, permit, "DNS:badexample.com"); // not on a label boundary
+    CHECK(r.failure == PathFailure::NameConstraints);
+    r = ncPath(p, permit, "DNS:*.org"); // a wildcard reaching outside the subtree
+    CHECK(r.failure == PathFailure::NameConstraints);
+    r = ncPath(p, permit, ""); // no names of the constrained type: nothing to check
+    CHECK(r.anchored);
+
+    const std::string exclude = "critical,excluded;DNS:internal.example.com";
+    r = ncPath(p, exclude, "DNS:www.example.com");
+    CHECK(r.anchored);
+    r = ncPath(p, exclude, "DNS:db.internal.example.com");
+    CHECK(r.failure == PathFailure::NameConstraints);
+    r = ncPath(p, "critical,permitted;DNS:.example.com", "DNS:example.com"); // leading dot: subdomains only
+    CHECK(r.failure == PathFailure::NameConstraints);
+    r = ncPath(p, "critical,permitted;DNS:.example.com", "DNS:a.example.com");
+    CHECK(r.anchored);
+    // A constraint on another type does not restrict DNS names.
+    r = ncPath(p, "critical,permitted;IP:10.0.0.0/255.0.0.0", "DNS:anything.test");
+    CHECK(r.anchored);
+}
+
+RIVET_TEST(nameConstraintsEmailIpAndUri) {
+    Pki p;
+    PathResult r = ncPath(p, "critical,permitted;email:example.com", "email:bob@example.com");
+    CHECK(r.anchored);
+    r = ncPath(p, "critical,permitted;email:example.com", "email:bob@sub.example.com"); // host form: exact host only
+    CHECK(r.failure == PathFailure::NameConstraints);
+    r = ncPath(p, "critical,permitted;email:.example.com", "email:bob@sub.example.com");
+    CHECK(r.anchored);
+    r = ncPath(p, "critical,permitted;email:.example.com", "email:bob@example.com");
+    CHECK(r.failure == PathFailure::NameConstraints);
+    r = ncPath(p, "critical,excluded;email:bob@example.com", "email:bob@example.com");
+    CHECK(r.failure == PathFailure::NameConstraints);
+
+    r = ncPath(p, "critical,permitted;IP:10.0.0.0/255.0.0.0", "IP:10.1.2.3");
+    CHECK(r.anchored);
+    r = ncPath(p, "critical,permitted;IP:10.0.0.0/255.0.0.0", "IP:11.1.2.3");
+    CHECK(r.failure == PathFailure::NameConstraints);
+    r = ncPath(p, "critical,permitted;IP:10.0.0.0/255.0.0.0", "IP:::1"); // other family: outside the permitted set
+    CHECK(r.failure == PathFailure::NameConstraints);
+    r = ncPath(p, "critical,excluded;IP:192.168.0.0/255.255.0.0", "IP:192.168.4.4");
+    CHECK(r.failure == PathFailure::NameConstraints);
+
+    r = ncPath(p, "critical,permitted;URI:.example.com", "URI:https://user@a.example.com:8443/x?y#z");
+    CHECK(r.anchored);
+    r = ncPath(p, "critical,permitted;URI:.example.com", "URI:https://evil.org/");
+    CHECK(r.failure == PathFailure::NameConstraints);
+    r = ncPath(p, "critical,permitted;URI:.example.com", "URI:urn:isbn:123"); // no authority host
+    CHECK(r.failure == PathFailure::NameConstraints);
+}
+
+RIVET_TEST(nameConstraintsDirectoryNameAndSubjectEmail) {
+    Pki p;
+    namespace d = rivet::crypto::der;
+    auto cnName = [](const std::string& cn) {
+        const Bytes v(cn.begin(), cn.end());
+        return d::sequence({d::setOf({d::sequence({d::oidElement("2.5.4.3"), d::tlv(d::kUtf8String, v)})})});
+    };
+    auto nc = [&](const char* tagKind, const Bytes& name) {
+        const Bytes gn = d::tlv(0xA4, name);
+        const Bytes subtree = d::sequence({gn});
+        return std::vector<CertSpec::RawExt>{{NID_name_constraints, true, d::sequence({d::tlv(tagKind[0] == 'p' ? 0xA0 : 0xA1, subtree)})}};
+    };
+    PathResult r = ncPath(p, "", "", "NC Leaf", nc("permitted", cnName("NC Leaf")));
+    CHECK(r.anchored);
+    r = ncPath(p, "", "", "NC Leaf", nc("permitted", cnName("Somebody Else")));
+    CHECK(r.failure == PathFailure::NameConstraints);
+    r = ncPath(p, "", "", "nc  LEAF", nc("permitted", cnName("NC Leaf"))); // case and space insensitive
+    CHECK(r.anchored);
+    r = ncPath(p, "", "", "NC Leaf", nc("excluded", cnName("NC Leaf")));
+    CHECK(r.failure == PathFailure::NameConstraints);
+    // An empty directoryName constraint matches every subject.
+    r = ncPath(p, "", "", "NC Leaf", nc("excluded", d::sequence({})));
+    CHECK(r.failure == PathFailure::NameConstraints);
+}
+
+RIVET_TEST(nameConstraintsMalformedOrUnsupportedFailClosed) {
+    Pki p;
+    namespace d = rivet::crypto::der;
+    // An empty NameConstraints carries no subtree: refused as malformed.
+    PathResult r = ncPath(p, "", "", "NC Leaf", {{NID_name_constraints, true, d::sequence({})}});
+    CHECK(!r.anchored);
+    CHECK(r.failure == PathFailure::NameConstraints);
+    // minimum != 0 is forbidden by RFC 5280.
+    const Bytes dns = d::tlv(0x82, Bytes{'a', '.', 'b'});
+    const Bytes subtree = d::sequence({dns, d::tlv(0x80, d::integerFromInt(1))});
+    r = ncPath(p, "", "", "NC Leaf", {{NID_name_constraints, true, d::sequence({d::tlv(0xA0, subtree)})}});
+    CHECK(r.failure == PathFailure::NameConstraints);
+    // A constrained otherName type that the leaf uses cannot be evaluated: refused.
+    const Bytes other = d::tlv(0xA0, d::concat({d::oidElement("1.2.3.4"), d::tlv(0xA0, d::tlv(d::kUtf8String, Bytes{'x'}))}));
+    const Bytes otherTree = d::sequence({other});
+    r = ncPath(p, "", "DNS:x.test,otherName:1.2.3.4;UTF8:x",
+               "NC Leaf", {{NID_name_constraints, true, d::sequence({d::tlv(0xA1, otherTree)})}});
+    CHECK(r.failure == PathFailure::NameConstraints);
+}
+
+RIVET_TEST(nameConstraintsOnTheTrustAnchorAndSelfIssuedExemption) {
+    // A constraint carried by the root applies to everything below it.
+    const auto provider = makeDefaultProvider();
+    CertSpec rs{.cn = "NC Root", .keyKind = "ec256", .ca = true, .notBeforeOffsetSec = -400 * kDay};
+    rs.extraExt = {{NID_name_constraints, "critical,permitted;DNS:example.com"}};
+    const TestKey root = makeCert(rs);
+    CertSpec is{.cn = "NC Inter", .keyKind = "ec256", .ca = true, .issuer = &root};
+    const TestKey inter = makeCert(is);
+    auto leafWith = [&](const std::string& san) {
+        CertSpec ls{.cn = "L", .keyKind = "ec256", .issuer = &inter};
+        ls.extraExt = {{NID_subject_alt_name, san}};
+        return makeCert(ls);
+    };
+    TrustAnchorSet anchors;
+    anchors.add(parse(*provider, root));
+    auto run = [&](const TestKey& leaf) {
+        PathOptions o;
+        o.anchors = &anchors;
+        o.pool = {parse(*provider, inter)};
+        return buildValidationPath(parse(*provider, leaf), o, *provider);
+    };
+    CHECK(run(leafWith("DNS:ok.example.com")).anchored);
+    const PathResult bad = run(leafWith("DNS:bad.org"));
+    CHECK(!bad.anchored);
+    CHECK(bad.failure == PathFailure::NameConstraints);
+    CHECK(hasNameConstraintsExtension(certDer(root)));
+    CHECK(!hasNameConstraintsExtension(certDer(inter)));
 }

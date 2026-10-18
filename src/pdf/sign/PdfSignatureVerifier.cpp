@@ -753,11 +753,29 @@ ltv::ChainEvidence checkTsaChain(crypto::CryptoProvider& provider, const VerifyO
     return best;
 }
 
+// True when the catalog declares the ESIC developer extension (/Extensions /ESIC with an integer
+// /ExtensionLevel), which PAdES documents with /DSS or document time-stamps are expected to carry.
+bool catalogDeclaresEsic(PdfFile& f) {
+    auto cat = f.catalog(0);
+    if (!cat) return false;
+    const PdfObject* ext = cat->second.find("Extensions");
+    if (!ext) return false;
+    const PdfObject e = f.resolve(*ext, 0);
+    if (!e.isDict()) return false;
+    const PdfObject* esic = e.dict->find("ESIC");
+    if (!esic) return false;
+    const PdfObject d = f.resolve(*esic, 0);
+    if (!d.isDict()) return false;
+    const PdfObject* level = d.dict->find("ExtensionLevel");
+    return level && level->isInt() && level->integer >= 1;
+}
+
 // Fills `level` and `ltv` of every signature / document time-stamp from the embedded /DSS.
 // Offline by construction: no network object is ever passed down.
 void evaluateLtv(PdfFile& f, crypto::CryptoProvider& provider, const VerifyOptions& options,
                  std::vector<PdfSignatureInfo>& results, const std::map<std::size_t, Side>& sides) {
     const DssData dss = readDss(f, 0);
+    const bool esicDeclared = catalogDeclaresEsic(f);
     std::string dssLimit;
     {
         std::size_t certs = dss.global.certs.size(), crls = dss.global.crls.size(), ocsps = dss.global.ocsps.size();
@@ -779,7 +797,9 @@ void evaluateLtv(PdfFile& f, crypto::CryptoProvider& provider, const VerifyOptio
         LtvInfo& L = r.ltv;
         r.material = LtvMaterial{side.contentsDer, side.cmsCerts, side.tokenCerts};
         L.dssPresent = dss.present;
-        addLimit(L, "certificate policies and name constraints are not evaluated; delta CRLs are not processed");
+        addLimit(L, "certificate policies are not evaluated");
+        if (dss.present && !esicDeclared)
+            addLimit(L, "the catalog has a /DSS but does not declare the /Extensions /ESIC developer extension");
         const VriEntry* entry = nullptr;
         for (const Bytes* cand : {&side.contentsDer, &side.contentsRaw}) {
             auto k = vriKey(provider, *cand);

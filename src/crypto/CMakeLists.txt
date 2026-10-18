@@ -11,6 +11,7 @@ option(RIVET_ENABLE_CRYPTO "Build the OpenSSL-backed crypto provider (signatures
 add_library(rivet_crypto STATIC
     Algorithms.cpp
     Certificate.cpp
+    NameConstraints.cpp
     PathBuilder.cpp
     Cms.cpp
     Der.cpp
@@ -31,6 +32,9 @@ add_library(rivet::crypto ALIAS rivet_crypto)
 
 target_include_directories(rivet_crypto PUBLIC ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(rivet_crypto PUBLIC rivet::core)
+if(NOT WIN32)
+    target_link_libraries(rivet_crypto PRIVATE ${CMAKE_DL_LIBS}) # loadTrustedModule (dlopen)
+endif()
 
 if(RIVET_ENABLE_CRYPTO)
     find_package(OpenSSL 3 REQUIRED COMPONENTS Crypto)

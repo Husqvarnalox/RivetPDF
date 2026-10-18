@@ -5,7 +5,7 @@
 // buildChain (Certificate.hpp, which only links issuers), this builder checks
 // every link at a caller-supplied validation time: validity period,
 // basicConstraints CA / pathLenConstraint, keyUsage keyCertSign and the
-// signature algorithm, and it backtracks over alternative issuers. Candidate
+// signature algorithm and X.509 nameConstraints (NameConstraints.hpp), and it backtracks over alternative issuers. Candidate
 // issuers come from the trust anchors, a caller-supplied pool and (optionally)
 // an issuer fetcher (AIA caIssuers, see revocation/AiaFetcher.hpp). Everything
 // that is not a trust anchor is untrusted input.
@@ -32,6 +32,7 @@ enum class PathFailure : std::uint8_t {
     Loop,              // issuer already in the path
     TooLong,           // more than maxLength certificates
     BadSignature,      // a candidate with the right name did not verify
+    NameConstraints,   // a nameConstraints violation, or a constraint that cannot be evaluated (fail-closed)
     BackendUnavailable,
 };
 
@@ -60,7 +61,7 @@ struct PathResult {
     bool anchored = false;              // ... and that root is a supplied trust anchor
     PathFailure failure = PathFailure::None; // why no anchored path was found (None when anchored)
     std::vector<std::string> reasons;        // rejected candidates and the verdict, bounded
-    std::vector<std::string> limitations;    // checks that are not enforced (name constraints, policies)
+    std::vector<std::string> limitations;    // checks that are not enforced (certificate policies)
     std::vector<std::string> weakNotes;      // SHA-1 signatures accepted for verification only
     std::vector<Bytes> fetched;              // issuer certificates obtained through the fetcher and used
 };

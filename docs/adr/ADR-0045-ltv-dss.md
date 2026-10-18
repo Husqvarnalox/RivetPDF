@@ -68,10 +68,13 @@ hosts named in the certificates. `rivet-pdf-signature-inspect` shows level,
 
 ## Limitations
 
-- No delta CRLs.
-- No ESIC (ETSI EN 319 102-1) conformance verification: levels are Rivet's
-  honest structural/evidence measure.
-- nameConstraints are detected and recorded as a limitation, not enforced;
+- Delta CRLs are supported (ADR-0044); the evidence embeds the base and the delta.
+- No ETSI EN 319 102-1 ("ESIC") conformance verification: levels are Rivet's
+  honest structural/evidence measure. What is checked is the `/Extensions /ESIC`
+  declaration: the verifier notes in `LtvInfo::limitations` a document that has a
+  `/DSS` but no ESIC declaration (never fatal on its own). The full EN 319 102-1
+  validation procedure is not implemented.
+- nameConstraints are enforced during path building (`crypto/NameConstraints`, ADR-0044);
   certificate policies are not evaluated.
 - Renewal covers only the latest archive time-stamp's chain, not older ones.
 - OCSP responders are accepted when signed by the issuer or a delegated

@@ -62,7 +62,7 @@ public:
 
 private:
     Pkcs11Module() = default;
-    CryptoOk init(const std::filesystem::path& path);
+    CryptoOk init(const std::filesystem::path& path, bool allowInsecurePath);
 
     void* handle_ = nullptr;
     CK_FUNCTION_LIST* list_ = nullptr;

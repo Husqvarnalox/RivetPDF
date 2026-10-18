@@ -485,7 +485,7 @@ private:
     }
 
     // One attempt on a fresh silent context. `err` receives the CSP error code.
-    std::optional<Bytes> trySign(DigestAlgorithm digestAlg, ByteView data, bool isDigest, const SecretBuffer* pin, DWORD& err) {
+    std::optional<Bytes> trySign(DigestAlgorithm digestAlg, ByteView data, bool isDigest, SecretBuffer* pin, DWORD& err) {
         std::scoped_lock lock(csp_->mutex);
         const auto& api = *csp_->api;
         ProvGuard prov{&api};
@@ -495,7 +495,9 @@ private:
         }
         if (pin) {
             const DWORD param = rec_.keySpec == AT_SIGNATURE ? PP_SIGNATURE_PIN : PP_KEYEXCHANGE_PIN;
-            if (!api.setProvParam(prov.p, param, reinterpret_cast<const BYTE*>(pin->chars()), 0)) {
+            const BOOL set = api.setProvParam(prov.p, param, reinterpret_cast<const BYTE*>(pin->chars()), 0);
+            pin->clear(); // the CSP holds its own copy now; do not keep ours through the hash and sign calls
+            if (!set) {
                 err = api.getLastError();
                 return std::nullopt;
             }

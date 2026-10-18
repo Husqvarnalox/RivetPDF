@@ -2,6 +2,7 @@
 #include "crypto/PathBuilder.hpp"
 
 #include "crypto/Cms.hpp"
+#include "crypto/NameConstraints.hpp"
 
 #include <algorithm>
 #include <set>
@@ -21,6 +22,7 @@ std::string_view toString(PathFailure f) {
     case PathFailure::Loop: return "loop in the path";
     case PathFailure::TooLong: return "path too long";
     case PathFailure::BadSignature: return "certificate signature does not verify";
+    case PathFailure::NameConstraints: return "name constraints violated";
     case PathFailure::BackendUnavailable: return "no crypto backend";
     }
     return "?";
@@ -41,13 +43,6 @@ bool brokenSignatureOid(std::string_view oid) {
 bool sha1SignatureOid(std::string_view oid) {
     return oid == "1.2.840.113549.1.1.5" || oid == "1.2.840.10045.4.1" || oid == "1.2.840.10040.4.3" ||
            oid == "1.3.14.3.2.29";
-}
-
-// id-ce-nameConstraints (2.5.29.30) DER-encoded OID: found by a byte scan; the
-// extension is not interpreted (limitation recorded).
-bool hasNameConstraints(const Bytes& der) {
-    static constexpr std::uint8_t kOid[] = {0x06, 0x03, 0x55, 0x1D, 0x1E};
-    return std::search(der.begin(), der.end(), std::begin(kOid), std::end(kOid)) != der.end();
 }
 
 std::string label(const CertificateInfo& c) {
@@ -107,6 +102,12 @@ struct Search {
             if (!cur.validAt(opt.validationTime)) {
                 reason("trust anchor " + label(cur) + " is not valid at the validation time");
                 record(chain, 1, true, false, PathFailure::NotValidAtTime);
+                return false;
+            }
+            const NameConstraintsResult nc = checkNameConstraints(chain);
+            if (nc.verdict != NameConstraintsVerdict::Ok) {
+                reason("path to " + label(chain.front()) + " rejected by nameConstraints: " + nc.detail);
+                record(chain, 2, true, false, PathFailure::NameConstraints);
                 return false;
             }
             record(chain, 3, true, true, PathFailure::None);
@@ -243,8 +244,6 @@ PathResult buildValidationPath(const CertificateInfo& leaf, const PathOptions& o
     for (const CertificateInfo& c : out.chain) {
         if (sha1SignatureOid(c.signatureAlgorithmOid) && out.weakNotes.size() < 8)
             out.weakNotes.push_back("certificate " + label(c) + " uses a SHA-1 signature (accepted for verification only)");
-        if (hasNameConstraints(c.der))
-            out.limitations.push_back("certificate " + label(c) + " carries nameConstraints: not enforced");
     }
     out.limitations.push_back("certificate policies and policy constraints are not evaluated");
     return out;

@@ -25,11 +25,10 @@ void* openLibrary(const std::string& dir, const char* base, bool allowInsecure, 
     const std::string path = dir + "/" + base + kExt;
     std::error_code ec;
     if (!std::filesystem::exists(path, ec)) return nullptr;
-    if (auto why = checkModuleFile(path, allowInsecure); !why.empty()) {
-        if (untrusted.empty()) untrusted = why;
-        return nullptr;
-    }
-    return dlopen(path.c_str(), RTLD_NOW | RTLD_LOCAL);
+    // Trust check and load on the same file object (no check-then-dlopen window).
+    ModuleLoadResult loaded = loadTrustedModule(path, allowInsecure);
+    if (!loaded.handle && loaded.refused && untrusted.empty()) untrusted = loaded.error;
+    return loaded.handle;
 }
 
 template <typename Fn>

@@ -70,7 +70,10 @@ ChainEvidence checkChain(crypto::CryptoProvider& provider, const ChainInput& in,
         if (c.ocspNoCheck) continue; // id-pkix-ocsp-nocheck: no evidence is defined for this certificate
         if (c.status == crypto::RevocationStatus::Good) {
             if (c.acceptedOcsp && *c.acceptedOcsp < c.ocsp.size()) out.ocsps.push_back(c.ocsp[*c.acceptedOcsp].rawResponseDer);
-            else if (c.acceptedCrl && *c.acceptedCrl < c.crl.size()) out.crls.push_back(c.crl[*c.acceptedCrl].rawCrlDer);
+            else if (c.acceptedCrl && *c.acceptedCrl < c.crl.size()) {
+                out.crls.push_back(c.crl[*c.acceptedCrl].rawCrlDer);
+                if (c.acceptedDeltaCrl && *c.acceptedDeltaCrl < c.crl.size()) out.crls.push_back(c.crl[*c.acceptedDeltaCrl].rawCrlDer);
+            }
             else {
                 ok = false;
                 miss("certificate " + label(out.path.chain[c.chainIndex]) + ": status is good but no raw evidence is available");

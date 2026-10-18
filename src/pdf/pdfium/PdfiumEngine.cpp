@@ -7,6 +7,7 @@
 #include "PdfiumFileSource.h"
 #include "PdfiumLibrary.h"
 #include "core/Log.hpp"
+#include "core/SecureWipe.hpp"
 
 #include <memory>
 #include <string>
@@ -83,7 +84,10 @@ core::Result<std::unique_ptr<PdfDocument>> PdfiumEngine::openDocument(const std:
     if (!source.has_value()) {
         return std::unexpected(source.error());
     }
-    const std::string passwordString(password);
+    // The adapter's own copy of the password (the C API needs a NUL-terminated
+    // string); wiped on every path out of this function, errors included.
+    std::string passwordString(password);
+    core::ScopedWipe passwordWipe(passwordString);
 
     // One gate acquisition for the whole open operation:
     // FPDF_LoadCustomDocument (which reads through the source's callback),

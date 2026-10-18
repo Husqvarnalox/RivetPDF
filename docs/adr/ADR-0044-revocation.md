@@ -62,6 +62,19 @@ stored in a PDF `/DSS`, and a policy that never turns "could not find out" into
   `issuingDistributionPoint` scope are checked. Unknown critical extensions are
   rejected. `certificateHold` is reported as revoked with `onHold`.
   `removeFromCRL` outside a delta CRL is rejected.
+- Delta CRLs (RFC 5280 5.2.4): `deltaCRLIndicator` and `freshestCRL` (certificate
+  or CRL) are parsed. A delta verifies like a base CRL (signature, issuer, scope,
+  time rules, a mandatory `cRLNumber`) but on its own it decides nothing.
+  `applyDeltaCrl` combines it with a verified base only if both have the same
+  issuer and `issuingDistributionPoint`, the base number has reached the delta's
+  `baseCRLNumber` and the delta is newer than the base; otherwise it is rejected
+  (`EvidenceFailure::DeltaMismatch`). An entry in the delta replaces the base
+  status (`removeFromCRL` makes the certificate good again, an ordinary reason
+  revokes it); freshness comes from the delta. Fail closed: when a `freshestCRL`
+  pointer exists and the base does not already prove a permanent revocation, a
+  base is not trusted without a verified delta (status Unknown, never good).
+  The checker fetches deltas (at most 4 URLs, same network gate and limits) or
+  takes them from the evidence store; both CRLs are embedded in the `/DSS`.
 - Cache: in memory, keyed by URL, at most 32 entries and 16 MiB, expires at
   `nextUpdate`, thread-safe, never written to disk. Only verified CRLs are
   cached; rejected ones are not.
@@ -106,16 +119,30 @@ the CA. This is why every request goes through the online-validation gate: Off
 makes no request at all, Ask prompts once, On is the explicit opt-in. The
 request carries no document data and the user agent is fixed.
 
+## Name constraints
+
+`crypto/NameConstraints` enforces X.509 `nameConstraints` (RFC 5280 4.2.1.10 and
+6.1.3) in `buildValidationPath`: the constraints of every CA of the path (the
+trust anchor included) apply to the certificates below it, self-issued
+intermediates excepted. Subtrees of type dNSName (label-boundary suffix match, a
+leading dot means subdomains only), rfc822Name (mailbox, host or `.domain`),
+directoryName (RDN prefix, case/space-insensitive string comparison),
+iPAddress (address and mask, families never mix) and URI (authority host) are
+evaluated against the subject name, the subject `emailAddress` and
+`subjectAltName`. A violation makes that path unusable (the search backtracks to
+other issuers) and surfaces as `PathFailure::NameConstraints`. Fail closed: a
+malformed extension, `minimum`/`maximum` use, an empty extension or a name of an
+unevaluable type (otherName, x400Address, ediPartyName, registeredID) that a CA
+actually constrains, is a failure.
+
 ## Not supported
 
-- Delta CRLs: `freshestCRL` is parsed and recorded, a delta-CRL indicator is
-  rejected as unsupported, and the limitation is reported.
 - Indirect CRLs, reason-partitioned distribution points and relative-name
   distribution points (skipped with a note).
 - OCSP stapling in TLS, OCSP GET, multiple CertIDs per request, OCSP response
   caching (responses are cheap; the evidence is stored in the document).
 - `ldap://` and `file://` locations.
-- Delta CRLs. (Path building from `caIssuers` now exists: `crypto/PathBuilder`
+- (Path building from `caIssuers` now exists: `crypto/PathBuilder`
   with `crypto/revocation/AiaFetcher`, over `rivet::net` only, see ADR-0045.)
 
 ## Consequences

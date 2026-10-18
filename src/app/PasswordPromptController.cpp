@@ -120,8 +120,8 @@ void PasswordPromptController::submit() {
     if (tab == nullptr || tab->state() != DocumentTab::State::NeedsPassword) return;
     // Clear the field BEFORE retrying: the retry rebinds the shell
     // synchronously and the password must not linger in the widget.
-    std::string password = field_->text();
-    field_->setText("");
+    crypto::SecretBuffer password{std::string_view(field_->text())};
+    field_->setText(""); // wipes the widget's old storage
     context_.workspace.retryWithPassword(context_.workspace.activeIndex(), std::move(password));
 }
 

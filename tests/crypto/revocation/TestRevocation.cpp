@@ -516,9 +516,20 @@ RIVET_TEST(crlRejectedAndTolerated) {
     critical.criticalUnknownExt = true;
     CHECK(rejectedWith(fetchWith(critical), EvidenceFailure::UnsupportedFeature, "unsupported critical extension"));
 
+    // A delta CRL verifies, but on its own it decides nothing.
     CrlCfg delta = base;
     delta.deltaIndicator = true;
-    CHECK(rejectedWith(fetchWith(delta), EvidenceFailure::UnsupportedFeature, "delta CRL"));
+    CrlEvidence lone = fetchWith(delta);
+    CHECK(lone.verified && lone.isDelta && lone.status == EvidenceCertStatus::Unknown);
+    CHECK(!lone.baseCrlNumber.empty());
+    CrlCfg noNumber = delta;
+    noNumber.crlNumber = -1; // a delta CRL must carry a cRLNumber
+    CHECK(rejectedWith(fetchWith(noNumber), EvidenceFailure::Malformed, "delta CRL without cRLNumber"));
+    // removeFromCRL stays illegal in a base CRL.
+    CrlCfg removeInBase = base;
+    removeInBase.revoked = {&env.pki->leaf};
+    removeInBase.reason = 8;
+    CHECK(rejectedWith(fetchWith(removeInBase), EvidenceFailure::UnsupportedFeature, "removeFromCRL in a base CRL"));
 
     // Tolerated: any content type, PEM encoding.
     CrlEvidence odd = fetchWith(base, "text/plain");
@@ -1134,4 +1145,282 @@ RIVET_TEST(mutatedEvidenceNeverCrashes) {
     for (const Bytes& m : mutations(env.pki->leafInfo.der, 99, 200))
         if (parseRevocationExtensions(m).has_value()) ++parsed;
     std::fprintf(stderr, "    %zu of 200 mutated certificates still parsed\n", parsed);
+}
+
+// ---- delta CRLs (RFC 5280 5.2.4) --------------------------------------------------------------
+
+namespace {
+
+CrlEvidence fetchUrl(Env& env, const std::string& url) {
+    CrlClient client(env.network, env.pki->provider); // fresh cache
+    auto ext = parseRevocationExtensions(env.pki->leafInfo.der);
+    if (!ext) return {};
+    auto r = client.fetch(url, env.pki->leafInfo, env.pki->caInfo, *ext, {}, CancelToken{});
+    if (!r) {
+        std::fprintf(stderr, "    fetch error %s: %s\n", std::string(toString(r.error().code)).c_str(), r.error().message.c_str());
+        return {};
+    }
+    return std::move(*r);
+}
+
+// A base CRL (number 7) and a delta CRL (number 8, relative to 7).
+struct DeltaPair {
+    CrlCfg base;
+    CrlCfg delta;
+    explicit DeltaPair(const Pki& pki) {
+        base.crlNumber = 7;
+        delta.crlNumber = 8;
+        delta.deltaIndicator = true;
+        delta.deltaBaseNumber = 7;
+        (void)pki;
+    }
+};
+
+CrlEvidence combine(Env& env, const CrlCfg& base, const CrlCfg& delta) {
+    env.transport->setCrl(makeCrl(*env.pki, base));
+    env.transport->setDelta(makeCrl(*env.pki, delta));
+    CrlEvidence b = fetchUrl(env, kCrlUrl);
+    CrlEvidence d = fetchUrl(env, kDeltaCrlUrl);
+    CHECK(b.verified);
+    CHECK(d.verified && d.isDelta);
+    return applyDeltaCrl(b, d);
+}
+
+} // namespace
+
+RIVET_TEST(deltaCrlChangesTheBaseStatus) {
+    Env env;
+    const TestKey& leaf = env.pki->leaf;
+    {   // hold in the base, released by removeFromCRL in the delta: good again
+        DeltaPair p(*env.pki);
+        p.base.revoked = {&leaf};
+        p.base.reason = 6;
+        p.delta.revoked = {&leaf};
+        p.delta.reason = 8;
+        CrlEvidence c = combine(env, p.base, p.delta);
+        if (!c.verified) std::fprintf(stderr, "    %s\n", failureText(c).c_str());
+        CHECK(c.verified && c.deltaApplied && c.status == EvidenceCertStatus::Good && !c.onHold);
+        CHECK(!c.deltaRawDer.empty());
+    }
+    {   // not in the base, revoked by the delta
+        DeltaPair p(*env.pki);
+        p.delta.revoked = {&leaf};
+        p.delta.reason = 1;
+        CrlEvidence c = combine(env, p.base, p.delta);
+        CHECK(c.verified && c.status == EvidenceCertStatus::Revoked);
+        CHECK(c.revocationReason.has_value() && *c.revocationReason == 1);
+    }
+    {   // revoked in the base, delta silent: stays revoked
+        DeltaPair p(*env.pki);
+        p.base.revoked = {&leaf};
+        CrlEvidence c = combine(env, p.base, p.delta);
+        CHECK(c.verified && c.status == EvidenceCertStatus::Revoked);
+    }
+    {   // hold in the base, turned into a permanent revocation by the delta
+        DeltaPair p(*env.pki);
+        p.base.revoked = {&leaf};
+        p.base.reason = 6;
+        p.delta.revoked = {&leaf};
+        p.delta.reason = 1;
+        CrlEvidence c = combine(env, p.base, p.delta);
+        CHECK(c.verified && c.status == EvidenceCertStatus::Revoked && !c.onHold);
+    }
+    {   // not in either: good, with the delta's freshness
+        DeltaPair p(*env.pki);
+        p.delta.thisUpdateOffsetSec = -60;
+        CrlEvidence c = combine(env, p.base, p.delta);
+        CHECK(c.verified && c.status == EvidenceCertStatus::Good && c.deltaApplied);
+        CHECK(c.thisUpdate > Clock::now() - std::chrono::minutes(5));
+    }
+}
+
+RIVET_TEST(deltaCrlWithoutAMatchingBaseIsRejected) {
+    Env env;
+    {   // the delta is relative to a base number the supplied base has not reached
+        DeltaPair p(*env.pki);
+        p.delta.deltaBaseNumber = 9;
+        p.delta.crlNumber = 10;
+        CHECK(rejectedWith(combine(env, p.base, p.delta), EvidenceFailure::DeltaMismatch, "base too old"));
+    }
+    {   // not newer than the base
+        DeltaPair p(*env.pki);
+        p.delta.crlNumber = 7;
+        CHECK(rejectedWith(combine(env, p.base, p.delta), EvidenceFailure::DeltaMismatch, "delta not newer"));
+    }
+    {   // a base the delta is relative to may be newer than that base: fine
+        DeltaPair p(*env.pki);
+        p.base.crlNumber = 9;
+        p.delta.deltaBaseNumber = 7;
+        p.delta.crlNumber = 10;
+        CHECK(combine(env, p.base, p.delta).verified);
+    }
+    {   // a delta signed by another CA never verifies
+        DeltaPair p(*env.pki);
+        p.delta.issuer = &env.pki->otherCa;
+        env.transport->setDelta(makeCrl(*env.pki, p.delta));
+        CHECK(rejectedWith(fetchUrl(env, kDeltaCrlUrl), EvidenceFailure::IssuerMismatch, "foreign delta"));
+    }
+    {   // bad signature
+        DeltaPair p(*env.pki);
+        p.delta.corruptSignature = true;
+        env.transport->setDelta(makeCrl(*env.pki, p.delta));
+        CHECK(rejectedWith(fetchUrl(env, kDeltaCrlUrl), EvidenceFailure::SignatureInvalid, "delta bad signature"));
+    }
+    {   // delta of a different scope than the base
+        DeltaPair p(*env.pki);
+        env.transport->setCrl(makeCrl(*env.pki, p.base));
+        env.transport->setDelta(makeCrl(*env.pki, p.delta));
+        CrlEvidence b = fetchUrl(env, kCrlUrl);
+        CrlEvidence d = fetchUrl(env, kDeltaCrlUrl);
+        d.idpDer = Bytes{0x30, 0x00};
+        CHECK(rejectedWith(applyDeltaCrl(b, d), EvidenceFailure::DeltaMismatch, "different IDP"));
+        // base and delta swapped, or two bases, or two deltas
+        CHECK(rejectedWith(applyDeltaCrl(d, b), EvidenceFailure::DeltaMismatch, "swapped"));
+        CHECK(rejectedWith(applyDeltaCrl(b, b), EvidenceFailure::DeltaMismatch, "two bases"));
+        CHECK(rejectedWith(applyDeltaCrl(d, d), EvidenceFailure::DeltaMismatch, "two deltas"));
+        CrlEvidence unverified = b;
+        unverified.verified = false;
+        CHECK(!applyDeltaCrl(unverified, d).verified);
+    }
+}
+
+namespace {
+
+std::shared_ptr<Pki> deltaPki() {
+    return std::make_shared<Pki>("ec256", "", "", std::string("URI:") + kDeltaCrlUrl);
+}
+
+RevocationPolicy crlOnly() {
+    RevocationPolicy p;
+    p.mode = RevocationMode::CrlOnly;
+    return p;
+}
+
+} // namespace
+
+RIVET_TEST(checkerAppliesDeltaCrlsFromTheNetwork) {
+    // freshestCRL on the certificate: the delta is fetched and applied.
+    {
+        Env env(deltaPki());
+        DeltaPair p(*env.pki);
+        p.base.revoked = {&env.pki->leaf};
+        p.base.reason = 6;
+        p.delta.revoked = {&env.pki->leaf};
+        p.delta.reason = 8;
+        env.transport->setCrl(makeCrl(*env.pki, p.base));
+        env.transport->setDelta(makeCrl(*env.pki, p.delta));
+        auto out = runCheck(env, crlOnly());
+        dump(out);
+        CHECK(out.status == RevocationStatus::Good);
+        CHECK(out.certs[0].acceptedCrl.has_value() && out.certs[0].acceptedDeltaCrl.has_value());
+        CHECK_EQ(env.transport->deltaCalls.load(), 1);
+    }
+    // The delta revokes a certificate the base calls good.
+    {
+        Env env(deltaPki());
+        DeltaPair p(*env.pki);
+        p.delta.revoked = {&env.pki->leaf};
+        p.delta.reason = 1;
+        env.transport->setCrl(makeCrl(*env.pki, p.base));
+        env.transport->setDelta(makeCrl(*env.pki, p.delta));
+        auto out = runCheck(env, crlOnly());
+        CHECK(out.status == RevocationStatus::Revoked);
+    }
+    // Fail closed: the issuer publishes deltas, none is available -> never good.
+    {
+        Env env(deltaPki());
+        DeltaPair p(*env.pki);
+        env.transport->setCrl(makeCrl(*env.pki, p.base)); // good in the base; the delta URL answers 404
+        auto out = runCheck(env, crlOnly());
+        dump(out);
+        CHECK(out.status == RevocationStatus::Unknown);
+        CHECK(out.certs[0].unknownReason.find("delta") != std::string::npos);
+        RevocationPolicy hard = crlOnly();
+        hard.hardFail = true;
+        CHECK(!runCheck(env, hard).acceptable());
+    }
+    // ...but a base that already proves a permanent revocation needs no delta.
+    {
+        Env env(deltaPki());
+        DeltaPair p(*env.pki);
+        p.base.revoked = {&env.pki->leaf};
+        env.transport->setCrl(makeCrl(*env.pki, p.base));
+        CHECK(runCheck(env, crlOnly()).status == RevocationStatus::Revoked);
+    }
+    // A delta that does not follow the base is not applied: unknown, not good.
+    {
+        Env env(deltaPki());
+        DeltaPair p(*env.pki);
+        p.delta.deltaBaseNumber = 9;
+        p.delta.crlNumber = 10;
+        env.transport->setCrl(makeCrl(*env.pki, p.base));
+        env.transport->setDelta(makeCrl(*env.pki, p.delta));
+        auto out = runCheck(env, crlOnly());
+        CHECK(out.status == RevocationStatus::Unknown);
+    }
+    // A delta with a bad signature is rejected (and recorded).
+    {
+        Env env(deltaPki());
+        DeltaPair p(*env.pki);
+        p.delta.corruptSignature = true;
+        env.transport->setCrl(makeCrl(*env.pki, p.base));
+        env.transport->setDelta(makeCrl(*env.pki, p.delta));
+        auto out = runCheck(env, crlOnly());
+        CHECK(out.status == RevocationStatus::Unknown);
+    }
+    // The pointer may live in the CRL only.
+    {
+        Env env; // the certificate has no freshestCRL
+        DeltaPair p(*env.pki);
+        p.base.freshestPointer = true;
+        p.delta.revoked = {&env.pki->leaf};
+        p.delta.reason = 1;
+        env.transport->setCrl(makeCrl(*env.pki, p.base));
+        env.transport->setDelta(makeCrl(*env.pki, p.delta));
+        CHECK(runCheck(env, crlOnly()).status == RevocationStatus::Revoked);
+        CHECK_EQ(env.transport->deltaCalls.load(), 1);
+    }
+    // No pointer anywhere: no delta request, the base decides.
+    {
+        Env env;
+        DeltaPair p(*env.pki);
+        env.transport->setCrl(makeCrl(*env.pki, p.base));
+        CHECK(runCheck(env, crlOnly()).status == RevocationStatus::Good);
+        CHECK_EQ(env.transport->deltaCalls.load(), 0);
+    }
+}
+
+RIVET_TEST(checkerAppliesDeltaCrlsFromTheOfflineStore) {
+    Env online(deltaPki());
+    DeltaPair p(*online.pki);
+    p.base.revoked = {&online.pki->leaf};
+    p.base.reason = 6;
+    p.delta.revoked = {&online.pki->leaf};
+    p.delta.reason = 8;
+    const Bytes base = makeCrl(*online.pki, p.base);
+    const Bytes delta = makeCrl(*online.pki, p.delta);
+
+    Env offline(online.pki); // must stay silent
+    RevocationPolicy pol = crlOnly();
+    pol.allowNetwork = false;
+    auto both = std::make_shared<VectorEvidenceStore>();
+    both->addCrl(delta); // order must not matter
+    both->addCrl(base);
+    pol.store = both;
+    auto out = runCheck(offline, pol);
+    dump(out);
+    CHECK(out.status == RevocationStatus::Good);
+    CHECK(out.certs[0].acceptedDeltaCrl.has_value());
+    CHECK_EQ(offline.transport->calls.load(), 0);
+
+    auto baseOnly = std::make_shared<VectorEvidenceStore>();
+    baseOnly->addCrl(base);
+    pol.store = baseOnly;
+    CHECK(runCheck(offline, pol).status == RevocationStatus::Unknown); // hold + delta expected + none supplied
+
+    auto deltaOnly = std::make_shared<VectorEvidenceStore>();
+    deltaOnly->addCrl(delta);
+    pol.store = deltaOnly;
+    CHECK(runCheck(offline, pol).status == RevocationStatus::Unknown); // a delta alone proves nothing
+    CHECK_EQ(offline.transport->calls.load(), 0);
 }

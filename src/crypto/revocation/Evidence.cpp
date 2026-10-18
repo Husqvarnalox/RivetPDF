@@ -24,6 +24,7 @@ std::string_view toString(EvidenceFailure f) {
     case EvidenceFailure::IssuerNotCrlSigner: return "issuer may not sign CRLs";
     case EvidenceFailure::NotApplicable: return "not applicable";
     case EvidenceFailure::UnsupportedFeature: return "unsupported feature";
+    case EvidenceFailure::DeltaMismatch: return "delta CRL does not match its base";
     case EvidenceFailure::BackendUnavailable: return "no crypto backend";
     }
     return "?";

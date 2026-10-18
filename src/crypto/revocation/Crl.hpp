@@ -3,8 +3,8 @@
 
 // CRL (RFC 5280 section 5): parsing / verification of base CRLs, an in-memory
 // per-session cache and an HTTP fetcher. Network access only through
-// net::NetworkClient. Not supported (reported, never silently ignored): delta
-// CRLs, indirect CRLs, CRLs partitioned by reason code.
+// net::NetworkClient. Delta CRLs are supported (applyDeltaCrl). Not supported
+// (reported, never silently ignored): indirect CRLs, CRLs partitioned by reason code.
 
 #include "crypto/Providers.hpp"
 #include "crypto/revocation/Revocation.hpp"
@@ -24,17 +24,30 @@ namespace rivet::crypto {
 //  - the issuer certificate may sign CRLs (cRLSign when keyUsage is present);
 //  - the signature verifies under the issuer's key;
 //  - critical extensions other than the supported ones reject the CRL
-//    (a deltaCRLIndicator is an unsupported feature);
+//    (a deltaCRLIndicator is understood: the result has isDelta, and on its own
+//    it never decides a status, see applyDeltaCrl);
 //  - issuingDistributionPoint scope: a CRL whose scope does not cover the
 //    certificate (user / CA only, other distribution point, partial reasons)
 //    is NotApplicable;
 //  - time rules of evidenceTimeProblem() with thisUpdate as production time;
 //  - lookup of the serial; certificateHold is revoked-with-hold, an entry
-//    with removeFromCRL is rejected (meaningful only in a delta CRL).
+//    with removeFromCRL is rejected in a base CRL (it is meaningful only in a delta CRL).
 // Never throws; problems are in the evidence (verified == false).
 CrlEvidence verifyCrl(ByteView crlDerOrPem, CryptoProvider& provider, const CertificateInfo& cert,
                       const CertificateInfo& issuer, const RevocationExtensions& certExtensions,
                       const EvidenceClock& clock);
+
+// Combines a verified base CRL with a verified delta CRL (RFC 5280 5.2.4, 6.3.3). The delta must
+//  - be a delta (isDelta) and the base must not be one,
+//  - have the same issuer and the same issuingDistributionPoint as the base,
+//  - refer to a base CRL number that the base has reached (base.crlNumber >= delta.baseCrlNumber), and
+//  - be newer than the base (delta.crlNumber > base.crlNumber).
+// Otherwise the result is a copy of `delta` with verified == false, failure DeltaMismatch (or Malformed when
+// the inputs are not what they claim) and a reason: fail closed. On success the result is the base with
+// the delta's changes: an entry in the delta replaces the base status (removeFromCRL: good again),
+// thisUpdate / nextUpdate / crlNumber come from the delta, deltaApplied is set and deltaRawDer carries the
+// delta. Both inputs must already have passed verifyCrl.
+CrlEvidence applyDeltaCrl(const CrlEvidence& base, const CrlEvidence& delta);
 
 // Bounded, thread-safe, in-memory cache of raw CRLs keyed by URL. Entries
 // expire at the CRL's nextUpdate; the oldest-used entry is evicted first. It

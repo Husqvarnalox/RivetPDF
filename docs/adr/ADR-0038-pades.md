@@ -31,7 +31,7 @@ profile and is never labelled PAdES.
 
 The ESIC `/ExtensionLevel` is written as 2, following common implementations;
 this value has not been checked against the ISO/ETSI registry text and must be
-confirmed before external claims of conformance.
+confirmed before external claims of conformance. The verifier only checks that the declaration is present when a `/DSS` exists; EN 319 102-1 conformance verification is not implemented.
 
 ## Not in scope
 

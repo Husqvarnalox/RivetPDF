@@ -29,6 +29,7 @@ namespace rivet::crypto::testing::rev {
 
 constexpr const char* kOcspUrl = "http://ocsp.example.com/ocsp";
 constexpr const char* kCrlUrl = "http://crl.example.com/ca.crl";
+constexpr const char* kDeltaCrlUrl = "http://crl.example.com/delta.crl";
 
 inline Bytes bytesOf(std::string_view s) { return Bytes(s.begin(), s.end()); }
 
@@ -53,7 +54,7 @@ struct Pki {
     CertificateInfo caInfo, leafInfo, leaf2Info;
 
     explicit Pki(const std::string& keyKind = "ec256", const std::string& leafExtraAia = {},
-                 const std::string& leafExtraCdp = {}) {
+                 const std::string& leafExtraCdp = {}, const std::string& leafFreshest = {}) {
         provider = makeDefaultProvider();
         CertSpec caSpec;
         caSpec.cn = "Revocation Test CA";
@@ -72,6 +73,7 @@ struct Pki {
         std::string cdp = std::string("URI:") + kCrlUrl;
         if (!leafExtraCdp.empty()) cdp = leafExtraCdp + "," + cdp;
         ls.extraExt = {{NID_info_access, aia}, {NID_crl_distribution_points, cdp}};
+        if (!leafFreshest.empty()) ls.extraExt.emplace_back(NID_freshest_crl, leafFreshest);
         leaf = makeCert(ls);
         ls.cn = "Revocation Test Leaf 2";
         leaf2 = makeCert(ls);
@@ -208,8 +210,10 @@ struct CrlCfg {
     bool onlyCaCerts = false;             // issuingDistributionPoint onlyContainsCACerts
     bool criticalUnknownExt = false;
     bool deltaIndicator = false;
+    int deltaBaseNumber = 3;              // deltaCRLIndicator value
+    bool freshestPointer = false;         // freshestCRL extension pointing at kDeltaCrlUrl
     bool corruptSignature = false;
-    int crlNumber = 7;
+    int crlNumber = 7;                    // < 0: no cRLNumber extension
 };
 
 inline Bytes makeCrl(const Pki& pki, const CrlCfg& cfg) {
@@ -239,10 +243,23 @@ inline Bytes makeCrl(const Pki& pki, const CrlCfg& cfg) {
         }
         X509_CRL_add0_revoked(crl.get(), r);
     }
-    ASN1_INTEGER* num = ASN1_INTEGER_new();
-    ASN1_INTEGER_set(num, cfg.crlNumber);
-    X509_CRL_add1_ext_i2d(crl.get(), NID_crl_number, num, 0, 0);
-    ASN1_INTEGER_free(num);
+    if (cfg.crlNumber >= 0) {
+        ASN1_INTEGER* num = ASN1_INTEGER_new();
+        ASN1_INTEGER_set(num, cfg.crlNumber);
+        X509_CRL_add1_ext_i2d(crl.get(), NID_crl_number, num, 0, 0);
+        ASN1_INTEGER_free(num);
+    }
+    if (cfg.freshestPointer) {
+        X509V3_CTX ctx;
+        X509V3_set_ctx_nodb(&ctx);
+        X509V3_set_ctx(&ctx, issuer.cert.get(), nullptr, nullptr, nullptr, 0);
+        const std::string uri = std::string("URI:") + kDeltaCrlUrl;
+        X509_EXTENSION* ext = X509V3_EXT_conf_nid(nullptr, &ctx, NID_freshest_crl, uri.c_str());
+        if (ext) {
+            X509_CRL_add_ext(crl.get(), ext, -1);
+            X509_EXTENSION_free(ext);
+        }
+    }
     if (cfg.onlyCaCerts) {
         ISSUING_DIST_POINT* idp = ISSUING_DIST_POINT_new();
         idp->onlyCA = 0xFF;
@@ -251,7 +268,7 @@ inline Bytes makeCrl(const Pki& pki, const CrlCfg& cfg) {
     }
     if (cfg.deltaIndicator) {
         ASN1_INTEGER* base = ASN1_INTEGER_new();
-        ASN1_INTEGER_set(base, 3);
+        ASN1_INTEGER_set(base, cfg.deltaBaseNumber);
         X509_CRL_add1_ext_i2d(crl.get(), NID_delta_crl, base, 1, 0);
         ASN1_INTEGER_free(base);
     }
@@ -306,6 +323,16 @@ public:
                 const Bytes resp = makeOcspResponse(*pki, ocsp, body);
                 r.body.assign(resp.begin(), resp.end());
             }
+        } else if (url == "crl.example.com" && request.url.target.rfind("/delta", 0) == 0) {
+            ++deltaCalls;
+            std::lock_guard lock(mutex);
+            if (deltaBody.empty()) {
+                r.status = 404;
+            } else {
+                r.status = 200;
+                r.headers.emplace_back("Content-Type", crlContentType);
+                r.body.assign(deltaBody.begin(), deltaBody.end());
+            }
         } else if (url == "crl.example.com") {
             ++crlCalls;
             r.status = crlHttpStatus;
@@ -320,6 +347,7 @@ public:
 
     void setOcsp(const OcspCfg& c) { std::lock_guard lock(mutex); ocsp = c; }
     void setCrl(const Bytes& der) { std::lock_guard lock(mutex); crlBody = der; }
+    void setDelta(const Bytes& der) { std::lock_guard lock(mutex); deltaBody = der; }
     std::size_t sha1RequestsSeen() const {
         std::lock_guard lock(mutex);
         std::size_t n = 0;
@@ -338,6 +366,7 @@ public:
     std::shared_ptr<Pki> pki;
     OcspCfg ocsp;
     Bytes crlBody;
+    Bytes deltaBody; // served at /delta*; empty: 404
     int ocspHttpStatus = 200;
     int crlHttpStatus = 200;
     std::string ocspContentType = "application/ocsp-response";
@@ -346,6 +375,7 @@ public:
     std::atomic<int> calls{0};
     std::atomic<int> ocspCalls{0};
     std::atomic<int> crlCalls{0};
+    std::atomic<int> deltaCalls{0};
     net::HttpRequest lastRequest;
     std::vector<net::HttpRequest> requests;
     mutable std::mutex mutex;
