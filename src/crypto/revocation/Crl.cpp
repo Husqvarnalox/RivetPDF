@@ -162,10 +162,14 @@ CrlEvidence verifyCrl(ByteView input, CryptoProvider& provider, const Certificat
         auto exts = readExtensions((*w)[0]);
         if (!exts) return malformed("extensions: " + exts.error().message);
         for (const RawExtension& e : *exts) {
-            if (e.oid == kOidDeltaIndicator)
-                return reject(std::move(ev), EvidenceFailure::UnsupportedFeature, "delta CRLs are not supported");
-            if (e.oid == kOidIdp) {
+            if (e.oid == kOidDeltaIndicator) {
+                auto n = dr::readSingle(e.value);
+                if (!n || n->tag != dr::kInteger) return malformed("deltaCRLIndicator");
+                ev.isDelta = true;
+                ev.baseCrlNumber = dr::normalizeInteger(n->content);
+            } else if (e.oid == kOidIdp) {
                 idp = Bytes(e.value.begin(), e.value.end());
+                ev.idpDer = *idp;
             } else if (e.oid == kOidCrlNumber) {
                 auto n = dr::readSingle(e.value);
                 if (!n || n->tag != dr::kInteger) return malformed("cRLNumber");
@@ -180,12 +184,18 @@ CrlEvidence verifyCrl(ByteView input, CryptoProvider& provider, const Certificat
                         !std::equal(k.content.begin(), k.content.end(), issuer.subjectKeyId.begin(), issuer.subjectKeyId.end()))
                         return reject(std::move(ev), EvidenceFailure::IssuerMismatch, "the CRL's authority key identifier differs from the issuer's key identifier");
             } else if (e.oid == kOidFreshestCrl) {
-                ev.limitations.push_back("a delta CRL pointer (freshestCRL) is present: delta CRLs are not processed");
+                ev.freshestCrlPresent = true;
+                auto urls = parseDistributionPointUris(e.value);
+                if (!urls) return malformed("freshestCRL: " + urls.error().message);
+                for (std::string& u : *urls)
+                    if (ev.freshestCrlUrls.size() < 8) ev.freshestCrlUrls.push_back(std::move(u));
             } else if (e.critical && e.oid != kOidIan) {
                 return reject(std::move(ev), EvidenceFailure::UnsupportedFeature, "unsupported critical CRL extension " + e.oid);
             }
         }
     }
+
+    if (ev.isDelta && ev.crlNumber.empty()) return malformed("a delta CRL without cRLNumber");
 
     // ---- scope ----
     if (idp) {
@@ -201,7 +211,8 @@ CrlEvidence verifyCrl(ByteView input, CryptoProvider& provider, const Certificat
         return reject(std::move(ev), *problem, why);
 
     // ---- lookup ----
-    ev.status = EvidenceCertStatus::Good;
+    // A delta CRL only lists changes: not being listed says nothing about the certificate.
+    ev.status = ev.isDelta ? EvidenceCertStatus::Unknown : EvidenceCertStatus::Good;
     if (revoked) {
         auto entries = dr::children(*revoked);
         if (!entries) return malformed("revokedCertificates");
@@ -227,7 +238,13 @@ CrlEvidence verifyCrl(ByteView input, CryptoProvider& provider, const Certificat
             if (!match) continue;
             auto when = dr::decodeTime((*ek)[1]);
             if (!when) return malformed("revocationDate");
-            if (reason && *reason == 8) {
+            if (ev.isDelta) {
+                ev.listed = true;
+                if (reason && *reason == 8) { // removeFromCRL: the certificate is released again (a hold ended)
+                    ev.removeFromCrl = true;
+                    break;
+                }
+            } else if (reason && *reason == 8) {
                 ev.limitations.push_back("removeFromCRL is meaningful only in a delta CRL");
                 return reject(std::move(ev), EvidenceFailure::UnsupportedFeature, "the entry has reason removeFromCRL, which only a delta CRL may carry");
             }
@@ -240,6 +257,60 @@ CrlEvidence verifyCrl(ByteView input, CryptoProvider& provider, const Certificat
     }
     ev.verified = true;
     return ev;
+}
+
+// ---- delta CRLs ---------------------------------------------------------------------------
+
+namespace {
+
+// Big-endian magnitudes without leading zeros.
+int compareNumbers(const Bytes& a, const Bytes& b) {
+    if (a.size() != b.size()) return a.size() < b.size() ? -1 : 1;
+    if (a == b) return 0;
+    return std::lexicographical_compare(a.begin(), a.end(), b.begin(), b.end()) ? -1 : 1;
+}
+
+CrlEvidence deltaProblem(const CrlEvidence& delta, EvidenceFailure f, std::string why) {
+    CrlEvidence out = delta;
+    return reject(std::move(out), f, std::move(why));
+}
+
+} // namespace
+
+CrlEvidence applyDeltaCrl(const CrlEvidence& base, const CrlEvidence& delta) {
+    if (!base.verified || !delta.verified) return deltaProblem(delta, EvidenceFailure::Malformed, "a delta CRL can only be applied to verified CRLs");
+    if (base.isDelta) return deltaProblem(delta, EvidenceFailure::DeltaMismatch, "the base CRL is itself a delta CRL");
+    if (!delta.isDelta) return deltaProblem(delta, EvidenceFailure::DeltaMismatch, "the CRL to apply is not a delta CRL");
+    if (base.issuerDer != delta.issuerDer) return deltaProblem(delta, EvidenceFailure::DeltaMismatch, "the delta CRL has a different issuer than its base");
+    if (base.idpDer != delta.idpDer) return deltaProblem(delta, EvidenceFailure::DeltaMismatch, "the delta CRL has a different issuingDistributionPoint than its base");
+    if (base.crlNumber.empty()) return deltaProblem(delta, EvidenceFailure::DeltaMismatch, "the base CRL has no cRLNumber, so a delta CRL cannot be tied to it");
+    if (compareNumbers(base.crlNumber, delta.baseCrlNumber) < 0)
+        return deltaProblem(delta, EvidenceFailure::DeltaMismatch, "the base CRL is older than the base the delta CRL is relative to");
+    if (compareNumbers(delta.crlNumber, base.crlNumber) <= 0)
+        return deltaProblem(delta, EvidenceFailure::DeltaMismatch, "the delta CRL is not newer than the base CRL");
+
+    CrlEvidence out = base;
+    out.deltaApplied = true;
+    out.deltaRawDer = delta.rawCrlDer;
+    out.thisUpdate = delta.thisUpdate;
+    if (delta.nextUpdate) out.nextUpdate = delta.nextUpdate;
+    out.crlNumber = delta.crlNumber;
+    out.freshestCrlPresent = out.freshestCrlPresent || delta.freshestCrlPresent;
+    for (const std::string& l : delta.limitations) out.limitations.push_back(l);
+    if (delta.listed) {
+        if (delta.removeFromCrl) {
+            out.status = EvidenceCertStatus::Good;
+            out.revocationTime.reset();
+            out.revocationReason.reset();
+            out.onHold = false;
+        } else {
+            out.status = EvidenceCertStatus::Revoked;
+            out.revocationTime = delta.revocationTime;
+            out.revocationReason = delta.revocationReason;
+            out.onHold = delta.onHold;
+        }
+    }
+    return out;
 }
 
 // ---- cache --------------------------------------------------------------------------------

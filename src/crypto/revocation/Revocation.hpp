@@ -40,7 +40,7 @@ struct RevocationExtensions {
     std::vector<std::string> ocspUrls;        // AIA accessMethod id-ad-ocsp
     std::vector<std::string> caIssuerUrls;    // AIA accessMethod id-ad-caIssuers
     std::vector<DistributionPointInfo> crlDistributionPoints;
-    std::vector<std::string> freshestCrlUrls; // delta CRL pointer: recorded, delta CRLs are not processed
+    std::vector<std::string> freshestCrlUrls; // delta CRL pointer (RFC 5280 4.2.1.15): where to fetch delta CRLs
     bool ocspNoCheck = false;                 // id-pkix-ocsp-nocheck present
     bool freshestCrlPresent = false;
 };
@@ -76,7 +76,8 @@ enum class EvidenceFailure : std::uint8_t {
     IssuerMismatch,         // CRL issuer differs from the certificate's issuer
     IssuerNotCrlSigner,     // CRL issuer certificate may not sign CRLs
     NotApplicable,          // CRL scope (issuingDistributionPoint) does not cover the certificate
-    UnsupportedFeature,     // critical extension, delta / indirect CRL, ...
+    UnsupportedFeature,     // critical extension, indirect CRL, ...
+    DeltaMismatch,          // a delta CRL that does not belong to / does not follow its base CRL
     BackendUnavailable,
 };
 
@@ -128,12 +129,24 @@ struct CrlEvidence {
     std::optional<TimePoint> revocationTime;
     std::optional<int> revocationReason;
     bool onHold = false;               // certificateHold: revoked, possibly temporarily
+    // Delta CRLs (RFC 5280 5.2.4). A delta CRL verified on its own never decides a status: `status` is Revoked
+    // when it lists the certificate with a revocation reason and Unknown otherwise; removeFromCrl says it lists
+    // the certificate with reason removeFromCRL. applyDeltaCrl() combines it with its base.
+    bool isDelta = false;
+    Bytes baseCrlNumber;               // deltaCRLIndicator: the CRL number the delta is relative to
+    bool listed = false;               // delta: the certificate has an entry
+    bool removeFromCrl = false;        // delta: that entry has reason removeFromCRL
+    bool freshestCrlPresent = false;   // the CRL carries a freshestCRL pointer
+    std::vector<std::string> freshestCrlUrls;
+    Bytes idpDer;                      // issuingDistributionPoint extension value, empty when absent
+    bool deltaApplied = false;         // set on a combined evidence from applyDeltaCrl
+    Bytes deltaRawDer;                 // ... the delta CRL that was applied
     bool applicable = true;            // false: valid CRL, but its scope does not cover the certificate
     bool fromCache = false;            // served from the per-session CrlCache
     bool verified = false;
     EvidenceFailure failure = EvidenceFailure::None;
     std::vector<std::string> reasons;
-    std::vector<std::string> limitations; // e.g. "delta CRL not processed"
+    std::vector<std::string> limitations; // informational notes
 };
 
 // ---- time rules ---------------------------------------------------------------------

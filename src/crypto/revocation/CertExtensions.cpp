@@ -101,6 +101,15 @@ CryptoResult<RevocationExtensions> parseRevocationExtensions(ByteView certDer) {
     return out;
 }
 
+CryptoResult<std::vector<std::string>> revocation_detail::parseDistributionPointUris(ByteView value) {
+    std::vector<DistributionPointInfo> dps;
+    if (auto r = parseDistributionPoints(value, dps); !r) return std::unexpected(r.error());
+    std::vector<std::string> out;
+    for (const DistributionPointInfo& dp : dps)
+        for (const std::string& u : dp.uris) out.push_back(u);
+    return out;
+}
+
 std::optional<std::string> classifyRevocationUrl(std::string_view url) {
     constexpr std::size_t kMaxUrl = 2048;
     if (url.empty()) return "empty URL";

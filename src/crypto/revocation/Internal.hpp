@@ -68,6 +68,9 @@ std::string lowerMediaType(std::string_view value);
 // validation off or declined: further URLs should not be tried (no repeated prompts).
 bool isGateRefusal(const CryptoError& error);
 
+// URIs of the fullName entries of a CRLDistributionPoints / FreshestCRL extension value.
+CryptoResult<std::vector<std::string>> parseDistributionPointUris(ByteView extensionValue);
+
 CryptoResult<Bytes> decodePemCrl(ByteView text); // "-----BEGIN X509 CRL-----" -> DER
 
 } // namespace rivet::crypto::revocation_detail

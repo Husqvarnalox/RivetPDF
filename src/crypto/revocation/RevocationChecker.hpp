@@ -87,7 +87,8 @@ struct CertRevocation {
     std::vector<OcspEvidence> ocsp;      // every response examined (accepted one: verified == true)
     std::vector<CrlEvidence> crl;
     std::optional<std::size_t> acceptedOcsp; // index into `ocsp`
-    std::optional<std::size_t> acceptedCrl;  // index into `crl`
+    std::optional<std::size_t> acceptedCrl;  // index into `crl` (the base CRL when a delta CRL was applied)
+    std::optional<std::size_t> acceptedDeltaCrl; // index into `crl` of the delta CRL applied on top of acceptedCrl
     std::vector<std::string> notes;      // skipped URLs, limitations, informational
 };
 

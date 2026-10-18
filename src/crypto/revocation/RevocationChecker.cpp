@@ -141,8 +141,6 @@ CertRevocation RevocationChecker::checkOne(const std::vector<CertificateInfo>& c
         r.notes.push_back("id-pkix-ocsp-nocheck: revocation checking skipped for this certificate");
         return r; // NotChecked
     }
-    if (ext->freshestCrlPresent)
-        r.notes.push_back("the certificate points to delta CRLs (freshestCRL): delta processing is not supported");
 
     const bool useOcsp = policy.mode == RevocationMode::PreferOcspThenCrl || policy.mode == RevocationMode::OcspOnly ||
                          policy.mode == RevocationMode::RequireAny;
@@ -215,29 +213,92 @@ CertRevocation RevocationChecker::checkOne(const std::vector<CertificateInfo>& c
 
     // ---- CRL ----
     if (useCrl && !cancel.cancelled()) {
-        auto consider = [&](CrlEvidence ev) -> bool {
+        std::vector<std::size_t> deltas; // indices into r.crl of verified delta CRLs
+        bool deltasFetched = false;
+        auto crlName = [](const CrlEvidence& e) { return e.url.empty() ? std::string("(supplied)") : shown(e.url); };
+
+        // Records one examined CRL; returns its index when it is verified and applicable.
+        auto record = [&](CrlEvidence ev) -> std::optional<std::size_t> {
             const bool ok = ev.verified;
-            if (!ok) problems.push_back("CRL " + (ev.url.empty() ? std::string("(supplied)") : shown(ev.url)) + " rejected: " +
-                                        (ev.reasons.empty() ? std::string(toString(ev.failure)) : ev.reasons.back()));
+            if (!ok) problems.push_back("CRL " + crlName(ev) + " rejected: " + (ev.reasons.empty() ? std::string(toString(ev.failure)) : ev.reasons.back()));
             for (const std::string& l : ev.limitations) r.notes.push_back("CRL limitation: " + l);
             r.crl.push_back(std::move(ev));
-            if (!ok) return false;
-            const CrlEvidence& e = r.crl.back();
-            if (auto d = decide(e.status, e.revocationTime, e.revocationReason, e.onHold, clock)) {
-                r.acceptedCrl = r.crl.size() - 1;
+            if (!ok) return std::nullopt;
+            if (r.crl.back().isDelta) deltas.push_back(r.crl.size() - 1);
+            return r.crl.size() - 1;
+        };
+
+        // Decides from the base CRL at `baseIdx`, with a delta CRL on top when one applies. A freshestCRL
+        // pointer (certificate or CRL) says the issuer publishes deltas: unless the base already proves the
+        // certificate revoked for good, the answer is then not trusted without a verified delta (fail closed).
+        auto decideFromBase = [&](std::size_t baseIdx) -> bool {
+            const CrlEvidence base = r.crl[baseIdx];
+            for (const std::size_t di : deltas) {
+                CrlEvidence combined = applyDeltaCrl(base, r.crl[di]);
+                if (!combined.verified) {
+                    problems.push_back("delta CRL " + crlName(r.crl[di]) + " does not apply: " + (combined.reasons.empty() ? std::string(toString(combined.failure)) : combined.reasons.back()));
+                    continue;
+                }
+                if (auto d = decide(combined.status, combined.revocationTime, combined.revocationReason, combined.onHold, clock)) {
+                    r.acceptedCrl = baseIdx;
+                    r.acceptedDeltaCrl = di;
+                    adopt(r, *d, RevocationSource::Crl);
+                    return true;
+                }
+            }
+            const bool deltaExpected = (ext->freshestCrlPresent || base.freshestCrlPresent) && base.thisUpdate <= clock.validationTime;
+            const bool finallyRevoked = base.status == EvidenceCertStatus::Revoked && !base.onHold;
+            if (deltaExpected && !finallyRevoked) {
+                problems.push_back("CRL " + crlName(base) + ": the issuer publishes delta CRLs (freshestCRL) and no verified delta CRL applies");
+                return false;
+            }
+            if (auto d = decide(base.status, base.revocationTime, base.revocationReason, base.onHold, clock)) {
+                r.acceptedCrl = baseIdx;
                 adopt(r, *d, RevocationSource::Crl);
                 return true;
             }
             return false;
         };
+
+        auto fetchDeltas = [&](CrlClient& client, const CrlFetchOptions& fo, const CrlEvidence& base) {
+            if (deltasFetched) return;
+            deltasFetched = true;
+            std::vector<std::string> urls = ext->freshestCrlUrls;
+            for (const std::string& u : base.freshestCrlUrls)
+                if (std::find(urls.begin(), urls.end(), u) == urls.end()) urls.push_back(u);
+            std::size_t attempts = 0;
+            for (const std::string& url : urls) {
+                if (cancel.cancelled() || !networkOpen || ++attempts > 4) break;
+                if (auto skip = classifyRevocationUrl(url)) {
+                    r.notes.push_back("skipped delta CRL URL " + shown(url) + ": " + *skip);
+                    continue;
+                }
+                auto ev = client.fetch(url, cert, issuer, *ext, fo, cancel);
+                if (!ev) {
+                    problems.push_back("delta CRL " + shown(url) + ": " + std::string(toString(ev.error().code)) + ": " + ev.error().message);
+                    if (isGateRefusal(ev.error())) networkOpen = false;
+                    if (ev.error().code == CryptoErrorCode::Cancelled) break;
+                    continue;
+                }
+                if (ev->verified && !ev->isDelta) {
+                    problems.push_back("freshestCRL " + shown(url) + " served a base CRL, not a delta CRL");
+                    continue;
+                }
+                record(std::move(*ev));
+            }
+        };
+
         if (policy.store) {
+            std::vector<std::size_t> bases;
             for (const Bytes& raw : policy.store->crls()) {
                 if (cancel.cancelled()) break;
                 CrlEvidence ev = verifyCrl(raw, *provider_, cert, issuer, *ext, clock);
                 if (ev.failure == EvidenceFailure::IssuerMismatch || ev.failure == EvidenceFailure::Malformed) continue; // not about this CA
                 ev.url = "(supplied evidence)";
-                if (consider(std::move(ev))) return r;
+                if (auto idx = record(std::move(ev)); idx && !r.crl[*idx].isDelta) bases.push_back(*idx);
             }
+            for (const std::size_t b : bases)
+                if (decideFromBase(b)) return r;
         }
         if (networkOpen && !cancel.cancelled()) {
             CrlClient client(network_, provider_, cache_);
@@ -264,7 +325,10 @@ CertRevocation RevocationChecker::checkOne(const std::vector<CertificateInfo>& c
                         if (ev.error().code == CryptoErrorCode::Cancelled) break;
                         continue;
                     }
-                    if (consider(std::move(*ev))) return r;
+                    auto idx = record(std::move(*ev));
+                    if (!idx || r.crl[*idx].isDelta) continue;
+                    if (ext->freshestCrlPresent || r.crl[*idx].freshestCrlPresent) fetchDeltas(client, fo, r.crl[*idx]);
+                    if (decideFromBase(*idx)) return r;
                 }
             }
             if (!anyUri && ext->crlDistributionPoints.empty()) problems.push_back("the certificate names no CRL distribution point");
