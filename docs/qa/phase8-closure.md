@@ -55,7 +55,7 @@ Output checked by Rivet's own reader and tests. No qpdf, mutool or Acrobat cross
 write encrypted PDFs, so the constrained encryptor refuses signed input and several structures.
 
 ## Security
-See `docs/security/phase8-review.md`. Fixed in this phase: legacy password strings are wiped; modules load from the validated file object (macOS narrows the load race, does not close it); nameConstraints and delta CRLs are enforced (ADR-0044). Still open: full ETSI EN 319 102-1 ("ESIC") conformance verification is not implemented, only the `/Extensions /ESIC` declaration is checked.
+See `docs/security/phase8-review.md`. Fixed in this phase: legacy password strings are wiped; modules are validated and loaded with a dev/ino re-check (on Linux and macOS this narrows the check-then-load race to the dlopen call, it does not close it; static initialisers of a swapped-in library can run before the mismatch is detected); nameConstraints and delta CRLs are enforced (ADR-0044). Still open: full ETSI EN 319 102-1 ("ESIC") conformance verification is not implemented, only the `/Extensions /ESIC` declaration is checked.
 
 ## Not verified (accepted by the owner as out of closure scope)
 Real DSS credentials; hardware tokens; a valid CryptoPro licence; Windows QA; Acrobat interop; live
