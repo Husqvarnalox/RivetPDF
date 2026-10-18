@@ -36,6 +36,11 @@ test-support builders; nothing is committed.
 |---|------|--------|-----|------|
 | F1 | PKCS#11 loading | `Pkcs11Module::acquire` accepted a relative module path, so the module was resolved against the working directory / loader search path (library planting). | Relative paths are refused (`Pkcs11Module.cpp`, `acquire`). | `relativeModulePathIsRefused` |
 | F2 | CryptoPro loading | `CspApi::load` accepted a relative `libraryDirectory`. | Relative directories are refused (`CryptoProApi.cpp`, `load`). | `cryptoProRelativeLibraryDirectoryIsRefused` |
+| F3 | Encrypt secrets | Passwords, file key and R6/R4 intermediate hashes were never zeroised in `src/pdf/encrypt`. | RAII `Wipe` guards on every secret intermediate and error path (`StandardHandler.cpp:40`, `:257`, `:331`, `:403`), `EncryptionSetup` zeroes the file key (`:306`), object keys wiped (`:542`); `EncryptSecrets` + `encryptPdf(pdf, options, secrets)` take passwords in `SecretBuffer` (`PdfEncrypt.hpp:79`, `PdfEncrypt.cpp:714-718`). | `secretsOverloadMatchesStringOverloadAndIgnoresOptionFields`, `secretsOverloadErrorPathsAreTypedAndLeaveBuffersIntact`, `preparedPasswordsAreWipedByTheCallersGuardContract` |
+| F4 | System proxy vs SSRF | With `useSystemProxy` the connect-time peer check sees the proxy, not the target. | `checkProxyDestination` refuses host names unless `allowedHosts` is set (IP literals still classified), called from `checkUrl` (`Policy.cpp:84,96`); proxy address policy via `allowPrivateProxy` (`CurlTransport.cpp:154`); ADR-0042 addendum. | `netPolicySystemProxyKeepsTheSsrfInvariant`, `netClientSystemProxyDoesNotBypassDestinationPolicy` |
+| F5 | Module trust | No ownership/permission/symlink checks before `dlopen`. | `checkModuleFile` (`ModuleTrust.cpp:71`): absolute path, symlinks resolved, regular file, owner root/euid, not group/other-writable, parent not world-writable (sticky allowed); Windows best effort. Used in `Pkcs11Module.cpp:122` and `CryptoProApi.cpp:28`; override `Pkcs11Options::allowInsecureModulePath` / `CryptoProOptions::allowInsecureLibraryPath` (default false). | `tests/crypto/TestModuleTrust.cpp` (6 POSIX tests, 1 Windows) |
+| F6 | OCSP delegated responder | A delegated responder without `id-pkix-ocsp-nocheck` was accepted. | Rejected fail-closed with `EvidenceFailure::ResponderRevocationUnchecked` (`Ocsp.cpp:289-294`); EKU and validity checks unchanged. | `TestRevocation.cpp` (`responderNoNocheck` case) |
+| F7 | Verifier budgets | Only fixed constants bounded signature count and chain search. | `VerifyLimits` (`PdfSignatureVerifier.hpp:42`): maxSignatures 256 (`PdfSignatureVerifier.cpp:933-975`, `LimitExceeded`), DSS cert/CRL/OCSP caps (`:761-773`, `LtvInfo::limitExceeded`), TSA candidates (`:735`), `PathOptions::maxSearchSteps` (`PathBuilder.cpp:97`). | `documentWithTooManySignaturesIsRefusedWithAClearStatus`, `ltvBudgetsFailClosedWithClearReasons` |
 
 ## Area-by-area
 
@@ -61,8 +66,8 @@ Checked:
   classified; a redirect never downgrades).
 Result: sound by inspection and by fuzz of the pure logic.
 Residual risk:
-- If a deployment sets `useSystemProxy=true`, the connect-time check sees the proxy's address, not the target's; only the
-  name/literal check protects. Keep the default.
+- Fixed (F4): with `useSystemProxy=true` host names need an `allowedHosts` list (the connect-time check sees the proxy, not
+  the target); the default stays off. Remaining: a proxy that resolves an allowed host name to a private address is trusted.
 - Redirected 307/308 POSTs re-send the body to the new (checked, https) host. The TSA and OCSP bodies are public data; the DSS
   client forbids redirects (`CryptoProDss.cpp:200,213,380`).
 - libcurl itself and its TLS backend are trusted.
@@ -89,9 +94,11 @@ Checked:
 Not verified: that no UI/dialog layer (`src/app`, `src/ui`, being written concurrently) logs or retains a PIN; that
 `log::` calls never print a URL with a token (no secrets are placed in URLs by the code reviewed, tokens go in the JSON
 body); crash-dump and swap exposure (no `mlock`).
-Residual risk: `EncryptOptions::userPassword/ownerPassword` are plain `std::string` and the derived file key is not
-zeroised in `src/pdf/encrypt` (`secureZero` is not used there); the CryptoPro PIN stays in memory for the whole sign call
-rather than being cleared right after `setProvParam`. Low severity, local attacker with memory access only.
+Fixed (F3): encrypt passwords, file key and intermediate hashes are wiped on all paths; callers can pass `EncryptSecrets`.
+Residual risk: the `std::string` fields of `EncryptOptions` (legacy overload) and the caller's own copies are not owned by the
+module and are not wiped; the UTF-8/Latin-1 conversion of an `ByteView` into libc/std containers inside OpenSSL-backed
+provider calls may leave copies in provider memory; the CryptoPro PIN stays in memory for the whole sign call rather than
+being cleared right after `setProvParam`. Low severity, local attacker with memory access only.
 
 ### 4. Temp files and atomic writes
 Checked: `AtomicFileWriter` creates a hidden temp next to the destination with `O_CREAT|O_EXCL|O_CLOEXEC`, random
@@ -131,7 +138,7 @@ Checked:
 - Fuzz: 0.86M OCSP/CRL and 1.57M token executions with no crash or hang (the harness checks parse/verify do not violate its
   basic invariants; it is not a proof that no forged response verifies).
 Not verified: that every caller treats `RevocationOutcome::acceptable()` as the only gate (callers in `src/app` are being
-written); a delegated responder certificate is not itself revocation-checked and `id-pkix-ocsp-nocheck` is not required;
+written); a delegated responder must now carry `id-pkix-ocsp-nocheck` (F6) so it is not itself revocation-checked, a CA-signed responder without it is refused;
 `genTime` skew policy against the local clock was not reviewed; delta CRLs and indirect CRLs are documented limitations
 (`PdfSignatureVerifier.cpp:756`).
 Residual risk: soft-fail mode (hardFail off) is a user-visible weaker setting by design.
@@ -173,12 +180,12 @@ Token-supplied strings are stripped of control characters before UI/log use (`tr
 (`kMaxTokenMessage`, certificate sizes `Pkcs11IdentityStore.cpp:27-35`). CryptoPro: fixed default directories under
 `/opt/cprocsp/lib*` or an explicit absolute directory (F2) (`CryptoProApi.cpp:34-66`), handles intentionally never
 `dlclose`d.
-NOT checked (no code does it): ownership and permission checks on the module file or its directory (writable by group/other,
-owned by a different user), signature/code-signing verification of the module, symlink resolution before load. A module is
-arbitrary native code that runs with the user's rights, so the trust decision is the user's.
-Residual risk: a user-writable module location lets another local process plant code; mitigate by documenting that
-module paths should be root-owned (a future hardening could `stat` the file and refuse group/world-writable modules).
-Tested against a mock module only, never a vendor module.
+Fixed (F5): both loaders call `checkModuleFile` before `dlopen` (ownership, permissions, symlink resolution, parent
+directory). NOT checked: signature/code-signing verification of the module. A module is arbitrary native code that runs with
+the user's rights, so the trust decision is the user's.
+Residual risk: a check-then-`dlopen` window (TOCTOU) remains; the Windows branch is best effort (absolute drive path, regular
+non-symlink file, no ACL inspection) and was not built here; the explicit override disables the permission checks. The
+provider-level override option is tested only through the helper. Tested against a mock module only, never a vendor module.
 
 ### 10. Remote QES privacy modes
 Checked: default `RemotePrivacyMode::HashOnly` (`CryptoProDss.hpp:40`); `WholeDocument` requires the caller to pass the exact
@@ -201,7 +208,7 @@ R6 (`:157-163`), AES-128 passwords limited to Latin-1 (`:175`). 96k libFuzzer ex
 with no crash; the encryption round trip and password checks are covered by the existing tests in `tests/pdf/encrypt`.
 Not verified: interoperability with Acrobat / other viewers for every permission combination (only the repo's own tests
 and PDFium decrypt were used), RC4/R4 password-entry derivation against the spec beyond the existing known-answer tests.
-Residual risk: keys and passwords are not zeroised in this module (section 3).
+Fixed (F3): secrets are wiped in this module; see section 3 for the remaining unavoidable copies.
 
 ### 12. Parser DoS limits
 Checked and found in the code: DER depth 24, 1M children, 1 GiB input (`Der.hpp:22-24`); certificate 16 MiB
@@ -215,7 +222,7 @@ Not verified: worst-case CPU of `PathBuilder` combined with 4096 signatures (eac
 measured; `kMaxInputSize` of 1 GiB for DER is a large ceiling that relies on callers having already bounded the input
 (the net layer and the signature `/Contents` cap do); inflate limits at each `inflateZlib` caller were not individually
 audited.
-Residual risk: a document with thousands of signatures can make verification slow (bounded, not unbounded).
+Fixed (F7): configurable caps (`VerifyOptions::limits`, default 256 signatures) fail with a clear `LimitExceeded` status. Residual risk: the worst-case CPU under the default caps was not measured.
 
 ## Not verified (summary)
 - Real TLS behaviour, real TSA/OCSP/CRL servers, real DSS service, real PKCS#11 vendor modules, real CryptoPro CSP.
@@ -225,8 +232,8 @@ Residual risk: a document with thousands of signatures can make verification slo
 - Long-run fuzzing (hours), structure-aware coverage of chain building, differential tests against other PDF readers.
 
 ## Suggested follow-ups (larger than a small fix)
-1. Stat-check PKCS#11/CSP module files (owner, group/world-writable) before `dlopen`, and document the expected install path.
-2. Zeroise encrypt passwords and derived keys in `src/pdf/encrypt` (wrap in `SecretBuffer`).
-3. Revocation-check (or require `ocsp-nocheck` on) delegated OCSP responder certificates.
-4. A time/CPU budget for verifying documents with very many signatures.
+1. (done, F5) Module file trust checks. Still open: document the expected install path; code-signing verification.
+2. (done, F3) Encrypt secret wiping. Still open: migrate callers to `EncryptSecrets`; clear the CryptoPro PIN right after `setProvParam`.
+3. (done, F6) Delegated OCSP responders require `ocsp-nocheck`.
+4. (done, F7) Verifier budgets. Still open: measure worst-case CPU under the defaults.
 5. Longer CI fuzzing (OSS-Fuzz style) with the committed seed generators.
