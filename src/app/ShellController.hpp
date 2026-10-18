@@ -16,6 +16,8 @@
 #include "app/MenuModel.hpp"
 #include "app/PageEditingController.hpp"
 #include "app/PasswordPromptController.hpp"
+#include "app/SecurityDialogs.hpp"
+#include "app/ShellDocumentSecurityHost.hpp"
 #include "app/PrintCoordinator.hpp"
 #include "app/RecentFiles.hpp"
 #include "app/SearchBarController.hpp"
@@ -376,6 +378,18 @@ private:
     // Text recognition (ADR-0027); reads the shell context only.
     std::unique_ptr<OcrController> ocr_;
     std::unique_ptr<SignatureSheetController> signatureSheet_;
+
+    // Digital signatures and Set Password (ADR-0048). Views first, then the
+    // host, then the controllers: destroyed in reverse, so the workers of a
+    // controller drain while its view and host are still alive.
+    std::unique_ptr<SetPasswordDialog> setPasswordDialog_;
+    std::unique_ptr<SigningDialog> signingDialog_;
+    std::unique_ptr<SignatureValidationPanel> validationPanel_;
+    std::unique_ptr<ShellDocumentSecurityHost> securityHost_;
+    std::shared_ptr<ConsentPromptAdapter> consentPrompt_;
+    std::unique_ptr<SetPasswordController> setPassword_;
+    std::unique_ptr<DigitalSignatureController> signing_;
+    std::unique_ptr<SignatureValidationController> signatureValidation_;
 
     // Print flow (panel -> worker spool -> platform print). Declared last:
     // destroyed first, while the sessions its worker borrows are alive.

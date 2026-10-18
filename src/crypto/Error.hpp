@@ -1,0 +1,69 @@
+// SPDX-License-Identifier: MPL-2.0
+#pragma once
+
+#include "core/Error.hpp"
+
+#include <cstdint>
+#include <expected>
+#include <string>
+#include <string_view>
+#include <utility>
+
+namespace rivet::crypto {
+
+// Typed failure kinds of the crypto subsystem. Messages never contain
+// secrets, key material or document contents.
+enum class CryptoErrorCode : std::uint8_t {
+    BackendUnavailable, // built without a crypto backend (RIVET_ENABLE_CRYPTO=OFF)
+    InvalidArgument,
+    WrongPassword,      // PKCS#12 / key password rejected
+    CorruptData,        // structurally broken container (PKCS#12, certificate, key)
+    NoPrivateKey,       // container holds no usable private key
+    UnsupportedAlgorithm,
+    WeakAlgorithm,      // refused by creation policy (SHA-1, RSA < 2048, ...)
+    MalformedCms,       // CMS / DER structure is invalid
+    LimitExceeded,      // size / nesting bound exceeded
+    KeyMismatch,        // key does not fit the requested algorithm / certificate
+    CertificateNotFound,
+    NotExportable,
+    Cancelled,
+    PinLocked,          // token / container PIN is blocked (no retries left)
+    DeviceRemoved,      // token or card was removed / is not present
+    SessionExpired,     // provider session ended (token reset, logout, timeout)
+    LicenseInvalid,     // CSP / provider licence missing or expired
+    Io,
+    Network,            // time-stamp / online request refused or failed in the network layer (gate, policy, transport)
+    BadResponse,        // the remote answered, but not with an acceptable reply (HTTP status, content type)
+    // Remote / cloud signing (ADR-0047).
+    AuthFailed,           // the service rejected the credentials or the access token
+    ConfirmationRequired, // PIN / OTP confirmation is required and cannot be obtained (no prompt available)
+    ConfirmationRejected, // the PIN / OTP was wrong (attempts exhausted); PinLocked when the service locks it
+    RateLimited,          // quota exceeded / too many requests (HTTP 429)
+    ServerError,          // the service failed (HTTP 5xx) after the bounded retries
+    Timeout,              // network or confirmation-wait time limit exceeded
+    NotQualified,         // the service refused: the certificate / identity is not allowed for qualified signing
+    Internal,
+};
+
+std::string_view toString(CryptoErrorCode code);
+
+struct CryptoError {
+    CryptoErrorCode code = CryptoErrorCode::Internal;
+    std::string message;
+
+    bool operator==(const CryptoError&) const = default;
+};
+
+template <typename T>
+using CryptoResult = std::expected<T, CryptoError>;
+
+using CryptoOk = CryptoResult<void>;
+
+inline std::unexpected<CryptoError> fail(CryptoErrorCode code, std::string message) {
+    return std::unexpected<CryptoError>(CryptoError{code, std::move(message)});
+}
+
+// Bridge to the shared core error type ("crypto: <code>: <message>").
+core::Error toCoreError(const CryptoError& error);
+
+} // namespace rivet::crypto

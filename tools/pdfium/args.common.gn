@@ -1,0 +1,31 @@
+# Rivet PDFium GN arguments shared by every OS/CPU (macOS, Windows, Linux).
+# The OS-specific files and the generated target_os/target_cpu lines are
+# appended by build-pdfium.sh / build-pdfium.ps1. Do NOT edit one OS in
+# isolation: the capability flags must stay identical everywhere so PDF
+# semantics cannot differ between platforms (docs/BUILDING_PDFIUM.md,
+# ADR-0007, ADR-0036).
+
+# Security policy (ADR-0007): no JavaScript engine, no XFA.
+pdf_enable_v8 = false
+pdf_enable_xfa = false
+
+# AGG rasterizer (no Skia).
+pdf_use_skia = false
+pdf_use_agg = true
+
+# One self-contained static library. With is_component_build=false the
+# Windows CRT is the STATIC one (/MT); Rivet's MSVC build matches it
+# (cmake/RivetMsvcRuntime.cmake).
+is_component_build = false
+pdf_is_complete_lib = true
+
+# Release PDFium even under a Debug Rivet build.
+is_debug = false
+
+# Use the platform C++ standard library (libc++ on macOS, libstdc++ on Linux,
+# MSVC STL on Windows) so the archive links into a Rivet built with the
+# platform toolchain. The default (true) uses Chromium's std::__Cr libc++.
+use_custom_libcxx = false
+
+# Line tables only (keeps the library small).
+symbol_level = 1

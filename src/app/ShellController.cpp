@@ -5,6 +5,7 @@
 #include "app/MarkdownParseCoordinator.hpp"
 #include "app/MarkdownPreviewView.hpp"
 #include "app/RedactionController.hpp"
+#include "app/SecurityServices.hpp"
 
 #include "app/WelcomeView.hpp"
 #include "core/Error.hpp"
@@ -105,6 +106,8 @@ ShellController::ShellController(const platform::ShellServices& services, std::u
 
 ShellController::~ShellController() {
     alive_.reset(); // no tooltip delay runs from here on
+    // A consent question must not reach the dialogs while they are torn down.
+    if (consentPrompt_ != nullptr) consentPrompt_->detach();
     // The thumbnail overlay calls into controllers that die before the
     // widget tree.
     if (sidebar_ != nullptr) sidebar_->thumbnails().setPageOverlayPainter({});
@@ -285,6 +288,34 @@ void ShellController::buildWidgets() {
         setStatus("Click on the page to place the signature, or drag to size it");
     });
     annotations_->setOnSignatureRequested([this] { openSignatureSheet(false); });
+
+    // Digital signatures and Set Password (ADR-0048). Needs the main-thread
+    // dispatcher for its background work; without one (headless tests) the
+    // commands stay disabled.
+    if (services_.mainDispatcher != nullptr) {
+        const auto status = [this](std::string text) { setStatus(std::move(text)); };
+        setPasswordDialog_ = std::make_unique<SetPasswordDialog>(*context_, *root_);
+        signingDialog_ = std::make_unique<SigningDialog>(*context_, *root_);
+        validationPanel_ = std::make_unique<SignatureValidationPanel>(*context_, *root_);
+        securityHost_ = std::make_unique<ShellDocumentSecurityHost>(*engine_, *context_);
+        SecurityServices security = makeSecurityServices(services_.appData);
+        consentPrompt_ = std::make_shared<ConsentPromptAdapter>(
+            *services_.mainDispatcher, [this](const net::ConsentRequest& request, std::function<void(bool)> answer) {
+                signingDialog_->askConsent(request, std::move(answer));
+            });
+        if (security.gate != nullptr) security.gate->setPrompt(consentPrompt_);
+        setPassword_ = std::make_unique<SetPasswordController>(*securityHost_, *setPasswordDialog_, scheduler_,
+                                                               *services_.mainDispatcher, status);
+        signing_ = std::make_unique<DigitalSignatureController>(*securityHost_, *signingDialog_, security, scheduler_,
+                                                                *services_.mainDispatcher, status);
+        signatureValidation_ = std::make_unique<SignatureValidationController>(
+            *securityHost_, *validationPanel_, security, scheduler_, *services_.mainDispatcher, status);
+        setPasswordDialog_->setOnSubmit([this](SetPasswordForm form) { setPassword_->submit(std::move(form)); });
+        setPasswordDialog_->setOnCancel([this] { setPassword_->cancel(); });
+        signingDialog_->setOnSubmit([this](SigningForm form) { signing_->submit(form); });
+        signingDialog_->setOnCancel([this] { signing_->cancel(); });
+        validationPanel_->setOnClose([this] { signatureValidation_->close(); });
+    }
 
     // File lifecycle (save/save-as/import/merge/extract, dirty close/quit).
     fileLifecycle_ = std::make_unique<FileController>(
@@ -638,6 +669,9 @@ void ShellController::layoutShell() {
     if (content_ != nullptr) content_->layout(viewport_->frame());
     if (forms_ != nullptr) forms_->layout(viewport_->frame());
     if (signatureSheet_ != nullptr) signatureSheet_->layout(markdown ? contentRect : viewport_->frame());
+    if (setPasswordDialog_ != nullptr) setPasswordDialog_->layout(viewport_->frame());
+    if (signingDialog_ != nullptr) signingDialog_->layout(viewport_->frame());
+    if (validationPanel_ != nullptr) validationPanel_->layout(viewport_->frame());
     if (tooltip_ != nullptr) tooltip_->dismiss();
 }
 
@@ -1280,11 +1314,32 @@ void ShellController::performFile(FileCommand command) {
         performCompare();
         return;
     }
+    if (command == FileCommand::SetPassword) {
+        if (setPassword_ != nullptr) setPassword_->begin();
+        return;
+    }
+    if (command == FileCommand::SignDocument) {
+        if (signing_ != nullptr) signing_->begin();
+        return;
+    }
+    if (command == FileCommand::ValidateSignatures) {
+        if (signatureValidation_ != nullptr) signatureValidation_->begin();
+        return;
+    }
     if (fileLifecycle_ != nullptr) fileLifecycle_->perform(command);
 }
 
 bool ShellController::canPerformFile(FileCommand command) const {
     if (command == FileCommand::Compare) return canPerformCompare();
+    if (command == FileCommand::SetPassword) {
+        return setPassword_ != nullptr && !setPassword_->busy() && context_ != nullptr && context_->readyPdfTab() != nullptr;
+    }
+    if (command == FileCommand::SignDocument) {
+        return signing_ != nullptr && !signing_->busy() && context_ != nullptr && context_->readyPdfTab() != nullptr;
+    }
+    if (command == FileCommand::ValidateSignatures) {
+        return signatureValidation_ != nullptr && context_ != nullptr && context_->readyPdfTab() != nullptr;
+    }
     return fileLifecycle_ != nullptr && fileLifecycle_->canPerform(command);
 }
 

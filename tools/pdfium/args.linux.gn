@@ -1,0 +1,5 @@
+target_os = "linux"
+# Compile against the host's libstdc++ headers (needs g++ / libstdc++-dev), not
+# Chromium's Debian sysroot, so the archive is ABI-compatible with a GCC- or
+# Clang-built Rivet.
+use_sysroot = false

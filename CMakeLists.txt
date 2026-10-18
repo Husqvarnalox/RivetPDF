@@ -29,6 +29,11 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 option(RIVET_WITH_PDFIUM "Build with the PDFium-backed PDF engine" OFF)
 option(RIVET_BUILD_TESTS "Build Rivet tests" ON)
 option(RIVET_ENABLE_SANITIZERS "Build with AddressSanitizer and UBSan" OFF)
+option(RIVET_BUILD_FUZZERS "Build the libFuzzer harnesses in tests/fuzz (needs clang with the fuzzer runtime)" OFF)
+
+if(RIVET_BUILD_FUZZERS AND NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+    message(FATAL_ERROR "RIVET_BUILD_FUZZERS=ON needs clang (-fsanitize=fuzzer); the deterministic replay tests need no fuzzer runtime.")
+endif()
 
 find_package(Threads REQUIRED)
 
@@ -42,7 +47,9 @@ if(RIVET_WITH_PDFIUM)
             "    -D RIVET_PDFIUM_ROOT=/absolute/path/to/pdfium-install\n"
             "Expected layout:\n"
             "    <root>/include/fpdfview.h   (plus fpdf_*.h headers)\n"
-            "    <root>/lib/libpdfium.a      (macOS/Linux static; .dylib/.so also accepted)")
+            "    <root>/lib/libpdfium.a      (macOS/Linux static; .dylib/.so also accepted)\n"
+            "    <root>/lib/pdfium.lib       (Windows static)\n"
+            "Reproducible build scripts: tools/pdfium/")
     endif()
     message(STATUS "Rivet: PDFium found: ${PDFIUM_LIBRARY}")
 else()
@@ -54,9 +61,10 @@ endif()
 # problems for this code base.
 if(MSVC)
     add_compile_options(/utf-8 /Zc:__cplusplus /EHsc)
-    add_compile_definitions(_CRT_SECURE_NO_WARNINGS _CRT_NONSTDC_NO_WARNINGS)
+    add_compile_definitions(_CRT_SECURE_NO_WARNINGS _CRT_NONSTDC_NO_WARNINGS NOMINMAX WIN32_LEAN_AND_MEAN)
 endif()
 
+include(RivetMsvcRuntime)
 include(RivetWarnings)
 include(RivetSanitizers)
 
@@ -72,9 +80,13 @@ macro(rivet_add_subdirectory dir)
 endmacro()
 
 rivet_add_subdirectory(src/core)
+rivet_add_subdirectory(src/crypto)
+rivet_add_subdirectory(src/net)
 rivet_add_subdirectory(src/markdown)
 rivet_add_subdirectory(src/render)
 rivet_add_subdirectory(src/pdf)
+rivet_add_subdirectory(src/pdf/sign)
+rivet_add_subdirectory(src/pdf/encrypt)
 rivet_add_subdirectory(src/editor)
 rivet_add_subdirectory(src/ui)
 rivet_add_subdirectory(src/platform)

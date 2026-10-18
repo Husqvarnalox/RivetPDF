@@ -1,9 +1,10 @@
 # Rivet CI: portable foundation (PDFium-OFF).
 #
-# PDFium is intentionally NOT downloaded or built here: Rivet never fetches
-# PDFium automatically, and a cacheable, maintainable CI strategy for a local
-# static PDFium build is a separate later task. These jobs cover the
-# PDFium-independent foundation: configure, build, ctest, zero warnings.
+# The build-test / windows-msvc jobs below are the PDFium-independent
+# foundation (configure, build, ctest, zero warnings). The linux-pdfium and
+# windows-msvc-pdfium jobs at the end build PDFium from the pinned recipe in
+# tools/pdfium/ (cached) and run the PDFium-ON suite. Rivet's own CMake never
+# downloads PDFium.
 #
 # The Ubuntu job is deliberately a GCC portability build (CMake's default
 # /usr/bin/c++ is g++ on the runner): it validates the headers and sources
@@ -29,10 +30,16 @@ jobs:
         include:
           - os: ubuntu-latest   # GCC portability build (/usr/bin/c++ = g++)
             name: linux-gcc
-          - os: macos-latest    # AppleClang product build
+            network: "ON"
+            crypto: "ON"
+          - os: macos-latest    # AppleClang product build (system libcurl)
             name: macos
+            network: "ON"
+            crypto: "ON"
           - os: macos-latest    # universal binary: arm64 + x86_64 slices
             name: macos-universal
+            network: "OFF"
+            crypto: "OFF"
             cmake_args: -DCMAKE_OSX_ARCHITECTURES=arm64;x86_64
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
@@ -48,7 +55,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y cmake ninja-build pkg-config \
             libx11-dev libcairo2-dev libfreetype-dev libharfbuzz-dev \
-            libfontconfig-dev libpng-dev libjpeg-dev libcups2-dev
+            libfontconfig-dev libpng-dev libjpeg-dev libcups2-dev \
+            libcurl4-openssl-dev libssl-dev softhsm2
 
       - name: Configure (PDFium OFF, warnings visible)
         run: |
@@ -56,15 +64,35 @@ jobs:
                 -DCMAKE_BUILD_TYPE=RelWithDebInfo \
                 -DCMAKE_CXX_FLAGS="-Werror" \
                 -DRIVET_BUILD_TESTS=ON \
-                "${{ matrix.cmake_args }}"
+                -DRIVET_ENABLE_NETWORK=${{ matrix.network }} \
+                -DRIVET_ENABLE_CRYPTO=${{ matrix.crypto }} \
+                -DRIVET_ENABLE_PKCS11=${{ matrix.crypto }} \
+                ${{ matrix.cmake_args && format('"{0}"', matrix.cmake_args) || '' }}
 
       - name: Build
         run: cmake --build build
 
+      # Real PKCS#11 module: the SoftHSM2 test provisions a throw-away token in a
+      # temporary directory (no repository secrets, nothing committed) and signs
+      # through the Rivet PKCS#11 provider. It skips itself when the module is
+      # absent, so the variable is only set where the package was installed.
       - name: Test
-        run: ctest --test-dir build --output-on-failure
+        env:
+          RIVET_SOFTHSM_MODULE: ${{ runner.os == 'Linux' && '/usr/lib/softhsm/libsofthsm2.so' || '' }}
+        run: |
+          if [ -n "$RIVET_SOFTHSM_MODULE" ] && [ ! -f "$RIVET_SOFTHSM_MODULE" ]; then
+            alt=/usr/lib/x86_64-linux-gnu/softhsm/libsofthsm2.so
+            if [ -f "$alt" ]; then export RIVET_SOFTHSM_MODULE="$alt"; fi
+          fi
+          echo "RIVET_SOFTHSM_MODULE=${RIVET_SOFTHSM_MODULE:-<unset>}"
+          ctest --test-dir build --output-on-failure
+          if [ "${{ runner.os }}" = "Linux" ]; then
+            # Show that the SoftHSM2 test really ran instead of skipping.
+            build/tests/crypto/providers/rivet_crypto_softhsm_tests 2>&1 | tee softhsm.log
+            if grep -q '^SKIP' softhsm.log; then echo "::error::SoftHSM2 test was skipped on Linux CI"; exit 1; fi
+          fi
 
-  # Windows: MSVC (x64) through Ninja, PDFium OFF, warnings as errors.
+  # Windows: MSVC (x64) through Ninja, PDFium OFF, crypto ON (vcpkg OpenSSL), warnings as errors.
   windows-msvc:
     strategy:
       fail-fast: false
@@ -91,17 +119,217 @@ jobs:
         run: |
           if (-not (Get-Command ninja -ErrorAction SilentlyContinue)) { choco install ninja -y --no-progress }
 
-      - name: Configure (PDFium OFF, warnings as errors)
+      # OpenSSL 3 for the crypto layer, from the vcpkg preinstalled on the
+      # runner (VCPKG_INSTALLATION_ROOT). The triplet fixes the CRT this job
+      # compiles with (dynamic /MD, static OpenSSL libs), so OpenSSL and Rivet never mix CRTs. Built
+      # packages are kept in a vcpkg "files" binary cache keyed on the runner's
+      # vcpkg commit; a hit skips the (several minute) OpenSSL source build.
+      - name: vcpkg revision
+        id: vcpkg-rev
+        shell: pwsh
+        run: |
+          $rev = (git -C "$env:VCPKG_INSTALLATION_ROOT" rev-parse HEAD 2>$null)
+          if (-not $rev) { $rev = 'unknown' }
+          "rev=$rev" >> $env:GITHUB_OUTPUT
+
+      - name: Restore OpenSSL (vcpkg binary cache)
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}\vcpkg-bincache
+          key: vcpkg-openssl-x64-windows-static-md-${{ steps.vcpkg-rev.outputs.rev }}
+          restore-keys: |
+            vcpkg-openssl-x64-windows-static-md-
+
+      - name: Install OpenSSL (x64-windows-static-md)
+        shell: pwsh
+        working-directory: ${{ runner.temp }}
+        run: |
+          New-Item -ItemType Directory -Force -Path "$env:RUNNER_TEMP\vcpkg-bincache" | Out-Null
+          $env:VCPKG_BINARY_SOURCES = "clear;files,$env:RUNNER_TEMP\vcpkg-bincache,readwrite"
+          & "$env:VCPKG_INSTALLATION_ROOT\vcpkg.exe" install "openssl:x64-windows-static-md" --clean-after-build
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $root = "$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows-static-md"
+          if (-not (Test-Path "$root\include\openssl\evp.h")) { throw "OpenSSL headers not found under $root" }
+          "OPENSSL_ROOT_DIR=$root" >> $env:GITHUB_ENV
+
+      - name: Configure (PDFium OFF, crypto ON, warnings as errors)
         shell: pwsh
         run: |
           cmake -S . -B build -G Ninja `
                 -DCMAKE_BUILD_TYPE=RelWithDebInfo `
                 -DCMAKE_C_COMPILER=cl -DCMAKE_CXX_COMPILER=cl `
                 -DCMAKE_COMPILE_WARNING_AS_ERROR=ON `
-                -DRIVET_BUILD_TESTS=ON
+                -DRIVET_BUILD_TESTS=ON `
+                -DRIVET_ENABLE_CRYPTO=ON `
+                -DOPENSSL_ROOT_DIR="$env:OPENSSL_ROOT_DIR" `
+                -DOPENSSL_USE_STATIC_LIBS=TRUE
 
       - name: Build
         run: cmake --build build -- -k 0  # report every MSVC error in one run
 
       - name: Test
         run: ctest --test-dir build --output-on-failure
+
+  # PDFium-ON jobs (Phase 8 / ADR-0036). PDFium is built by the pinned scripts
+  # in tools/pdfium/ (revision + GN args are checked in) and cached under a key
+  # derived from every file in that directory, so a revision/args/script change
+  # rebuilds it and nothing else does. A cold build takes tens of minutes; warm
+  # runs only restore the install tree. Rivet's own CMake never downloads it.
+  linux-pdfium:
+    name: linux-pdfium
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    env:
+      PDFIUM_ROOT: ${{ github.workspace }}/pdfium-install
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build pkg-config g++ python3 \
+            libx11-dev libcairo2-dev libfreetype-dev libharfbuzz-dev \
+            libfontconfig-dev libpng-dev libjpeg-dev libcups2-dev libssl-dev softhsm2
+
+      - name: Restore PDFium
+        id: pdfium-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: pdfium-install
+          key: pdfium-linux-x64-${{ hashFiles('tools/pdfium/**') }}
+
+      - name: Build PDFium (cache miss)
+        if: steps.pdfium-cache.outputs.cache-hit != 'true'
+        run: tools/pdfium/build-pdfium.sh --arch x64 --install "$PDFIUM_ROOT" --work "$RUNNER_TEMP/pdfium-work"
+
+      - name: Save PDFium
+        if: steps.pdfium-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: pdfium-install
+          key: pdfium-linux-x64-${{ hashFiles('tools/pdfium/**') }}
+
+      - name: Configure (PDFium ON, GCC, warnings as errors)
+        run: |
+          cmake -S . -B build -G Ninja \
+                -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+                -DCMAKE_C_COMPILER=gcc -DCMAKE_CXX_COMPILER=g++ \
+                -DCMAKE_CXX_FLAGS="-Werror" \
+                -DRIVET_BUILD_TESTS=ON \
+                -DRIVET_WITH_PDFIUM=ON \
+                -DRIVET_ENABLE_CRYPTO=ON \
+                -DRIVET_ENABLE_PKCS11=ON \
+                -DRIVET_PDFIUM_ROOT="$PDFIUM_ROOT"
+
+      - name: Build
+        run: cmake --build build
+
+      - name: Test
+        env:
+          RIVET_SOFTHSM_MODULE: /usr/lib/softhsm/libsofthsm2.so
+        run: |
+          if [ ! -f "$RIVET_SOFTHSM_MODULE" ]; then
+            alt=/usr/lib/x86_64-linux-gnu/softhsm/libsofthsm2.so
+            if [ -f "$alt" ]; then export RIVET_SOFTHSM_MODULE="$alt"; fi
+          fi
+          echo "RIVET_SOFTHSM_MODULE=$RIVET_SOFTHSM_MODULE"
+          ctest --test-dir build --output-on-failure
+          build/tests/crypto/providers/rivet_crypto_softhsm_tests 2>&1 | tee softhsm.log
+          if grep -q '^SKIP' softhsm.log; then echo "::error::SoftHSM2 test was skipped on Linux CI"; exit 1; fi
+
+      - name: Smoke (open, render page 1, save copy)
+        run: build/tests/pdf/rivet-smoke-open
+
+  windows-msvc-pdfium:
+    name: windows-msvc-pdfium
+    runs-on: windows-latest
+    timeout-minutes: 180
+    env:
+      PDFIUM_ROOT: ${{ github.workspace }}\pdfium-install
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: MSVC developer environment
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Ensure Ninja
+        shell: pwsh
+        run: |
+          if (-not (Get-Command ninja -ErrorAction SilentlyContinue)) { choco install ninja -y --no-progress }
+
+      - name: Restore PDFium
+        id: pdfium-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: pdfium-install
+          key: pdfium-windows-x64-${{ hashFiles('tools/pdfium/**') }}
+
+      - name: Build PDFium (cache miss)
+        if: steps.pdfium-cache.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: tools/pdfium/build-pdfium.ps1 -Arch x64 -Install "$env:PDFIUM_ROOT" -Work "$env:RUNNER_TEMP\pdfium-work"
+
+      - name: Save PDFium
+        if: steps.pdfium-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: pdfium-install
+          key: pdfium-windows-x64-${{ hashFiles('tools/pdfium/**') }}
+
+      # OpenSSL 3 for the crypto layer, from the vcpkg preinstalled on the
+      # runner (VCPKG_INSTALLATION_ROOT). The triplet fixes the CRT this job
+      # compiles with (static /MT, matching PDFium and cmake/RivetMsvcRuntime.cmake), so OpenSSL and Rivet never mix CRTs. Built
+      # packages are kept in a vcpkg "files" binary cache keyed on the runner's
+      # vcpkg commit; a hit skips the (several minute) OpenSSL source build.
+      - name: vcpkg revision
+        id: vcpkg-rev
+        shell: pwsh
+        run: |
+          $rev = (git -C "$env:VCPKG_INSTALLATION_ROOT" rev-parse HEAD 2>$null)
+          if (-not $rev) { $rev = 'unknown' }
+          "rev=$rev" >> $env:GITHUB_OUTPUT
+
+      - name: Restore OpenSSL (vcpkg binary cache)
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}\vcpkg-bincache
+          key: vcpkg-openssl-x64-windows-static-${{ steps.vcpkg-rev.outputs.rev }}
+          restore-keys: |
+            vcpkg-openssl-x64-windows-static-
+
+      - name: Install OpenSSL (x64-windows-static)
+        shell: pwsh
+        working-directory: ${{ runner.temp }}
+        run: |
+          New-Item -ItemType Directory -Force -Path "$env:RUNNER_TEMP\vcpkg-bincache" | Out-Null
+          $env:VCPKG_BINARY_SOURCES = "clear;files,$env:RUNNER_TEMP\vcpkg-bincache,readwrite"
+          & "$env:VCPKG_INSTALLATION_ROOT\vcpkg.exe" install "openssl:x64-windows-static" --clean-after-build
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $root = "$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows-static"
+          if (-not (Test-Path "$root\include\openssl\evp.h")) { throw "OpenSSL headers not found under $root" }
+          "OPENSSL_ROOT_DIR=$root" >> $env:GITHUB_ENV
+
+      - name: Configure (PDFium ON, crypto ON, MSVC, warnings as errors)
+        shell: pwsh
+        run: |
+          cmake -S . -B build -G Ninja `
+                -DCMAKE_BUILD_TYPE=RelWithDebInfo `
+                -DCMAKE_C_COMPILER=cl -DCMAKE_CXX_COMPILER=cl `
+                -DCMAKE_COMPILE_WARNING_AS_ERROR=ON `
+                -DRIVET_BUILD_TESTS=ON `
+                -DRIVET_WITH_PDFIUM=ON `
+                -DRIVET_ENABLE_CRYPTO=ON `
+                -DRIVET_PDFIUM_ROOT="$env:PDFIUM_ROOT" `
+                -DOPENSSL_ROOT_DIR="$env:OPENSSL_ROOT_DIR" `
+                -DOPENSSL_USE_STATIC_LIBS=TRUE
+
+      - name: Build
+        run: cmake --build build -- -k 0  # report every MSVC/link error in one run
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+
+      - name: Smoke (open, render page 1, save copy)
+        run: build\tests\pdf\rivet-smoke-open.exe
