@@ -680,7 +680,7 @@ private:
 };
 
 std::shared_ptr<Csp> loadCsp(const CryptoProOptions& options, std::string& reason) {
-    auto api = CspApi::load(options.libraryDirectory, reason);
+    auto api = CspApi::load(options.libraryDirectory, reason, options.allowInsecureLibraryPath);
     if (!api) return nullptr;
     auto csp = std::make_shared<Csp>();
     csp->api = std::move(api);

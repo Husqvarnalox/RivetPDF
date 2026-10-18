@@ -49,7 +49,10 @@ struct CspApi {
 
     // Probes `libraryDirectory` (or the standard /opt/cprocsp/lib locations)
     // and resolves every entry point. Null + `reason` on failure.
-    static std::shared_ptr<const CspApi> load(const std::string& libraryDirectory, std::string& reason);
+    // Each library file must pass crypto::checkModuleFile before it is dlopen'ed unless
+    // allowInsecure (development override).
+    static std::shared_ptr<const CspApi> load(const std::string& libraryDirectory, std::string& reason,
+                                              bool allowInsecure = false);
 };
 
 } // namespace rivet::crypto::cryptopro_detail

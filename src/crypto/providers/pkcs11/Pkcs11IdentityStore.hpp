@@ -34,6 +34,9 @@ struct GostMechanisms {
 
 struct Pkcs11Options {
     std::filesystem::path modulePath; // vendor PKCS#11 library (.so / .dylib / .dll)
+    // Development override, default false: skip the ownership / permission / symlink check that
+    // normally precedes loading the module (the path must still be absolute and exist).
+    bool allowInsecureModulePath = false;
     std::string displayName;          // shown in diagnostics and key-location text; default "PKCS#11"
     GostMechanisms gost;
     // Provider used for digests that are computed in software (ECDSA /

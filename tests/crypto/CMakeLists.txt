@@ -3,6 +3,7 @@ add_executable(rivet_crypto_tests
     TestAsync.cpp
     TestDer.cpp
     TestMalformedCms.cpp
+    TestModuleTrust.cpp
     TestSecretBuffer.cpp
     TestTimeStampOff.cpp
 )

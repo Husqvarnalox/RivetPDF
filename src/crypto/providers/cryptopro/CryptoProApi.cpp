@@ -1,8 +1,12 @@
 // SPDX-License-Identifier: MPL-2.0
 #include "crypto/providers/cryptopro/CryptoProApi.hpp"
 
+#include "crypto/ModuleTrust.hpp"
+
 #include <dlfcn.h>
 
+#include <filesystem>
+#include <system_error>
 #include <vector>
 
 namespace rivet::crypto::cryptopro_detail {
@@ -15,8 +19,17 @@ constexpr const char* kExt = ".dylib";
 constexpr const char* kExt = ".so";
 #endif
 
-void* openLibrary(const std::string& dir, const char* base) {
-    return dlopen((dir + "/" + base + kExt).c_str(), RTLD_NOW | RTLD_LOCAL);
+// Returns null (and sets `untrusted` with the reason when the file exists but fails the trust
+// check) before any code of the library can run.
+void* openLibrary(const std::string& dir, const char* base, bool allowInsecure, std::string& untrusted) {
+    const std::string path = dir + "/" + base + kExt;
+    std::error_code ec;
+    if (!std::filesystem::exists(path, ec)) return nullptr;
+    if (auto why = checkModuleFile(path, allowInsecure); !why.empty()) {
+        if (untrusted.empty()) untrusted = why;
+        return nullptr;
+    }
+    return dlopen(path.c_str(), RTLD_NOW | RTLD_LOCAL);
 }
 
 template <typename Fn>
@@ -32,7 +45,7 @@ CspApi::~CspApi() {
     // The handles are intentionally leaked for the process lifetime.
 }
 
-std::shared_ptr<const CspApi> CspApi::load(const std::string& libraryDirectory, std::string& reason) {
+std::shared_ptr<const CspApi> CspApi::load(const std::string& libraryDirectory, std::string& reason, bool allowInsecure) {
     std::vector<std::string> dirs;
     if (!libraryDirectory.empty()) {
         // A relative directory would be resolved against the working directory (library planting).
@@ -48,14 +61,20 @@ std::shared_ptr<const CspApi> CspApi::load(const std::string& libraryDirectory, 
         }
     }
     auto api = std::make_shared<CspApi>();
+    std::string untrusted;
     for (const auto& dir : dirs) {
-        api->handle10 = openLibrary(dir, "libcapi10");
+        api->handle10 = openLibrary(dir, "libcapi10", allowInsecure, untrusted);
         if (!api->handle10) continue;
-        api->handle20 = openLibrary(dir, "libcapi20");
+        api->handle20 = openLibrary(dir, "libcapi20", allowInsecure, untrusted);
         if (api->handle20) break;
         api->handle10 = nullptr;
     }
     if (!api->handle10 || !api->handle20) {
+        if (!untrusted.empty()) {
+            reason = "refusing to load the CryptoPro CSP libraries: " + untrusted +
+                     " (CryptoProOptions::allowInsecureLibraryPath is a development override)";
+            return nullptr;
+        }
         reason = "CryptoPro CSP libraries (libcapi10/libcapi20) not found; install the CSP or set CryptoProOptions::libraryDirectory";
         return nullptr;
     }

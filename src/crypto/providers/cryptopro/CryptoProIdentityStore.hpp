@@ -23,6 +23,9 @@ struct CryptoProOptions {
     // Directory holding libcapi10 / libcapi20. Empty: probe the standard
     // /opt/cprocsp/lib locations.
     std::string libraryDirectory;
+    // Development override, default false: skip the ownership / permission / symlink check that
+    // normally precedes loading libcapi10 / libcapi20 (the directory must still be absolute).
+    bool allowInsecureLibraryPath = false;
     // Certificate store enumerated by list() ("MY" = the user's personal store).
     std::string storeName = "MY";
     // Extra DER certificates (intermediate / root CAs) used to complete the

@@ -30,7 +30,13 @@ public:
     // symbol looked up by name) and calls C_Initialize. One instance per
     // library path is shared process-wide while somebody holds it, so
     // C_Initialize / C_Finalize are paired exactly once.
-    static CryptoResult<std::shared_ptr<Pkcs11Module>> acquire(const std::filesystem::path& path);
+    //
+    // Before loading, the file must pass crypto::checkModuleFile (absolute, regular
+    // file after symlink resolution, owned by root / the current user, not
+    // group/world-writable, parent directory not world-writable). allowInsecurePath
+    // is the explicit development override (see Pkcs11Options).
+    static CryptoResult<std::shared_ptr<Pkcs11Module>> acquire(const std::filesystem::path& path,
+                                                               bool allowInsecurePath = false);
 
     ~Pkcs11Module();
     Pkcs11Module(const Pkcs11Module&) = delete;

@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0
 #include "crypto/providers/pkcs11/Pkcs11Module.hpp"
 
+#include "crypto/ModuleTrust.hpp"
+
 #include <algorithm>
 #include <cstdio>
 #include <map>
@@ -107,7 +109,7 @@ std::string trimField(const unsigned char* data, std::size_t size) {
 
 // ---- module ---------------------------------------------------------------
 
-CryptoResult<std::shared_ptr<Pkcs11Module>> Pkcs11Module::acquire(const std::filesystem::path& path) {
+CryptoResult<std::shared_ptr<Pkcs11Module>> Pkcs11Module::acquire(const std::filesystem::path& path, bool allowInsecurePath) {
     if (path.empty()) return fail(CryptoErrorCode::BackendUnavailable, "no PKCS#11 module path configured");
     // A relative path would be resolved against the working directory or the loader search path (planting).
     if (!path.is_absolute())
@@ -115,6 +117,10 @@ CryptoResult<std::shared_ptr<Pkcs11Module>> Pkcs11Module::acquire(const std::fil
     std::error_code ec;
     if (!std::filesystem::exists(path, ec))
         return fail(CryptoErrorCode::BackendUnavailable, "PKCS#11 module not found: " + path.string());
+    // Ownership / permission / symlink check before any code of the module can run (checked on
+    // every call, also when a cached instance exists, so a tightened policy is never bypassed).
+    if (auto why = checkModuleFile(path, allowInsecurePath); !why.empty())
+        return fail(CryptoErrorCode::BackendUnavailable, "refusing to load the PKCS#11 module: " + why);
     const std::string key = path.lexically_normal().string();
 
     std::lock_guard lock(cacheMutex());

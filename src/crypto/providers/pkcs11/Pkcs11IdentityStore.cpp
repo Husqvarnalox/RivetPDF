@@ -853,7 +853,7 @@ private:
     CryptoResult<std::shared_ptr<Pkcs11Module>> module() const {
         std::lock_guard lock(mutex_);
         if (module_) return module_;
-        auto loaded = Pkcs11Module::acquire(cfg_->options.modulePath);
+        auto loaded = Pkcs11Module::acquire(cfg_->options.modulePath, cfg_->options.allowInsecureModulePath);
         if (!loaded) return std::unexpected(loaded.error());
         module_ = *loaded;
         return module_;
