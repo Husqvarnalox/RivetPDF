@@ -965,12 +965,16 @@ SignResult<SignedPdf> timestampPdf(Bytes pdf, const DocTimestampRequest& req, cr
 namespace {
 
 SignResult<Bytes> readWhole(const std::filesystem::path& path) {
-    std::error_code ec;
-    const auto size = std::filesystem::file_size(path, ec);
-    if (ec) return fail(SignErrorCode::Io, "cannot stat the file");
-    if (size > kMaxSignableFileSize) return fail(SignErrorCode::LimitExceeded, "file too large to sign (limit 2 GiB)");
+    // The size comes from the open stream, not from file_size(): on Windows the
+    // directory entry of a file that is still open for writing can lag behind.
     std::ifstream in(path, std::ios::binary);
     if (!in) return fail(SignErrorCode::Io, "cannot open the file");
+    in.seekg(0, std::ios::end);
+    const std::streamoff end = in.tellg();
+    if (end < 0) return fail(SignErrorCode::Io, "cannot stat the file");
+    const auto size = static_cast<std::uint64_t>(end);
+    if (size > kMaxSignableFileSize) return fail(SignErrorCode::LimitExceeded, "file too large to sign (limit 2 GiB)");
+    in.seekg(0, std::ios::beg);
     Bytes data(static_cast<std::size_t>(size));
     in.read(reinterpret_cast<char*>(data.data()), static_cast<std::streamsize>(data.size()));
     if (static_cast<std::size_t>(in.gcount()) != data.size()) return fail(SignErrorCode::Io, "short read");
@@ -1010,7 +1014,10 @@ SignResult<SignedPdf> transactionalFile(const std::filesystem::path& input, cons
     const std::size_t signedSize = signedPdf->data.size();
     signedPdf->data = Bytes{}; // release before reading back
     auto back = readWhole(temp);
-    if (!back || back->size() != signedSize) return abort(SignError{SignErrorCode::Io, "read-back of the temporary file failed", std::nullopt});
+    if (!back) return abort(SignError{SignErrorCode::Io, "read-back of the temporary file failed: " + back.error().message, std::nullopt});
+    if (back->size() != signedSize)
+        return abort(SignError{SignErrorCode::Io, "read-back of the temporary file failed: size " + std::to_string(back->size()) +
+                                                      " differs from the " + std::to_string(signedSize) + " written", std::nullopt});
     auto after = provider.digest(crypto::DigestAlgorithm::Sha256, ByteView(back->data(), inputSize));
     if (!after || *after != *before)
         return abort(SignError{SignErrorCode::SelfVerifyFailed, "the original bytes changed in the output", std::nullopt});
