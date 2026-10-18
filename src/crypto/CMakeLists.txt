@@ -11,6 +11,7 @@ option(RIVET_ENABLE_CRYPTO "Build the OpenSSL-backed crypto provider (signatures
 add_library(rivet_crypto STATIC
     Algorithms.cpp
     Certificate.cpp
+    NameConstraints.cpp
     PathBuilder.cpp
     Cms.cpp
     Der.cpp

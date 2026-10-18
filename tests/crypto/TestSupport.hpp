@@ -72,6 +72,12 @@ struct CertSpec {
     std::string basicConstraints{};    // X509V3 conf value replacing the default basicConstraints (e.g. "critical,CA:TRUE,pathlen:0")
     std::string keyUsage{};            // X509V3 conf value replacing the default keyUsage
     std::vector<std::pair<int, std::string>> extraExt{}; // additional extensions: (NID, X509V3 conf value)
+    struct RawExt {
+        int nid = 0;
+        bool critical = false;
+        Bytes der{}; // extnValue content (the DER of the extension's own structure)
+    };
+    std::vector<RawExt> rawExt{}; // additional extensions given as DER
 };
 
 inline TestKey makeCert(const CertSpec& spec) {
@@ -116,6 +122,16 @@ inline TestKey makeCert(const CertSpec& spec) {
     addExt(c, issuerCert == c ? nullptr : issuerCert, NID_key_usage, ku.c_str());
     if (!spec.extKeyUsage.empty())
         addExt(c, issuerCert == c ? nullptr : issuerCert, NID_ext_key_usage, spec.extKeyUsage.c_str());
+    for (const CertSpec::RawExt& r : spec.rawExt) {
+        ASN1_OCTET_STRING* os = ASN1_OCTET_STRING_new();
+        ASN1_OCTET_STRING_set(os, r.der.data(), static_cast<int>(r.der.size()));
+        X509_EXTENSION* ext = X509_EXTENSION_create_by_NID(nullptr, r.nid, r.critical ? 1 : 0, os);
+        ASN1_OCTET_STRING_free(os);
+        if (ext) {
+            X509_add_ext(c, ext, -1);
+            X509_EXTENSION_free(ext);
+        }
+    }
     for (const auto& [nid, value] : spec.extraExt) addExt(c, issuerCert == c ? nullptr : issuerCert, nid, value.c_str());
     EVP_PKEY* signKey = spec.issuer ? spec.issuer->pkey.get() : out.pkey.get();
     X509_sign(c, signKey, EVP_get_digestbyname(spec.sigDigest.c_str()));

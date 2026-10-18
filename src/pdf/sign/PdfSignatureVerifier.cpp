@@ -779,7 +779,7 @@ void evaluateLtv(PdfFile& f, crypto::CryptoProvider& provider, const VerifyOptio
         LtvInfo& L = r.ltv;
         r.material = LtvMaterial{side.contentsDer, side.cmsCerts, side.tokenCerts};
         L.dssPresent = dss.present;
-        addLimit(L, "certificate policies and name constraints are not evaluated; delta CRLs are not processed");
+        addLimit(L, "certificate policies are not evaluated");
         const VriEntry* entry = nullptr;
         for (const Bytes* cand : {&side.contentsDer, &side.contentsRaw}) {
             auto k = vriKey(provider, *cand);
