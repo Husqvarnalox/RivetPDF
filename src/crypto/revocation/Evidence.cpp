@@ -16,6 +16,7 @@ std::string_view toString(EvidenceFailure f) {
     case EvidenceFailure::ResponderNotIssuedByCa: return "responder certificate not issued by the CA";
     case EvidenceFailure::ResponderNoOcspSigning: return "responder certificate lacks OCSPSigning";
     case EvidenceFailure::ResponderCertInvalid: return "responder certificate not valid";
+    case EvidenceFailure::ResponderRevocationUnchecked: return "responder certificate revocation cannot be checked";
     case EvidenceFailure::NotYetValid: return "not yet valid";
     case EvidenceFailure::Stale: return "stale";
     case EvidenceFailure::DoesNotCoverTime: return "does not cover the validation time";

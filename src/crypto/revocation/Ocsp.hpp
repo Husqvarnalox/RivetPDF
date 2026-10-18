@@ -43,7 +43,9 @@ CryptoResult<OcspRequest> buildOcspRequest(CryptoProvider& provider, const Certi
 //  - responseStatus must be successful (tryLater / unauthorized / sigRequired / ... are reported as such);
 //  - a SingleResponse must match the CertID (SHA-1/224-512 CertIDs accepted);
 //  - signer: the issuing CA itself, or a certificate carried in the response
-//    that the CA issued, that has id-kp-OCSPSigning and was valid at producedAt;
+//    that the CA issued, that has id-kp-OCSPSigning, was valid at producedAt and
+//    carries id-pkix-ocsp-nocheck (fail closed otherwise: its own revocation
+//    status cannot be established from the response);
 //  - the signature over ResponseData verifies under the signer's key;
 //  - `expectedNonce`, when given, must be echoed;
 //  - time rules of evidenceTimeProblem() under `clock`.

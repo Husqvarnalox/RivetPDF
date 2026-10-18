@@ -46,6 +46,7 @@ struct Pki {
     TestKey leaf2;         // a second, never-revoked certificate of the same CA
     TestKey responder;     // delegated OCSP responder (id-kp-OCSPSigning), issued by ca
     TestKey responderNoEku;// issued by ca, no OCSPSigning
+    TestKey responderNoNocheck; // issued by ca, OCSPSigning but no id-pkix-ocsp-nocheck
     TestKey otherCa;       // unrelated CA
     TestKey otherResponder;// OCSPSigning, issued by otherCa
     TestKey stranger;      // unrelated self-signed key
@@ -82,7 +83,11 @@ struct Pki {
         rs.extKeyUsage = "OCSPSigning";
         rs.notBeforeOffsetSec = -3600L * 24 * 100;
         rs.notAfterOffsetSec = 3600L * 24 * 30;
+        rs.extraExt = {{NID_id_pkix_OCSP_noCheck, "NULL"}};
         responder = makeCert(rs);
+        rs.cn = "Responder Without Nocheck";
+        rs.extraExt.clear();
+        responderNoNocheck = makeCert(rs);
         rs.cn = "Responder Without EKU";
         rs.extKeyUsage.clear();
         responderNoEku = makeCert(rs);

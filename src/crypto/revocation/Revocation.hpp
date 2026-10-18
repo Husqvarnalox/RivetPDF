@@ -69,6 +69,7 @@ enum class EvidenceFailure : std::uint8_t {
     ResponderNotIssuedByCa, // delegated responder certificate not issued by the CA
     ResponderNoOcspSigning, // delegated responder lacks id-kp-OCSPSigning
     ResponderCertInvalid,   // delegated responder certificate not valid at producedAt
+    ResponderRevocationUnchecked, // delegated responder certificate has no id-pkix-ocsp-nocheck: its own status cannot be established (fail closed)
     NotYetValid,            // thisUpdate / producedAt in the future
     Stale,                  // nextUpdate passed (or too old without nextUpdate)
     DoesNotCoverTime,       // historical validation: evidence neither covers nor postdates the validation time

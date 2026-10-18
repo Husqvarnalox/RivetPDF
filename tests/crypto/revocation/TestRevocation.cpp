@@ -288,6 +288,9 @@ RIVET_TEST(ocspRejectedResponses) {
     CHECK(!otherCa.verified);
     CHECK(otherCa.failure == EvidenceFailure::ResponderNotIssuedByCa || otherCa.failure == EvidenceFailure::UnauthorizedResponder);
     CHECK(rejectedWith(with([&](OcspCfg& c) { c.signer = &env.pki->responderNoEku; }), EvidenceFailure::ResponderNoOcspSigning, "no OCSPSigning EKU"));
+    // A delegated responder without id-pkix-ocsp-nocheck: its own revocation status is unknowable here, fail closed.
+    CHECK(rejectedWith(with([&](OcspCfg& c) { c.signer = &env.pki->responderNoNocheck; }), EvidenceFailure::ResponderRevocationUnchecked,
+                       "responder without ocsp-nocheck"));
     // Delegated responder whose certificate is not sent: the CA's key does not verify its signature.
     OcspEvidence missing = with([&](OcspCfg& c) { c.signer = &env.pki->responder; c.includeSignerCert = false; });
     CHECK(!missing.verified);

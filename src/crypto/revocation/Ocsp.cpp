@@ -285,6 +285,15 @@ OcspEvidence verifyOcspResponse(ByteView responseDer, CryptoProvider& provider, 
                 lastProblem = "the delegated responder certificate was not valid when the response was produced";
                 continue;
             }
+            // RFC 6960 4.2.2.2.1: a delegated responder certificate is trusted for its whole lifetime only if
+            // the CA marked it id-pkix-ocsp-nocheck. Without that extension its own revocation status would
+            // have to be established (which needs more evidence than a single response carries), so the
+            // simple safe rule is to fail closed.
+            if (auto rx = parseRevocationExtensions(parsed->der); !rx || !rx->ocspNoCheck) {
+                lastFailure = EvidenceFailure::ResponderRevocationUnchecked;
+                lastProblem = "the delegated responder certificate has no id-pkix-ocsp-nocheck extension, so its own revocation status is unknown";
+                continue;
+            }
             delegated = std::move(*parsed);
             signer = &delegated;
             ev.responderName = delegated.subject;
