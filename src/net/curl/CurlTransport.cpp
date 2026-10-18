@@ -150,7 +150,9 @@ core::Result<HttpResponse> CurlTransport::perform(const HttpRequest& request, co
 
     Context ctx;
     ctx.maxBytes = limits.maxResponseBytes;
-    ctx.allowPrivate = policy.allowPrivateNetworks;
+    // With a proxy the peer is the proxy, not the destination (see checkProxyDestination).
+    ctx.allowPrivate = policy.useSystemProxy ? (policy.allowPrivateNetworks || policy.allowPrivateProxy)
+                                              : policy.allowPrivateNetworks;
     ctx.cancel = cancel;
     ctx.deadline = std::chrono::steady_clock::now() + limits.totalTimeout;
 

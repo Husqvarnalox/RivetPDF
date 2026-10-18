@@ -140,3 +140,28 @@ RIVET_TEST(netPolicyEffectiveLimitsOnlyTighten) {
     CHECK_EQ(l.maxResponseBytes, p.maxResponseBytes);
     CHECK_EQ(l.totalTimeout.count(), 30'000);
 }
+
+RIVET_TEST(netPolicySystemProxyKeepsTheSsrfInvariant) {
+    CHECK(!NetworkPolicy{}.allowPrivateProxy);
+    NetworkPolicy p;
+    p.useSystemProxy = true;
+    // The proxy resolves names, so without an allow-list every host name is refused...
+    auto denied = checkUrl(url("https://tsa.example.org/"), p);
+    CHECK(!denied.has_value());
+    // ...and the private-name / literal checks still apply on top.
+    CHECK(!checkUrl(url("https://127.0.0.1/"), p).has_value());
+    CHECK(!checkUrl(url("https://localhost/"), p).has_value());
+    // Public IP literals can be classified here, so they stay allowed.
+    CHECK(checkUrl(url("https://93.184.216.34/"), p).has_value());
+    // With an explicit allow-list, listed names pass; others do not.
+    p.allowedHosts = {"tsa.example.org"};
+    CHECK(checkUrl(url("https://tsa.example.org/"), p).has_value());
+    CHECK(!checkUrl(url("https://other.example.org/"), p).has_value());
+    CHECK(!checkUrl(url("https://127.0.0.1/"), p).has_value());
+    // allowPrivateProxy never relaxes the destination checks.
+    p.allowPrivateProxy = true;
+    CHECK(!checkUrl(url("https://127.0.0.1/"), p).has_value());
+    // Without a proxy nothing changes: a name needs no allow-list.
+    NetworkPolicy plain;
+    CHECK(checkUrl(url("https://tsa.example.org/"), plain).has_value());
+}

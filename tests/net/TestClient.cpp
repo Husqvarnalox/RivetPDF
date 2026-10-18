@@ -91,6 +91,20 @@ RIVET_TEST(netClientRefusesPolicyViolationsBeforeTransport) {
     CHECK_EQ(f.mock->callCount(), static_cast<std::size_t>(0));
 }
 
+RIVET_TEST(netClientSystemProxyDoesNotBypassDestinationPolicy) {
+    Fixture f;
+    f.policy.useSystemProxy = true;
+    f.mock->script("https://tsa.example.org/", ok());
+    f.mock->script("https://127.0.0.1/", ok());
+    expectFailure(f.client().fetch(get("https://tsa.example.org/")), NetFailure::PolicyViolation); // no allow-list
+    expectFailure(f.client().fetch(get("https://127.0.0.1/")), NetFailure::ForbiddenAddress);
+    CHECK_EQ(f.mock->callCount(), static_cast<std::size_t>(0));
+    f.policy.allowedHosts = {"tsa.example.org"};
+    CHECK(f.client().fetch(get("https://tsa.example.org/")).has_value());
+    expectFailure(f.client().fetch(get("https://evil.example.net/")), NetFailure::PolicyViolation);
+    CHECK_EQ(f.mock->callCount(), static_cast<std::size_t>(1));
+}
+
 RIVET_TEST(netClientConnectTimeAddressGuard) {
     // A public name that "resolves" to a private address: DNS rebinding.
     Fixture f;

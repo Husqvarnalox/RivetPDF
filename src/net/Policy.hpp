@@ -18,7 +18,14 @@ namespace rivet::net {
 struct NetworkPolicy {
     bool allowHttp = false;             // false: https only
     bool allowPrivateNetworks = false;  // false: SSRF guard on (loopback, private, link-local, ...)
-    bool useSystemProxy = false;        // false: libcurl proxy environment variables are ignored
+    // false: libcurl proxy environment variables are ignored. true: the destination is resolved
+    // by the proxy, so the connect-time guard only sees the proxy; to keep the SSRF invariant
+    // checkUrl then refuses every host name unless allowedHosts is non-empty and matches it
+    // (IP literals are still classified), see ADR-0042 addendum.
+    bool useSystemProxy = false;
+    // Only meaningful with useSystemProxy: the proxy's own address may be private/loopback
+    // (typical corporate proxy). Never relaxes the destination checks.
+    bool allowPrivateProxy = false;
     std::vector<std::string> allowedHosts; // empty: any public host; entries "host" or "*.suffix"
     int maxRedirects = 3;
     std::size_t maxResponseBytes = 4u * 1024u * 1024u;
@@ -42,6 +49,9 @@ core::Status checkAllowList(const Url& url, const NetworkPolicy& policy);
 // Private host names and IP-literal hosts (the part a transport cannot see
 // before resolving; hostnames are checked again at connect time).
 core::Status checkHostAddress(const Url& url, const NetworkPolicy& policy);
+// With useSystemProxy the proxy resolves the target, so a host name is accepted only through an
+// explicit allowedHosts entry (unless allowPrivateNetworks is on).
+core::Status checkProxyDestination(const Url& url, const NetworkPolicy& policy);
 // All of the above, in order.
 core::Status checkUrl(const Url& url, const NetworkPolicy& policy);
 

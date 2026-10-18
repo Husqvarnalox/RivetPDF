@@ -81,10 +81,19 @@ core::Status checkHostAddress(const Url& url, const NetworkPolicy& policy) {
     return core::ok();
 }
 
+core::Status checkProxyDestination(const Url& url, const NetworkPolicy& policy) {
+    if (!policy.useSystemProxy || policy.allowPrivateNetworks || url.ip) return core::ok();
+    if (policy.allowedHosts.empty())
+        return denied(NetFailure::PolicyViolation,
+                      "a system proxy resolves host names itself: an allowed-host list is required to use one");
+    return core::ok(); // checkAllowList has already matched url.host against the list
+}
+
 core::Status checkUrl(const Url& url, const NetworkPolicy& policy) {
     if (auto s = checkScheme(url, policy); !s) return s;
     if (auto s = checkAllowList(url, policy); !s) return s;
-    return checkHostAddress(url, policy);
+    if (auto s = checkHostAddress(url, policy); !s) return s;
+    return checkProxyDestination(url, policy);
 }
 
 EffectiveLimits effectiveLimits(const HttpRequest& request, const NetworkPolicy& policy) {

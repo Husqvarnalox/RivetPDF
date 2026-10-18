@@ -30,7 +30,11 @@ Everything network-related lives in `src/net` (`rivet::net`). The application re
 | Credential or identity leakage | No cookies, netrc, auth, Referer; constant UA; no proxy from the environment unless `useSystemProxy` |
 | Hidden network use | Gate (Off/Ask/On) in the client; library default transport only exists behind the option |
 
-Limits: when `useSystemProxy` is enabled the peer address seen is the proxy's, so the guard applies to the proxy only. The client cannot resolve names itself (no DNS in the portable layer); hostname checks rely on the connect-time guard.
+Limits: the client cannot resolve names itself (no DNS in the portable layer); hostname checks rely on the connect-time guard. With `useSystemProxy` that guard sees only the proxy: see the addendum.
+
+### Addendum: system proxy (Phase 8 review)
+
+`useSystemProxy` stays default OFF. When ON, the connect-time guard classifies the proxy's address (so a private/loopback proxy is refused unless `allowPrivateProxy` is set, which never relaxes destination checks), and the proxy resolves the destination itself, so DNS rebinding and private-resolving names are invisible to Rivet. To keep the SSRF invariant, `checkUrl` (run on every hop, including redirects) additionally refuses every host name unless `allowedHosts` is non-empty and matches it; IP literals are still classified as before. A deployment that needs a proxy therefore enumerates the hosts it talks to (TSA, OCSP, CRL, DSS) and trusts that list not to resolve to internal addresses. `allowPrivateNetworks=true` is the explicit opt-out of the whole guard. Tested with the policy tests (`checkProxyDestination`) and through `NetworkClient` + `MockTransport`.
 
 ## Why libcurl
 
