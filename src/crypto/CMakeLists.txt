@@ -37,6 +37,11 @@ if(RIVET_ENABLE_CRYPTO)
     target_compile_definitions(rivet_crypto PUBLIC RIVET_CRYPTO_OPENSSL=1)
     target_link_libraries(rivet_crypto PRIVATE OpenSSL::Crypto)
     message(STATUS "Rivet: crypto backend OpenSSL ${OPENSSL_VERSION}")
+    if(WIN32)
+        # A static OpenSSL (vcpkg x64-windows-static[-md]) needs these system
+        # libraries; FindOpenSSL only adds them in some versions/configurations.
+        target_link_libraries(rivet_crypto PRIVATE ws2_32 crypt32 advapi32 user32)
+    endif()
 else()
     target_sources(rivet_crypto PRIVATE SymmetricNull.cpp)
     message(STATUS "Rivet: crypto backend OFF (null provider; RIVET_ENABLE_CRYPTO=OFF)")

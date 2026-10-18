@@ -83,7 +83,11 @@ void writePemKey(const fs::path& p, const TestKey& k) {
 std::string stamp(Clock::time_point t) {
     const std::time_t tt = Clock::to_time_t(t);
     std::tm tm{};
+#if defined(_WIN32)
+    gmtime_s(&tm, &tt);
+#else
     gmtime_r(&tt, &tm);
+#endif
     char buf[96];
     std::snprintf(buf, sizeof buf, "%02d%02d%02d%02d%02d%02dZ", tm.tm_year % 100, tm.tm_mon + 1, tm.tm_mday,
                   tm.tm_hour, tm.tm_min, tm.tm_sec);

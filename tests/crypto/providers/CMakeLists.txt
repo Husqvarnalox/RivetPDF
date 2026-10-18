@@ -56,6 +56,19 @@ rivet_set_target_warnings(rivet_crypto_pkcs11_tests)
 rivet_set_target_sanitizers(rivet_crypto_pkcs11_tests)
 add_test(NAME crypto_pkcs11 COMMAND rivet_crypto_pkcs11_tests)
 
+# Real PKCS#11 module: SoftHSM2 (Linux CI installs the `softhsm2` package and
+# sets RIVET_SOFTHSM_MODULE). The test provisions a throw-away token at run
+# time and prints SKIP (exit 0) when no module is found. POSIX only (dlopen).
+if(UNIX AND RIVET_ENABLE_PKCS11 AND RIVET_ENABLE_CRYPTO)
+    find_package(OpenSSL 3 REQUIRED COMPONENTS Crypto)
+    add_executable(rivet_crypto_softhsm_tests TestSoftHsm.cpp)
+    target_include_directories(rivet_crypto_softhsm_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/.. ${CMAKE_SOURCE_DIR}/src)
+    target_link_libraries(rivet_crypto_softhsm_tests PRIVATE rivet::test_harness rivet::crypto_providers OpenSSL::Crypto ${CMAKE_DL_LIBS})
+    rivet_set_target_warnings(rivet_crypto_softhsm_tests)
+    rivet_set_target_sanitizers(rivet_crypto_softhsm_tests)
+    add_test(NAME crypto_softhsm COMMAND rivet_crypto_softhsm_tests)
+endif()
+
 # Platform keystore.
 add_executable(rivet_crypto_platform_tests
     TestPlatformStore.cpp
