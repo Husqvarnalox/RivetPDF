@@ -710,3 +710,31 @@ RIVET_TEST(ltvBudgetsFailClosedWithClearReasons) {
         CHECK(named);
     }
 }
+
+RIVET_TEST(esicDeclarationIsCheckedWhenADssIsPresent) {
+    LtvEnv env;
+    SignRequest r = env.request(PadesLevel::BaselineLT);
+    auto out = signPdf(makeFixture(), r, *env.provider, *env.identity);
+    CHECK(out.has_value());
+    if (!out) return;
+    auto esicNote = [](const std::vector<PdfSignatureInfo>& sigs) {
+        for (const PdfSignatureInfo& s : sigs)
+            for (const std::string& l : s.ltv.limitations)
+                if (l.find("ESIC") != std::string::npos) return true;
+        return false;
+    };
+    CHECK(!esicNote(env.verify(out->data))); // written by the signer: declared
+
+    // The same document with the extension name disturbed: the /DSS is there, the declaration is not.
+    Bytes broken = out->data;
+    const std::string key = "/ESIC";
+    std::size_t hits = 0;
+    for (auto it = broken.begin(); (it = std::search(it, broken.end(), key.begin(), key.end())) != broken.end(); it += 5) {
+        *(it + 4) = 'X';
+        ++hits;
+    }
+    CHECK_GE(hits, std::size_t{1});
+    const auto sigs = env.verify(broken);
+    CHECK(esicNote(sigs));
+    for (const PdfSignatureInfo& s : sigs) CHECK(s.ltv.dssPresent); // reported, never fatal on its own
+}
