@@ -178,7 +178,9 @@ inline void writeFile(const std::filesystem::path& p, ByteView data) {
 
 inline Bytes readFile(const std::filesystem::path& p) {
     std::ifstream f(p, std::ios::binary);
-    return Bytes(std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>());
+    Bytes data;
+    { char blk_[8192]; while (f.read(blk_, sizeof blk_) || f.gcount() > 0) data.insert(data.end(), blk_, blk_ + f.gcount()); }
+    return data;
 }
 
 } // namespace rivet::crypto::testing

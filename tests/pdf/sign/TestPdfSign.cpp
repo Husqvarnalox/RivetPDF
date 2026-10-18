@@ -435,7 +435,8 @@ RIVET_TEST(fileSigningIsTransactional) {
     auto inPlace = signPdfFile(in, in, r, *s.provider, *s.identity);
     CHECK(inPlace.has_value());
     std::ifstream f(in, std::ios::binary);
-    Bytes data((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+    Bytes data;
+    { char blk_[8192]; while (f.read(blk_, sizeof blk_) || f.gcount() > 0) data.insert(data.end(), blk_, blk_ + f.gcount()); }
     CHECK(hasPrefix(data, original));
     CHECK_EQ(verifyAll(data, s).size(), std::size_t{1});
 

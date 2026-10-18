@@ -18,7 +18,9 @@ namespace {
 rivet::pdf::sign::Bytes readFile(const std::string& path, bool& ok) {
     std::ifstream in(path, std::ios::binary);
     ok = static_cast<bool>(in);
-    return rivet::pdf::sign::Bytes(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+    rivet::pdf::sign::Bytes data;
+    { char blk_[8192]; while (in.read(blk_, sizeof blk_) || in.gcount() > 0) data.insert(data.end(), blk_, blk_ + in.gcount()); }
+    return data;
 }
 
 constexpr const char* kUsage = "usage: rivet-pdf-signature-inspect --pdf file.pdf [--trust cert.pem|cert.der]...\n";

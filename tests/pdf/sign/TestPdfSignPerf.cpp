@@ -32,7 +32,7 @@ RIVET_TEST(largeFileSignAndVerify) {
     Bytes written;
     {
         std::ifstream f(out, std::ios::binary);
-        written.assign(std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>());
+        { char blk_[8192]; while (f.read(blk_, sizeof blk_) || f.gcount() > 0) written.insert(written.end(), blk_, blk_ + f.gcount()); }
     }
     const auto sigs = verifyAll(written, s, true);
     const auto t2 = clock::now();

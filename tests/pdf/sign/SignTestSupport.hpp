@@ -286,7 +286,8 @@ inline int runCommand(const std::string& command, std::string& output) {
     const auto outFile = std::filesystem::temp_directory_path() / "rivet-pdf-sign-cmd.txt";
     const int rc = std::system((command + " > '" + outFile.string() + "' 2>&1").c_str());
     std::ifstream in(outFile);
-    output.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+    output.clear();
+    { char blk_[8192]; while (in.read(blk_, sizeof blk_) || in.gcount() > 0) output.insert(output.end(), blk_, blk_ + in.gcount()); }
     std::filesystem::remove(outFile);
     return rc;
 #endif

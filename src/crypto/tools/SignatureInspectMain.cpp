@@ -19,7 +19,8 @@ namespace {
 bool readFile(const char* path, Bytes& out) {
     std::ifstream in(path, std::ios::binary);
     if (!in) return false;
-    out.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+    out.clear();
+    { char blk_[8192]; while (in.read(blk_, sizeof blk_) || in.gcount() > 0) out.insert(out.end(), blk_, blk_ + in.gcount()); }
     return true;
 }
 
