@@ -95,10 +95,19 @@ Not verified: that no UI/dialog layer (`src/app`, `src/ui`, being written concur
 `log::` calls never print a URL with a token (no secrets are placed in URLs by the code reviewed, tokens go in the JSON
 body); crash-dump and swap exposure (no `mlock`).
 Fixed (F3): encrypt passwords, file key and intermediate hashes are wiped on all paths; callers can pass `EncryptSecrets`.
-Residual risk: the `std::string` fields of `EncryptOptions` (legacy overload) and the caller's own copies are not owned by the
-module and are not wiped; the UTF-8/Latin-1 conversion of an `ByteView` into libc/std containers inside OpenSSL-backed
-provider calls may leave copies in provider memory; the CryptoPro PIN stays in memory for the whole sign call rather than
-being cleared right after `setProvParam`. Low severity, local attacker with memory access only.
+Fixed (residual F3, legacy `std::string` secrets): `core/SecureWipe.hpp` (`secureZero`, `wipeString`, `ScopedWipe`; the
+crypto `secureZero` delegates to it). The password prompt now builds a `SecretBuffer` straight from the field and
+`DocumentWorkspace::retryWithPassword` / `startOpen` carry it in a shared `SecretBuffer` that is cleared right after the
+open and when the task dies unrun (the `std::string` overload remains and zeroes its by-value argument);
+`PdfiumEngine::openDocument`'s C-string copy is wiped on every path and `PdfiumDocument` wipes its retained password with the
+non-elidable helper; `ui::TextField::setText` zeroes the previous contents, so a masked field leaves no copy when it is
+cleared; `SetPasswordController` builds the `EncryptOptions` strings inside a `ScopedWipe` block (also on throw). The CryptoPro
+PIN is cleared right after `setProvParam` (`CryptoProBackend.cpp` `trySign`; that file is built only with
+`RIVET_ENABLE_CRYPTOPRO=ON`, which was not possible here: compile-unchecked). Tests: `wipeStringZeroesTheOwnedStorageInPlace`,
+`scopedWipeZeroesOnEveryExitPath`.
+Residual risk: the `std::string` fields of `EncryptOptions` stay as the caller's copies for the legacy `encryptPdf` overload;
+text-field editing (typing, backspace) may leave reallocation leftovers of a half-typed password in the widget's heap;
+OpenSSL/provider internals may keep copies. Low severity, local attacker with memory access only.
 
 ### 4. Temp files and atomic writes
 Checked: `AtomicFileWriter` creates a hidden temp next to the destination with `O_CREAT|O_EXCL|O_CLOEXEC`, random
@@ -131,7 +140,7 @@ Checked:
   at `producedAt` (`Ocsp.cpp:259-297`), signature checked (`:298`), nonce must be echoed when sent (`:305-313`), CertID
   must match name hash, key hash and serial (`:196-215`), HTTP status 200 and Content-Type enforced (`:343-350`).
 - CRL: issuer name and key identifier must match the certificate's issuer, issuer must have cRLSign, inner/outer algorithm
-  must agree, signature verified (`Crl.cpp:124-154,179-181`). Only direct CRLs are supported (`:147-148`).
+  must agree, signature verified (`Crl.cpp:124-154,179-181`). Direct and delta CRLs are supported; a delta is bound to its base by issuer, IDP, cRLNumber and baseCRLNumber and is fail-closed (fixed after this review, ADR-0044).
 - Timestamp token: message imprint, nonce, TSA certificate EKU exactly id-kp-timeStamping and chain to a trusted anchor
   (`TimeStampToken.cpp:399-448`); a granted response without a token is an error (`:484`); the client verifies before
   returning (`TimeStampClient.cpp:118-124`).
@@ -139,8 +148,7 @@ Checked:
   basic invariants; it is not a proof that no forged response verifies).
 Not verified: that every caller treats `RevocationOutcome::acceptable()` as the only gate (callers in `src/app` are being
 written); a delegated responder must now carry `id-pkix-ocsp-nocheck` (F6) so it is not itself revocation-checked, a CA-signed responder without it is refused;
-`genTime` skew policy against the local clock was not reviewed; delta CRLs and indirect CRLs are documented limitations
-(`PdfSignatureVerifier.cpp:756`).
+`genTime` skew policy against the local clock was not reviewed; indirect CRLs remain a documented limitation. Delta CRLs are now supported (ADR-0044).
 Residual risk: soft-fail mode (hardFail off) is a user-visible weaker setting by design.
 
 ### 7. Signature wrapping and ByteRange coverage
@@ -169,8 +177,7 @@ supply evidence but can never add a trust anchor. Without caller anchors the LTV
 timestamp after the revision that introduced the evidence (`:868-880`). DSS stream counts and sizes are capped
 (`PdfDss.hpp:21-23`).
 Not verified: the remaining B-LTA code after line 880, and `LtvChain.cpp` was only skimmed (`kMaxMissing`).
-Residual risk: policies, name constraints and delta CRLs are not evaluated (stated in the produced report,
-`:757`).
+Residual risk: certificate policies and ETSI EN 319 102-1 conformance are not evaluated (stated in the produced report). X.509 nameConstraints are now enforced in path building and delta CRLs are applied (fixed after this review, ADR-0044).
 
 ### 9. PKCS#11 and CryptoPro dlopen loading
 Checked: PKCS#11 `dlopen(RTLD_NOW|RTLD_LOCAL)` / `LoadLibraryW` on a path the user or admin configures
@@ -183,9 +190,19 @@ Token-supplied strings are stripped of control characters before UI/log use (`tr
 Fixed (F5): both loaders call `checkModuleFile` before `dlopen` (ownership, permissions, symlink resolution, parent
 directory). NOT checked: signature/code-signing verification of the module. A module is arbitrary native code that runs with
 the user's rights, so the trust decision is the user's.
-Residual risk: a check-then-`dlopen` window (TOCTOU) remains; the Windows branch is best effort (absolute drive path, regular
-non-symlink file, no ACL inspection) and was not built here; the explicit override disables the permission checks. The
-provider-level override option is tested only through the helper. Tested against a mock module only, never a vendor module.
+Fixed (residual F5, TOCTOU): both loaders now call `loadTrustedModule` (`ModuleTrust.cpp`), which validates and loads the same
+file object. Linux: open once with `O_NOFOLLOW`, `fstat` the descriptor (regular, owner, mode), confirm the resolved name still
+has the same dev/ino, then `dlopen("/proc/self/fd/N")`; if that fails (no `/proc`, `$ORIGIN` dependencies) it falls back to
+the path strategy. macOS and fallback: validated descriptor, `dlopen(path)` immediately, then dev/ino of the path are
+compared with the validated descriptor and a mismatch `dlclose`s and fails. Windows: the file is held open with
+`FILE_SHARE_READ` only across `LoadLibraryW` (no write/delete/rename by others), reparse points refused. Tests:
+`loadTrustedModule*` in `TestModuleTrust.cpp`, including a swap of the file between validation and load through
+`setModuleLoadHookForTesting` (Linux must still load the original; macOS must refuse).
+Residual risk: on macOS the swapped-in library's static initialisers have already run when the mismatch is detected (the
+window shrinks to the `dlopen` call; it is not closed); directory components above the file are still checked by path;
+the Windows branch was not built or run here; the explicit override disables the permission checks; the CryptoPro loader
+change is compile-unchecked (SDK headers absent). Tested against test modules and the mock PKCS#11 module only, never a
+vendor module. Code signing is still not verified.
 
 ### 10. Remote QES privacy modes
 Checked: default `RemotePrivacyMode::HashOnly` (`CryptoProDss.hpp:40`); `WholeDocument` requires the caller to pass the exact
@@ -228,12 +245,12 @@ Fixed (F7): configurable caps (`VerifyOptions::limits`, default 256 signatures) 
 - Real TLS behaviour, real TSA/OCSP/CRL servers, real DSS service, real PKCS#11 vendor modules, real CryptoPro CSP.
 - Windows code paths (`AtomicFileWriter` Windows branch, CNG store, `LoadLibraryW`) were read but not built or run here.
 - UI/controller layers (`src/app`, `src/ui`): PIN prompt, consent text display, logging.
-- Modification-analyzer allowed-change semantics, B-LTA tail logic, delta/indirect CRLs.
+- Modification-analyzer allowed-change semantics, B-LTA tail logic, indirect CRLs.
 - Long-run fuzzing (hours), structure-aware coverage of chain building, differential tests against other PDF readers.
 
 ## Suggested follow-ups (larger than a small fix)
-1. (done, F5) Module file trust checks. Still open: document the expected install path; code-signing verification.
-2. (done, F3) Encrypt secret wiping. Still open: migrate callers to `EncryptSecrets`; clear the CryptoPro PIN right after `setProvParam`.
+1. (done, F5) Module file trust checks and check/load TOCTOU narrowing. Still open: document the expected install path; code-signing verification; fully closing the window on macOS.
+2. (done, F3) Encrypt secret wiping, legacy `std::string` secret paths, CryptoPro PIN cleared after `setProvParam`. Still open: migrate remaining library callers of the legacy `encryptPdf` overload to `EncryptSecrets`.
 3. (done, F6) Delegated OCSP responders require `ocsp-nocheck`.
 4. (done, F7) Verifier budgets. Still open: measure worst-case CPU under the defaults.
 5. Longer CI fuzzing (OSS-Fuzz style) with the committed seed generators.
