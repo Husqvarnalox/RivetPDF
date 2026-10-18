@@ -50,7 +50,7 @@ Output checked by Rivet's own reader and tests. No qpdf, mutool or Acrobat cross
 write encrypted PDFs, so the constrained encryptor refuses signed input and several structures.
 
 ## Security
-See `docs/security/phase8-review.md`. Open, low priority: legacy `std::string` password fields not wiped; a race between module check and `dlopen`; no ESIC, delta CRL or `nameConstraints`.
+See `docs/security/phase8-review.md`. Open, low priority: legacy `std::string` password fields not wiped; a race between module check and `dlopen`; nameConstraints and delta CRLs are now enforced (ADR-0044); full ETSI EN 319 102-1 ("ESIC") conformance verification is not implemented, only the `/Extensions /ESIC` declaration is checked.
 
 ## Not verified (accepted by the owner as out of closure scope)
 Real DSS credentials; hardware tokens; a valid CryptoPro licence; Windows QA; Acrobat interop; live
