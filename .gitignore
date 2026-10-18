@@ -73,3 +73,6 @@ temp/
 *.temp
 *.bak
 *.log
+
+# Release artifacts
+dist/
