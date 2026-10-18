@@ -29,24 +29,11 @@ std::map<std::string, std::weak_ptr<Pkcs11Module>>& cache() {
 }
 
 #if defined(_WIN32)
-void* openLibrary(const std::filesystem::path& path, std::string& error) {
-    HMODULE h = LoadLibraryW(path.c_str());
-    if (!h) error = "LoadLibrary failed (error " + std::to_string(GetLastError()) + ")";
-    return reinterpret_cast<void*>(h);
-}
 void* findSymbol(void* handle, const char* name) {
     return reinterpret_cast<void*>(GetProcAddress(static_cast<HMODULE>(handle), name));
 }
 void closeLibrary(void* handle) { FreeLibrary(static_cast<HMODULE>(handle)); }
 #else
-void* openLibrary(const std::filesystem::path& path, std::string& error) {
-    void* h = dlopen(path.c_str(), RTLD_NOW | RTLD_LOCAL);
-    if (!h) {
-        const char* why = dlerror();
-        error = why ? why : "dlopen failed";
-    }
-    return h;
-}
 void* findSymbol(void* handle, const char* name) { return dlsym(handle, name); }
 void closeLibrary(void* handle) { dlclose(handle); }
 #endif
@@ -130,16 +117,21 @@ CryptoResult<std::shared_ptr<Pkcs11Module>> Pkcs11Module::acquire(const std::fil
     }
     std::shared_ptr<Pkcs11Module> module(new Pkcs11Module());
     module->key_ = key;
-    if (auto ok = module->init(path); !ok) return std::unexpected(ok.error());
+    if (auto ok = module->init(path, allowInsecurePath); !ok) return std::unexpected(ok.error());
     module->registered_ = true;
     cache()[key] = module;
     return module;
 }
 
-CryptoOk Pkcs11Module::init(const std::filesystem::path& path) {
-    std::string error;
-    handle_ = openLibrary(path, error);
-    if (!handle_) return fail(CryptoErrorCode::BackendUnavailable, "cannot load PKCS#11 module " + path.string() + ": " + error);
+CryptoOk Pkcs11Module::init(const std::filesystem::path& path, bool allowInsecurePath) {
+    // Trust check and load on the same file object (closes the check-then-dlopen window).
+    ModuleLoadResult loaded = loadTrustedModule(path, allowInsecurePath);
+    handle_ = loaded.handle;
+    if (!handle_) {
+        return fail(CryptoErrorCode::BackendUnavailable,
+                    loaded.refused ? "refusing to load the PKCS#11 module: " + loaded.error
+                                   : "cannot load PKCS#11 module " + path.string() + ": " + loaded.error);
+    }
 
     // The only symbol resolved by name; every other entry comes from the table.
     void* symbol = findSymbol(handle_, "C_GetFunctionList");

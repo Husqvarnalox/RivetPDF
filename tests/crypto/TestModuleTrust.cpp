@@ -5,17 +5,21 @@
 
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <string>
 
 #if !defined(_WIN32)
+#include <dlfcn.h>
 #include <sys/stat.h>
 #include <unistd.h>
 #endif
 
 namespace fs = std::filesystem;
 using rivet::crypto::checkModuleFile;
+using rivet::crypto::loadTrustedModule;
+using rivet::crypto::setModuleLoadHookForTesting;
 
 namespace {
 
@@ -135,6 +139,108 @@ RIVET_TEST(moduleTrustResolvesSymlinksAndChecksTheTarget) {
     CHECK_EQ(::chmod(openDir.c_str(), 0777), 0);
     expectRefused(checkModuleFile(openDir / "liblink.so"), "world-writable");
     CHECK_EQ(::chmod(openDir.c_str(), 0700), 0);
+}
+
+// ---- loadTrustedModule: validation and load on the same object --------------
+
+namespace {
+
+fs::path installModule(const fs::path& dir, const char* name, const char* source) {
+    const fs::path dst = dir / name;
+    std::error_code ec;
+    fs::copy_file(source, dst, fs::copy_options::overwrite_existing, ec);
+    fs::permissions(dst, fs::perms::owner_all | fs::perms::group_read | fs::perms::group_exec | fs::perms::others_read |
+                             fs::perms::others_exec,
+                    fs::perm_options::replace, ec);
+    return dst;
+}
+
+int moduleId(void* handle) {
+    using Fn = int (*)();
+    auto fn = reinterpret_cast<Fn>(::dlsym(handle, "rivetTestModuleId"));
+    return fn ? fn() : -1;
+}
+
+// State for the swap hook (a plain function pointer: the production seam takes no closure).
+struct Swap {
+    fs::path replacement; // file moved over the validated path
+    int calls = 0;
+};
+Swap g_swap;
+
+void swapHook(const fs::path& validated) {
+    ++g_swap.calls;
+    std::error_code ec;
+    fs::rename(g_swap.replacement, validated, ec);
+}
+
+} // namespace
+
+RIVET_TEST(loadTrustedModuleLoadsAValidModule) {
+    TempDir d;
+    const fs::path m = installModule(d.path, "a.so", RIVET_TEST_MODULE_A);
+    auto r = loadTrustedModule(m);
+    if (!r.handle) std::fprintf(stderr, "    load failed: %s\n", r.error.c_str());
+    CHECK(r.handle != nullptr);
+    if (!(r.handle != nullptr)) return;
+    CHECK_EQ(moduleId(r.handle), 1);
+    ::dlclose(r.handle);
+}
+
+RIVET_TEST(loadTrustedModuleRefusesUntrustedFilesWithoutLoading) {
+    TempDir d;
+    const fs::path m = installModule(d.path, "a.so", RIVET_TEST_MODULE_A);
+    fs::permissions(m, fs::perms::others_write, fs::perm_options::add);
+    auto r = loadTrustedModule(m);
+    CHECK(r.handle == nullptr);
+    CHECK(r.refused);
+    CHECK(r.error.find("writable") != std::string::npos);
+    // The override loads it by path.
+    auto o = loadTrustedModule(m, true);
+    CHECK(o.handle != nullptr);
+    if (!(o.handle != nullptr)) return;
+    ::dlclose(o.handle);
+    CHECK(loadTrustedModule(d.path / "missing.so").refused);
+    CHECK(loadTrustedModule("relative/a.so").refused);
+}
+
+RIVET_TEST(loadTrustedModuleRefusesASymlinkAtTheOpenedName) {
+    // checkModuleFile resolves links; the opened object is the resolved file, never the link.
+    TempDir d;
+    const fs::path real = installModule(d.path, "real.so", RIVET_TEST_MODULE_A);
+    std::error_code ec;
+    fs::create_symlink(real, d.path / "link.so", ec);
+    CHECK(!ec);
+    auto r = loadTrustedModule(d.path / "link.so");
+    CHECK(r.handle != nullptr);
+    if (!(r.handle != nullptr)) return;
+    CHECK_EQ(moduleId(r.handle), 1);
+    ::dlclose(r.handle);
+}
+
+RIVET_TEST(loadTrustedModuleSurvivesTheFileBeingSwappedBetweenCheckAndLoad) {
+    TempDir d;
+    const fs::path m = installModule(d.path, "a.so", RIVET_TEST_MODULE_A);
+    g_swap.replacement = installModule(d.path, "evil.so", RIVET_TEST_MODULE_B);
+    g_swap.calls = 0;
+    setModuleLoadHookForTesting(&swapHook);
+    auto r = loadTrustedModule(m);
+    setModuleLoadHookForTesting(nullptr);
+    CHECK_EQ(g_swap.calls, 1);
+    if (r.handle) {
+        // Linux: loaded through the validated descriptor, so it is still the ORIGINAL module.
+        CHECK_EQ(moduleId(r.handle), 1);
+        ::dlclose(r.handle);
+    } else {
+        // Path strategy (macOS): the replacement is detected and refused. Never "module 2 loaded".
+        CHECK(r.refused);
+        CHECK(r.error.find("replaced") != std::string::npos);
+    }
+#if defined(__linux__)
+    CHECK(r.handle != nullptr);
+#else
+    CHECK(r.handle == nullptr);
+#endif
 }
 
 #else
