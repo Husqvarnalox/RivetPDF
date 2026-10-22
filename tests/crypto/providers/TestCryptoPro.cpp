@@ -214,7 +214,7 @@ RIVET_TEST(cryptoProRfc7091Gost3410_256Verify) {
     bad[10] ^= 1;
     CHECK(!verifier->verifyDigest(*cert, digest, bad).has_value());
     Bytes badDigest = digest;
-    badDigest[0] ^= 1;
+    if (!badDigest.empty()) badDigest[0] ^= 1;
     CHECK(!verifier->verifyDigest(*cert, badDigest, candidates[accepted < 0 ? 0 : accepted]).has_value());
 }
 
@@ -283,7 +283,7 @@ RIVET_TEST(cryptoProSignAndVerifyWithOperatorContainer) {
     if (!sig) return;
     CHECK(provider->verifySignature((*identity)->certificate(), schemeOf(algs[0]), message, *sig).has_value());
     Bytes tampered = message;
-    tampered[0] ^= 1;
+    if (!tampered.empty()) tampered[0] ^= 1;
     CHECK(!provider->verifySignature((*identity)->certificate(), schemeOf(algs[0]), tampered, *sig).has_value());
     // Wrong algorithm for the key is refused.
     CHECK(!(*identity)->sign(SignatureAlgorithm::EcdsaSha256, message, CancelToken{}).has_value());

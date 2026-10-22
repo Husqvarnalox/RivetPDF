@@ -251,8 +251,9 @@ RIVET_TEST(aes128UsesVersion16AndV4Dictionary) {
     CHECK(contains(out, "/V 4 /R 4 /Length 128"));
     CHECK(!contains(out, "Secret body text"));
     CHECK(!contains(out, "/OE"));
-    const std::string old = encryptOk(buildPdf({"<< /Type /Catalog /Pages 2 0 R >>", "<< /Type /Pages /Kids [] /Count 0 >>"}, "", "%PDF-1.4\n"),
-                                      opts(pe::Cipher::Aes128, "u"));
+    const std::vector<std::string> bodies{"<< /Type /Catalog /Pages 2 0 R >>", "<< /Type /Pages /Kids [] /Count 0 >>"};
+    const std::string oldPdf = buildPdf(bodies, "", "%PDF-1.4\n");
+    const std::string old = encryptOk(oldPdf, opts(pe::Cipher::Aes128, "u"));
     CHECK(old.rfind("%PDF-1.6", 0) == 0);
 }
 

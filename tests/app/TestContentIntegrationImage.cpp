@@ -54,7 +54,7 @@ pdf::PdfImageData jpegImage() {
     image.format = pdf::PdfImageData::Format::Jpeg;
     image.width = 8;
     image.height = 8;
-    image.bytes = rivet::test::pdffix::blueJpeg();
+    image.bytes = std::vector<std::uint8_t>(rivet::test::pdffix::blueJpeg()); // copy-construct then move: avoids GCC 15 -Wnull-dereference on copy-assign
     return image;
 }
 
