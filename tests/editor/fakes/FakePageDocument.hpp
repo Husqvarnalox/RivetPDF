@@ -205,8 +205,8 @@ public:
         }
         ++contentLoads;
         { std::lock_guard<std::mutex> gate(contentGate); }
-        pdf::PdfPageContent content;
-        if (const auto it = pageContents.find(pageIndex); it != pageContents.end()) content = it->second;
+        const auto found = pageContents.find(pageIndex);
+        pdf::PdfPageContent content = found != pageContents.end() ? found->second : pdf::PdfPageContent{};
         {
             std::lock_guard<std::mutex> lock(mutex_);
             lastContentEdits_ = edits;

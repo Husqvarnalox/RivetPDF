@@ -92,7 +92,7 @@ RIVET_TEST(paginateSplitsTallImageAtPageBoundaries) {
     tall.state = ImageState::Known;
     tall.width = 100;
     tall.height = 400; // laid out at 400 (below maxImageHeight 480)
-    images.known["tall.png"] = tall;
+    images.known.insert_or_assign("tall.png", tall);
     const MarkdownLayout layout = lay("Intro line\n\n![t](tall.png)\n\nAfter\n", 300, &images);
     std::size_t imageBlock = layout.blocks.size();
     for (std::size_t i = 0; i < layout.blocks.size(); ++i) {
