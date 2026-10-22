@@ -224,7 +224,7 @@ RIVET_TEST(platformTempKeychainSignAndVerify) {
             CHECK(provider->verifySignature(expected, schemeFor(alg), message, *sig).has_value());
             // tampered message must not verify
             Bytes other = message;
-            other[0] ^= 1;
+            if (!other.empty()) other[0] ^= 1;
             CHECK(!provider->verifySignature(expected, schemeFor(alg), other, *sig).has_value());
 
             auto digest = provider->digest(digestOf(alg), message);

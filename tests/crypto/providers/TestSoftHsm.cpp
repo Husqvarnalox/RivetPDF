@@ -444,7 +444,7 @@ RIVET_TEST(softHsmSignAndVerify) {
 
     // A changed byte of the content must be detected.
     Bytes tampered = content;
-    tampered.front() ^= 0x01;
+    if (!tampered.empty()) tampered.front() ^= 0x01;
     const auto tamperedSource = ContentSource::fromBytes(tampered);
     auto bad = verifyCms(*reparsed, *provider, &tamperedSource);
     CHECK(bad.has_value());
