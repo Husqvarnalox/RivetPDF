@@ -236,7 +236,7 @@ void DigitalSignatureController::begin() {
                     SigningIdentityChoice c;
                     c.storeIndex = s;
                     c.id = d.id;
-                    c.label = d.certificate.commonName.value_or(d.certificate.subject);
+                    c.label = d.certificate.commonName ? *d.certificate.commonName : d.certificate.subject;
                     if (d.certificate.organization) c.label += " (" + *d.certificate.organization + ")";
                     c.assurance = store.assurance();
                     c.custody = custodyText(c.assurance);

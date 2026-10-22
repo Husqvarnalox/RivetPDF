@@ -574,7 +574,7 @@ std::expected<FlowLayout, std::string> layoutFlowchart(const Flowchart& chart, c
         if (!clusterUsed[c]) continue;
         if (clusterMin[c] == 0) clusterLead = std::max(clusterLead, style.clusterPad + (titleAtLowRank ? titleH : 0.0));
     }
-    rankPos[0] = clusterLead + extent[0] / 2.0;
+    if (!rankPos.empty()) rankPos[0] = clusterLead + extent[0] / 2.0; // rankCount >= 1; guard keeps GCC 15 -Wnull-dereference quiet
     for (std::size_t r = 0; r + 1 < rankCount; ++r) {
         double gap = (onlyDummies[r] || onlyDummies[r + 1]) ? style.rankSep / 2.0 : style.rankSep;
         double opening = 0.0;
